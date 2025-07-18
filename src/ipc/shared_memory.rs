@@ -320,6 +320,61 @@ impl SharedMemoryTransport {
         }
     }
 
+    /// Establish the actual shared memory connection (called lazily for client)
+    async fn establish_connection(&mut self) -> Result<()> {
+        if let Some(role) = self.role {
+            match role {
+                ConnectionRole::Server => {
+                    // Server should already have the connection from start_server()
+                    if self.single_connection.is_some() {
+                        debug!("Server connection already established");
+                        return Ok(());
+                    } else {
+                        return Err(anyhow!("Server connection not properly initialized"));
+                    }
+                }
+                ConnectionRole::Client => {
+                    debug!("Establishing shared memory connection as client");
+                    
+                    // Connect to existing shared memory segment with retry logic
+                    let mut attempts = 0;
+                    let max_attempts = 30;
+                    let connection = loop {
+                        match SharedMemoryConnection::new(
+                            0, // Connection ID 0 for single connection mode
+                            self.shared_memory_name.clone(),
+                            self.buffer_size,
+                            ConnectionRole::Client,
+                            false, // Open existing segment
+                        ) {
+                            Ok(conn) => break conn,
+                            Err(_) if attempts < max_attempts => {
+                                debug!("Shared memory segment not ready yet, retrying... (attempt {}/{})", attempts + 1, max_attempts);
+                                attempts += 1;
+                                sleep(Duration::from_millis(100)).await;
+                                continue;
+                            }
+                            Err(e) => return Err(anyhow!("Failed to open shared memory segment after {} attempts: {}", attempts + 1, e)),
+                        }
+                    };
+
+                    // Wait for server to be ready
+                    connection.wait_for_peer(Duration::from_secs(30)).await?;
+
+                    // Mark client as ready
+                    connection.mark_ready();
+
+                    self.single_connection = Some(connection);
+                    debug!("Shared Memory client connection established");
+                }
+            }
+        } else {
+            return Err(anyhow!("Role not set"));
+        }
+        
+        Ok(())
+    }
+
     /// Handle a client connection in multi-server mode
     async fn handle_connection(
         connection_id: ConnectionId,
@@ -377,9 +432,8 @@ impl IpcTransport for SharedMemoryTransport {
         self.shared_memory_name = config.shared_memory_name.clone();
         self.buffer_size = config.buffer_size;
         self.role = Some(ConnectionRole::Server);
-        self.state = TransportState::Initializing;
 
-        // Create single connection for legacy mode
+        // Create the shared memory segment immediately so clients can find it
         let connection = SharedMemoryConnection::new(
             0, // Connection ID 0 for single connection mode
             config.shared_memory_name.clone(),
@@ -388,15 +442,12 @@ impl IpcTransport for SharedMemoryTransport {
             true, // Create the segment
         )?;
 
-        // Mark server as ready
+        // Mark server as ready immediately
         connection.mark_ready();
-
-        // Wait for client to connect
-        connection.wait_for_peer(Duration::from_secs(30)).await?;
-
         self.single_connection = Some(connection);
         self.state = TransportState::Connected;
-        debug!("Shared Memory server connected");
+
+        debug!("Shared Memory server ready with segment created");
         Ok(())
     }
 
@@ -409,32 +460,20 @@ impl IpcTransport for SharedMemoryTransport {
         self.shared_memory_name = config.shared_memory_name.clone();
         self.buffer_size = config.buffer_size;
         self.role = Some(ConnectionRole::Client);
-        self.state = TransportState::Initializing;
+        self.state = TransportState::Connected; // Mark as ready immediately
 
-        // Connect to existing shared memory segment
-        let connection = SharedMemoryConnection::new(
-            0, // Connection ID 0 for single connection mode
-            config.shared_memory_name.clone(),
-            config.buffer_size,
-            ConnectionRole::Client,
-            false, // Open existing segment
-        )?;
-
-        // Wait for server to be ready
-        connection.wait_for_peer(Duration::from_secs(30)).await?;
-
-        // Mark client as ready
-        connection.mark_ready();
-
-        self.single_connection = Some(connection);
-        self.state = TransportState::Connected;
-        debug!("Shared Memory client connected");
+        debug!("Shared Memory client ready (connection will be established on first use)");
         Ok(())
     }
 
     async fn send(&mut self, message: &Message) -> Result<()> {
         if self.state != TransportState::Connected {
             return Err(anyhow!("Transport not connected"));
+        }
+
+        // Lazy connection establishment
+        if self.single_connection.is_none() {
+            self.establish_connection().await?;
         }
 
         if let Some(ref connection) = self.single_connection {
@@ -447,6 +486,11 @@ impl IpcTransport for SharedMemoryTransport {
     async fn receive(&mut self) -> Result<Message> {
         if self.state != TransportState::Connected {
             return Err(anyhow!("Transport not connected"));
+        }
+
+        // Lazy connection establishment
+        if self.single_connection.is_none() {
+            self.establish_connection().await?;
         }
 
         if let Some(ref connection) = self.single_connection {

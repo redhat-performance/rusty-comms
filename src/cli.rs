@@ -7,8 +7,8 @@ use std::time::Duration;
 #[derive(Parser, Debug)]
 #[clap(version, about, long_about = None)]
 pub struct Args {
-    /// IPC mechanisms to benchmark
-    #[clap(short, long, value_enum, default_values_t = vec![IpcMechanism::UnixDomainSocket])]
+    /// IPC mechanisms to benchmark (space-separated: uds, shm, tcp, or all)
+    #[clap(short = 'm', value_enum, default_values_t = vec![IpcMechanism::UnixDomainSocket], help_heading = "Core Options", num_args = 1..)]
     pub mechanisms: Vec<IpcMechanism>,
 
     /// Message size in bytes
@@ -86,6 +86,14 @@ pub enum IpcMechanism {
     /// TCP Sockets
     #[clap(name = "tcp")]
     TcpSocket,
+
+    /// POSIX Message Queues
+    #[clap(name = "pmq")]
+    PosixMessageQueue,
+
+    /// All available mechanisms
+    #[clap(name = "all")]
+    All,
 }
 
 impl std::fmt::Display for IpcMechanism {
@@ -94,6 +102,24 @@ impl std::fmt::Display for IpcMechanism {
             IpcMechanism::UnixDomainSocket => write!(f, "Unix Domain Socket"),
             IpcMechanism::SharedMemory => write!(f, "Shared Memory"),
             IpcMechanism::TcpSocket => write!(f, "TCP Socket"),
+            IpcMechanism::PosixMessageQueue => write!(f, "POSIX Message Queue"),
+            IpcMechanism::All => write!(f, "All Mechanisms"),
+        }
+    }
+}
+
+impl IpcMechanism {
+    /// Expand the "All" variant to all available mechanisms
+    pub fn expand_all(mechanisms: Vec<IpcMechanism>) -> Vec<IpcMechanism> {
+        if mechanisms.contains(&IpcMechanism::All) {
+            vec![
+                IpcMechanism::UnixDomainSocket,
+                IpcMechanism::SharedMemory,
+                IpcMechanism::TcpSocket,
+                IpcMechanism::PosixMessageQueue,
+            ]
+        } else {
+            mechanisms
         }
     }
 }
@@ -118,7 +144,7 @@ pub struct BenchmarkConfiguration {
 impl From<&Args> for BenchmarkConfiguration {
     fn from(args: &Args) -> Self {
         Self {
-            mechanisms: args.mechanisms.clone(),
+            mechanisms: IpcMechanism::expand_all(args.mechanisms.clone()),
             message_size: args.message_size,
             iterations: if args.duration.is_some() {
                 None
@@ -197,5 +223,29 @@ mod tests {
         );
         assert_eq!(IpcMechanism::SharedMemory.to_string(), "Shared Memory");
         assert_eq!(IpcMechanism::TcpSocket.to_string(), "TCP Socket");
+        assert_eq!(IpcMechanism::PosixMessageQueue.to_string(), "POSIX Message Queue");
+        assert_eq!(IpcMechanism::All.to_string(), "All Mechanisms");
+    }
+
+    #[test]
+    fn test_ipc_mechanism_expand_all() {
+        let all_mechanisms = vec![
+            IpcMechanism::UnixDomainSocket,
+            IpcMechanism::SharedMemory,
+            IpcMechanism::TcpSocket,
+            IpcMechanism::PosixMessageQueue,
+        ];
+        assert_eq!(
+            IpcMechanism::expand_all(vec![IpcMechanism::All]),
+            all_mechanisms
+        );
+        assert_eq!(
+            IpcMechanism::expand_all(vec![IpcMechanism::UnixDomainSocket]),
+            vec![IpcMechanism::UnixDomainSocket]
+        );
+        assert_eq!(
+            IpcMechanism::expand_all(vec![IpcMechanism::UnixDomainSocket, IpcMechanism::All]),
+            all_mechanisms
+        );
     }
 }

@@ -21,6 +21,7 @@ pub struct TcpSocketTransport {
     next_connection_id: Arc<AtomicU64>,
     address: Option<SocketAddr>,
     message_receiver: Option<mpsc::Receiver<(ConnectionId, Message)>>,
+    buffer_size: usize,
 }
 
 impl TcpSocketTransport {
@@ -34,6 +35,7 @@ impl TcpSocketTransport {
             next_connection_id: Arc::new(AtomicU64::new(1)),
             address: None,
             message_receiver: None,
+            buffer_size: 8192, // Default buffer size
         }
     }
 
@@ -174,27 +176,12 @@ impl IpcTransport for TcpSocketTransport {
         let local_addr = listener.local_addr()?;
         self.address = Some(local_addr);
         self.listener = Some(listener);
+        self.buffer_size = config.buffer_size; // Store buffer size for later use
 
         debug!("TCP Socket server listening on: {}", local_addr);
-
-        // Wait for client connection (single connection mode)
-        let (stream, client_addr) = self.listener.as_ref().unwrap().accept().await?;
-        debug!(
-            "TCP Socket server accepted connection from: {}",
-            client_addr
-        );
-
-        // Configure socket options for low latency
-        let std_stream = stream.into_std()?;
-        let socket = socket2::Socket::from(std_stream.try_clone()?);
-        socket.set_nodelay(true)?;
-        socket.set_recv_buffer_size(config.buffer_size)?;
-        socket.set_send_buffer_size(config.buffer_size)?;
-
-        self.stream = Some(TcpStream::from_std(std_stream)?);
         self.state = TransportState::Connected;
 
-        debug!("TCP Socket server connected");
+        debug!("TCP Socket server listening (not yet connected)");
         Ok(())
     }
 
@@ -227,6 +214,22 @@ impl IpcTransport for TcpSocketTransport {
             return Err(anyhow!("Transport not connected"));
         }
 
+        // Lazy connection establishment for server
+        if self.stream.is_none() && self.listener.is_some() {
+            debug!("Server accepting connection on first send");
+            let (stream, client_addr) = self.listener.as_ref().unwrap().accept().await?;
+            debug!("TCP Socket server accepted connection from: {}", client_addr);
+
+            // Configure socket options for low latency
+            let std_stream = stream.into_std()?;
+            let socket = socket2::Socket::from(std_stream.try_clone()?);
+            socket.set_nodelay(true)?;
+            socket.set_recv_buffer_size(self.buffer_size)?;
+            socket.set_send_buffer_size(self.buffer_size)?;
+
+            self.stream = Some(TcpStream::from_std(std_stream)?);
+        }
+
         if let Some(ref mut stream) = self.stream {
             Self::write_message(stream, message).await?;
             debug!("Sent message {} via TCP Socket", message.id);
@@ -239,6 +242,22 @@ impl IpcTransport for TcpSocketTransport {
     async fn receive(&mut self) -> Result<Message> {
         if self.state != TransportState::Connected {
             return Err(anyhow!("Transport not connected"));
+        }
+
+        // Lazy connection establishment for server
+        if self.stream.is_none() && self.listener.is_some() {
+            debug!("Server accepting connection on first receive");
+            let (stream, client_addr) = self.listener.as_ref().unwrap().accept().await?;
+            debug!("TCP Socket server accepted connection from: {}", client_addr);
+
+            // Configure socket options for low latency
+            let std_stream = stream.into_std()?;
+            let socket = socket2::Socket::from(std_stream.try_clone()?);
+            socket.set_nodelay(true)?;
+            socket.set_recv_buffer_size(self.buffer_size)?;
+            socket.set_send_buffer_size(self.buffer_size)?;
+
+            self.stream = Some(TcpStream::from_std(std_stream)?);
         }
 
         if let Some(ref mut stream) = self.stream {

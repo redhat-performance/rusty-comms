@@ -189,13 +189,9 @@ impl IpcTransport for UnixDomainSocketTransport {
         // Create listener
         let listener = UnixListener::bind(&config.socket_path)?;
         self.listener = Some(listener);
-
-        // Wait for client connection (single connection mode)
-        let (stream, _) = self.listener.as_ref().unwrap().accept().await?;
-        self.stream = Some(stream);
         self.state = TransportState::Connected;
 
-        debug!("Unix Domain Socket server connected");
+        debug!("Unix Domain Socket server listening (not yet connected)");
         Ok(())
     }
 
@@ -222,6 +218,13 @@ impl IpcTransport for UnixDomainSocketTransport {
             return Err(anyhow!("Transport not connected"));
         }
 
+        // Lazy connection establishment for server
+        if self.stream.is_none() && self.listener.is_some() {
+            debug!("Server accepting connection on first send");
+            let (stream, _) = self.listener.as_ref().unwrap().accept().await?;
+            self.stream = Some(stream);
+        }
+
         if let Some(ref mut stream) = self.stream {
             Self::write_message(stream, message).await?;
             debug!("Sent message {} via Unix Domain Socket", message.id);
@@ -234,6 +237,13 @@ impl IpcTransport for UnixDomainSocketTransport {
     async fn receive(&mut self) -> Result<Message> {
         if self.state != TransportState::Connected {
             return Err(anyhow!("Transport not connected"));
+        }
+
+        // Lazy connection establishment for server
+        if self.stream.is_none() && self.listener.is_some() {
+            debug!("Server accepting connection on first receive");
+            let (stream, _) = self.listener.as_ref().unwrap().accept().await?;
+            self.stream = Some(stream);
         }
 
         if let Some(ref mut stream) = self.stream {

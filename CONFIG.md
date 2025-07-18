@@ -18,7 +18,7 @@ This document provides detailed information about configuring the IPC Benchmark 
 
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
-| `--mechanisms` | `-m` | String[] | `[uds]` | IPC mechanisms to benchmark |
+| `-m` | | String[] | `[uds]` | IPC mechanisms to benchmark (uds, shm, tcp, pmq, all) |
 | `--message-size` | `-s` | Number | `1024` | Message size in bytes |
 | `--iterations` | `-i` | Number | `10000` | Number of iterations to run |
 | `--duration` | `-d` | String | - | Duration to run (e.g., "30s", "5m") |
@@ -49,7 +49,13 @@ This document provides detailed information about configuring the IPC Benchmark 
 
 ```bash
 # Basic usage
-ipc-benchmark --mechanisms uds shm --message-size 4096 --iterations 50000
+ipc-benchmark -m uds shm pmq --message-size 4096 --iterations 50000
+
+# Test all mechanisms (including PMQ)
+ipc-benchmark -m all --message-size 1024 --iterations 10000
+
+# Test POSIX message queues specifically
+ipc-benchmark -m pmq --message-size 2048 --iterations 5000
 
 # Duration-based testing
 ipc-benchmark --duration 60s --concurrency 8
@@ -58,7 +64,7 @@ ipc-benchmark --duration 60s --concurrency 8
 ipc-benchmark --percentiles 50 90 95 99 99.9 99.99 --warmup-iterations 10000
 
 # High-throughput testing
-ipc-benchmark --mechanisms shm --message-size 65536 --buffer-size 1048576
+ipc-benchmark -m shm --message-size 65536 --buffer-size 1048576
 ```
 
 ## Configuration File
@@ -69,7 +75,8 @@ You can create a configuration file to avoid repeating command-line arguments:
 
 ```json
 {
-  "mechanisms": ["uds", "shm", "tcp"],
+  "mechanisms": ["uds", "shm", "tcp", "pmq"],
+  // Alternative: "mechanisms": ["all"] to test all available mechanisms
   "message_size": 1024,
   "iterations": 10000,
   "concurrency": 4,
@@ -88,7 +95,8 @@ You can create a configuration file to avoid repeating command-line arguments:
 ### TOML Configuration Format
 
 ```toml
-mechanisms = ["uds", "shm", "tcp"]
+mechanisms = ["uds", "shm", "tcp", "pmq"]
+# Alternative: mechanisms = ["all"]  # to test all available mechanisms
 message_size = 1024
 iterations = 10000
 concurrency = 4
@@ -252,7 +260,7 @@ echo always | sudo tee /sys/kernel/mm/transparent_hugepage/enabled
 
 ```bash
 ipc-benchmark \
-  --mechanisms uds \
+  -m uds \
   --message-size 64 \
   --iterations 100000 \
   --concurrency 1 \
@@ -274,7 +282,7 @@ ipc-benchmark \
 
 ```bash
 ipc-benchmark \
-  --mechanisms shm \
+  -m shm \
   --message-size 65536 \
   --duration 60s \
   --concurrency 8 \
@@ -297,11 +305,31 @@ ipc-benchmark \
 # Test with increasing concurrency
 for concurrency in 1 2 4 8 16; do
   ipc-benchmark \
-    --mechanisms uds shm tcp \
+    -m uds shm tcp pmq \
     --concurrency $concurrency \
     --message-size 1024 \
     --iterations 10000 \
     --output-file "results_c${concurrency}.json"
+done
+
+# Test all mechanisms with scalability
+for concurrency in 1 2 4 8; do
+  ipc-benchmark \
+    -m all \
+    --concurrency $concurrency \
+    --message-size 1024 \
+    --iterations 10000 \
+    --output-file "results_all_c${concurrency}.json"
+done
+
+# PMQ-specific scalability testing (Note: PMQ has limited multi-connection support)
+for msg_size in 64 512 2048 8192; do
+  ipc-benchmark \
+    -m pmq \
+    --message-size $msg_size \
+    --iterations 5000 \
+    --concurrency 1 \
+    --output-file "results_pmq_${msg_size}.json"
 done
 ```
 
@@ -311,13 +339,23 @@ done
 
 ```bash
 ipc-benchmark \
-  --mechanisms uds shm tcp \
+  -m uds shm tcp \
   --message-size 1024 \
   --iterations 50000 \
   --concurrency 4 \
   --one-way \
   --round-trip \
   --output-file comparison.json
+
+# Or simply test all available mechanisms
+ipc-benchmark \
+  -m all \
+  --message-size 1024 \
+  --iterations 50000 \
+  --concurrency 4 \
+  --one-way \
+  --round-trip \
+  --output-file complete_comparison.json
 ```
 
 ## System Requirements
@@ -409,6 +447,47 @@ spec:
 2. **Insufficient Shared Memory**: Adjust kernel limits
 3. **Port Conflicts**: Use different ports for multiple TCP tests
 4. **Permission Errors**: Ensure write access to temp directories
+
+### Mechanism-Specific Configuration
+
+#### POSIX Message Queues (PMQ)
+```bash
+# Check PMQ limits
+cat /proc/sys/fs/mqueue/msg_max       # Max messages per queue
+cat /proc/sys/fs/mqueue/msgsize_max   # Max message size
+
+# Mount message queue filesystem (if not mounted)
+sudo mkdir -p /dev/mqueue
+sudo mount -t mqueue none /dev/mqueue
+
+# Increase PMQ limits if needed
+echo 100 | sudo tee /proc/sys/fs/mqueue/msg_max
+echo 16384 | sudo tee /proc/sys/fs/mqueue/msgsize_max
+```
+
+**PMQ Limitations:**
+- Limited multi-connection support compared to other mechanisms
+- Message size and queue depth are system-limited
+- Queue names must start with '/' and follow POSIX naming rules
+- Persistent queues may need manual cleanup after crashes
+
+#### Shared Memory (SHM)
+```bash
+# Check current limits
+ipcs -lm
+
+# Increase shared memory limits
+echo 2147483648 | sudo tee /proc/sys/kernel/shmmax  # 2GB max segment
+echo 4096 | sudo tee /proc/sys/kernel/shmmni        # 4096 segments
+```
+
+#### TCP Sockets
+```bash
+# Increase socket buffer sizes
+echo 'net.core.rmem_max = 16777216' | sudo tee -a /etc/sysctl.conf
+echo 'net.core.wmem_max = 16777216' | sudo tee -a /etc/sysctl.conf
+sudo sysctl -p
+```
 
 ### Validation Commands
 

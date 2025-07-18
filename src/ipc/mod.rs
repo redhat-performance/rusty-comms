@@ -5,10 +5,12 @@ use std::collections::HashMap;
 use std::time::Instant;
 use tokio::sync::mpsc;
 
+pub mod posix_message_queue;
 pub mod shared_memory;
 pub mod tcp_socket;
 pub mod unix_domain_socket;
 
+pub use posix_message_queue::PosixMessageQueueTransport;
 pub use shared_memory::SharedMemoryTransport;
 pub use tcp_socket::TcpSocketTransport;
 pub use unix_domain_socket::UnixDomainSocketTransport;
@@ -80,6 +82,8 @@ pub struct TransportConfig {
     pub socket_path: String,
     pub shared_memory_name: String,
     pub max_connections: usize, // New: maximum concurrent connections
+    pub message_queue_depth: usize, // POSIX Message Queue: maximum number of messages in queue
+    pub message_queue_name: String, // POSIX Message Queue: base queue name
 }
 
 impl Default for TransportConfig {
@@ -91,6 +95,8 @@ impl Default for TransportConfig {
             socket_path: "/tmp/ipc_benchmark.sock".to_string(),
             shared_memory_name: "ipc_benchmark_shm".to_string(),
             max_connections: 16, // Default to support up to 16 concurrent connections
+            message_queue_depth: 10, // Default POSIX Message Queue depth
+            message_queue_name: "ipc_benchmark_pmq".to_string(), // Default PMQ name
         }
     }
 }
@@ -205,6 +211,10 @@ impl TransportFactory {
             IpcMechanism::UnixDomainSocket => Ok(Box::new(UnixDomainSocketTransport::new())),
             IpcMechanism::SharedMemory => Ok(Box::new(SharedMemoryTransport::new())),
             IpcMechanism::TcpSocket => Ok(Box::new(TcpSocketTransport::new())),
+            IpcMechanism::PosixMessageQueue => Ok(Box::new(PosixMessageQueueTransport::new())),
+            IpcMechanism::All => {
+                Err(anyhow::anyhow!("'All' mechanism should be expanded before transport creation"))
+            }
         }
     }
 
@@ -255,5 +265,7 @@ mod tests {
         assert_eq!(config.socket_path, "/tmp/ipc_benchmark.sock");
         assert_eq!(config.shared_memory_name, "ipc_benchmark_shm");
         assert_eq!(config.max_connections, 16);
+        assert_eq!(config.message_queue_depth, 10);
+        assert_eq!(config.message_queue_name, "ipc_benchmark_pmq");
     }
 }

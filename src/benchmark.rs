@@ -110,6 +110,10 @@ impl BenchmarkRunner {
         let _server_transport = TransportFactory::create(&self.mechanism)?;
         let mut client_transport = TransportFactory::create(&self.mechanism)?;
 
+        // Use a barrier to synchronize server startup
+        let server_ready = Arc::new(Barrier::new(2));
+        let server_ready_clone = Arc::clone(&server_ready);
+
         // Start server and client
         let server_handle = {
             let config = transport_config.clone();
@@ -118,6 +122,10 @@ impl BenchmarkRunner {
             tokio::spawn(async move {
                 let mut transport = TransportFactory::create(&mechanism)?;
                 transport.start_server(&config).await?;
+                
+                // Signal that server is ready
+                server_ready_clone.wait().await;
+                debug!("Server signaled ready for warmup");
 
                 // Receive warmup messages
                 for _ in 0..warmup_iterations {
@@ -129,8 +137,9 @@ impl BenchmarkRunner {
             })
         };
 
-        // Give server time to start
-        sleep(Duration::from_millis(100)).await;
+        // Wait for server to be ready
+        server_ready.wait().await;
+        debug!("Client received server ready signal for warmup");
 
         // Connect client and send warmup messages
         client_transport.start_client(&transport_config).await?;
@@ -209,6 +218,10 @@ impl BenchmarkRunner {
         let _server_transport = TransportFactory::create(&self.mechanism)?;
         let mut client_transport = TransportFactory::create(&self.mechanism)?;
 
+        // Use a barrier to synchronize server startup
+        let server_ready = Arc::new(Barrier::new(2));
+        let server_ready_clone = Arc::clone(&server_ready);
+
         // Start server
         let server_handle = {
             let config = transport_config.clone();
@@ -219,6 +232,10 @@ impl BenchmarkRunner {
             tokio::spawn(async move {
                 let mut transport = TransportFactory::create(&mechanism)?;
                 transport.start_server(&config).await?;
+                
+                // Signal that server is ready
+                server_ready_clone.wait().await;
+                debug!("Server signaled ready for one-way test");
 
                 let start_time = Instant::now();
                 let mut received = 0;
@@ -234,7 +251,7 @@ impl BenchmarkRunner {
                     }
 
                     // Try to receive with a shorter timeout
-                    match timeout(Duration::from_millis(100), transport.receive()).await {
+                    match timeout(Duration::from_millis(50), transport.receive()).await {
                         Ok(Ok(_)) => {
                             received += 1;
                         }
@@ -255,8 +272,9 @@ impl BenchmarkRunner {
             })
         };
 
-        // Give server time to start
-        sleep(Duration::from_millis(100)).await;
+        // Wait for server to be ready
+        server_ready.wait().await;
+        debug!("Client received server ready signal for one-way test");
 
         // Connect client
         client_transport.start_client(transport_config).await?;
@@ -274,7 +292,7 @@ impl BenchmarkRunner {
 
                 // Use timeout for individual sends to avoid blocking indefinitely
                 match tokio::time::timeout(
-                    Duration::from_millis(100),
+                    Duration::from_millis(50),
                     client_transport.send(&message),
                 )
                 .await
@@ -322,6 +340,10 @@ impl BenchmarkRunner {
         let _server_transport = TransportFactory::create(&self.mechanism)?;
         let mut client_transport = TransportFactory::create(&self.mechanism)?;
 
+        // Use a barrier to synchronize server startup
+        let server_ready = Arc::new(Barrier::new(2));
+        let server_ready_clone = Arc::clone(&server_ready);
+
         // Start server
         let server_handle = {
             let config = transport_config.clone();
@@ -332,6 +354,10 @@ impl BenchmarkRunner {
             tokio::spawn(async move {
                 let mut transport = TransportFactory::create(&mechanism)?;
                 transport.start_server(&config).await?;
+                
+                // Signal that server is ready
+                server_ready_clone.wait().await;
+                debug!("Server signaled ready for round-trip test");
 
                 let start_time = Instant::now();
                 let mut received = 0;
@@ -347,7 +373,7 @@ impl BenchmarkRunner {
                     }
 
                     // Try to receive with a shorter timeout
-                    match timeout(Duration::from_millis(100), transport.receive()).await {
+                    match timeout(Duration::from_millis(50), transport.receive()).await {
                         Ok(Ok(request)) => {
                             received += 1;
                             let response = Message::new(
@@ -376,8 +402,9 @@ impl BenchmarkRunner {
             })
         };
 
-        // Give server time to start
-        sleep(Duration::from_millis(100)).await;
+        // Wait for server to be ready
+        server_ready.wait().await;
+        debug!("Client received server ready signal for round-trip test");
 
         // Connect client
         client_transport.start_client(transport_config).await?;
@@ -395,7 +422,7 @@ impl BenchmarkRunner {
 
                 // Use timeout for sends and receives to avoid blocking indefinitely
                 match tokio::time::timeout(
-                    Duration::from_millis(100),
+                    Duration::from_millis(50),
                     client_transport.send(&message),
                 )
                 .await
@@ -403,7 +430,7 @@ impl BenchmarkRunner {
                     Ok(Ok(())) => {
                         // Try to receive response with timeout
                         match tokio::time::timeout(
-                            Duration::from_millis(100),
+                            Duration::from_millis(50),
                             client_transport.receive(),
                         )
                         .await
@@ -585,6 +612,29 @@ impl BenchmarkRunner {
             }
         }
 
+        // Conservative queue depth for PMQ - most systems have very low limits (often just 10)
+        let adaptive_queue_depth = if self.mechanism == IpcMechanism::PosixMessageQueue {
+            let iterations = self.get_iteration_count();
+            
+            // Warn about PMQ limitations for high-throughput tests
+            if iterations > 10000 {
+                warn!(
+                    "PMQ with {} iterations may be very slow due to system queue depth limits (typically 10). \
+                     Consider using fewer iterations or a different mechanism for high-throughput testing.",
+                    iterations
+                );
+            }
+            
+            // Use conservative values that work within typical system limits
+            // Most systems default to msg_max=10, so we'll stay at that limit
+            let queue_depth = 10; // Always use system default
+            
+            debug!("PMQ using conservative queue depth: {} iterations -> depth {}", iterations, queue_depth);
+            queue_depth
+        } else {
+            10 // Default for other mechanisms
+        };
+
         Ok(TransportConfig {
             buffer_size: adaptive_buffer_size,
             host: self.config.host.clone(),
@@ -592,6 +642,8 @@ impl BenchmarkRunner {
             socket_path: format!("/tmp/ipc_benchmark_{}.sock", unique_id),
             shared_memory_name: format!("ipc_benchmark_{}", unique_id),
             max_connections: self.config.concurrency.max(16), // Set based on concurrency level
+            message_queue_depth: adaptive_queue_depth,
+            message_queue_name: format!("ipc_benchmark_pmq_{}", unique_id),
         })
     }
 

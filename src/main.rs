@@ -26,8 +26,17 @@ async fn main() -> Result<()> {
     // Initialize results manager
     let mut results_manager = ResultsManager::new(&args.output_file)?;
 
+    // Enable streaming output if specified
+    if let Some(ref streaming_file) = args.streaming_output {
+        info!("Enabling streaming output to: {:?}", streaming_file);
+        results_manager.enable_streaming(streaming_file)?;
+    }
+
+    // Get expanded mechanisms (handles 'all' expansion)
+    let mechanisms = IpcMechanism::expand_all(args.mechanisms.clone());
+
     // Run benchmarks for each specified IPC mechanism
-    for (i, mechanism) in args.mechanisms.iter().enumerate() {
+    for (i, mechanism) in mechanisms.iter().enumerate() {
         info!("Running benchmark for mechanism: {:?}", mechanism);
 
         // Add delay between mechanisms to allow proper resource cleanup

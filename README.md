@@ -18,6 +18,7 @@ This benchmark suite provides a systematic way to evaluate the performance of va
 1. **Unix Domain Sockets** (`uds`) - Low-latency local communication
 2. **Shared Memory** (`shm`) - Highest throughput for large data transfers
 3. **TCP Sockets** (`tcp`) - Network-capable, standardized communication
+4. **POSIX Message Queues** (`pmq`) - Kernel-managed, priority-based messaging
 
 ### Measurement Capabilities
 
@@ -55,11 +56,11 @@ The optimized binary will be available at `target/release/ipc-benchmark`.
 
 ```bash
 # Run all IPC mechanisms with default settings
-./target/release/ipc-benchmark
+./target/release/ipc-benchmark -m all
 
 # Run specific mechanisms with custom configuration
 ./target/release/ipc-benchmark \
-  --mechanisms uds shm tcp \
+  -m uds shm tcp \
   --message-size 4096 \
   --iterations 50000 \
   --concurrency 4
@@ -74,7 +75,13 @@ The optimized binary will be available at `target/release/ipc-benchmark`.
 ipc-benchmark
 
 # Run with specific mechanisms
-ipc-benchmark --mechanisms uds shm
+ipc-benchmark -m uds shm pmq
+
+# Run all mechanisms (including PMQ)
+ipc-benchmark -m all
+
+# Test POSIX message queue specifically
+ipc-benchmark -m pmq --message-size 1024 --iterations 10000
 
 # Run with custom message size and iterations
 ipc-benchmark --message-size 1024 --iterations 10000
@@ -102,10 +109,10 @@ ipc-benchmark --round-trip --no-one-way
 ipc-benchmark --percentiles 50 90 95 99 99.9 99.99
 
 # TCP-specific configuration
-ipc-benchmark --mechanisms tcp --host 127.0.0.1 --port 9090
+ipc-benchmark -m tcp --host 127.0.0.1 --port 9090
 
 # Shared memory configuration
-ipc-benchmark --mechanisms shm --buffer-size 16384
+ipc-benchmark -m shm --buffer-size 16384
 ```
 
 ### Test Configuration Examples
@@ -113,7 +120,7 @@ ipc-benchmark --mechanisms shm --buffer-size 16384
 #### High-Throughput Testing
 ```bash
 ipc-benchmark \
-  --mechanisms shm \
+  -m shm \
   --message-size 65536 \
   --concurrency 8 \
   --duration 60s \
@@ -123,7 +130,7 @@ ipc-benchmark \
 #### Low-Latency Testing
 ```bash
 ipc-benchmark \
-  --mechanisms uds \
+  -m uds \
   --message-size 64 \
   --iterations 100000 \
   --warmup-iterations 10000 \
@@ -133,11 +140,39 @@ ipc-benchmark \
 #### Comparative Analysis
 ```bash
 ipc-benchmark \
-  --mechanisms uds shm tcp \
+  -m uds shm tcp pmq \
   --message-size 1024 \
   --iterations 50000 \
   --concurrency 4 \
   --output-file comparison.json
+```
+
+#### Test All Mechanisms
+```bash
+ipc-benchmark \
+  -m all \
+  --message-size 1024 \
+  --iterations 50000 \
+  --concurrency 1 \
+  --output-file complete_comparison.json
+```
+
+#### POSIX Message Queue Testing
+```bash
+# Test PMQ with different message sizes
+ipc-benchmark \
+  -m pmq \
+  --message-size 1024 \
+  --iterations 10000 \
+  --percentiles 50 95 99
+
+# PMQ with concurrency testing
+ipc-benchmark \
+  -m pmq \
+  --message-size 512 \
+  --iterations 5000 \
+  --concurrency 2 \
+  --duration 30s
 ```
 
 ## Output Format
