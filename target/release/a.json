@@ -1,0 +1,173 @@
+{
+  "metadata": {
+    "version": "0.1.0",
+    "timestamp": "2025-07-28T13:27:13.471333644Z",
+    "total_tests": 1,
+    "system_info": {
+      "os": "linux",
+      "architecture": "x86_64",
+      "cpu_cores": 22,
+      "memory_gb": 16.0,
+      "rust_version": "",
+      "benchmark_version": "0.1.0"
+    }
+  },
+  "results": [
+    {
+      "mechanism": "UnixDomainSocket",
+      "test_config": {
+        "message_size": 1024,
+        "concurrency": 1,
+        "iterations": 100,
+        "duration": null,
+        "one_way_enabled": false,
+        "round_trip_enabled": false,
+        "warmup_iterations": 0,
+        "percentiles": [
+          50.0,
+          95.0,
+          99.0,
+          99.9
+        ],
+        "buffer_size": 8192
+      },
+      "one_way_results": {
+        "latency": {
+          "latency_type": "OneWay",
+          "min_ns": 1667,
+          "max_ns": 6083,
+          "mean_ns": 2317.3500000000004,
+          "median_ns": 2205.0,
+          "std_dev_ns": 481.7568551665871,
+          "percentiles": [
+            {
+              "percentile": 50.0,
+              "value_ns": 2205
+            },
+            {
+              "percentile": 95.0,
+              "value_ns": 2957
+            },
+            {
+              "percentile": 99.0,
+              "value_ns": 3111
+            },
+            {
+              "percentile": 99.9,
+              "value_ns": 6083
+            }
+          ],
+          "total_samples": 100,
+          "histogram_data": [
+            1667,
+            2205,
+            2353,
+            2765,
+            2885,
+            3049,
+            3111,
+            6083,
+            6083
+          ]
+        },
+        "throughput": {
+          "messages_per_second": 138594.76000931356,
+          "bytes_per_second": 141921034.24953708,
+          "total_messages": 100,
+          "total_bytes": 102400,
+          "duration_ns": 721528
+        },
+        "timestamp": "2025-07-28T13:27:13.469323894Z"
+      },
+      "round_trip_results": {
+        "latency": {
+          "latency_type": "RoundTrip",
+          "min_ns": 11688,
+          "max_ns": 23407,
+          "mean_ns": 14589.719999999998,
+          "median_ns": 14271.0,
+          "std_dev_ns": 2405.351317708081,
+          "percentiles": [
+            {
+              "percentile": 50.0,
+              "value_ns": 14271
+            },
+            {
+              "percentile": 95.0,
+              "value_ns": 18687
+            },
+            {
+              "percentile": 99.0,
+              "value_ns": 23327
+            },
+            {
+              "percentile": 99.9,
+              "value_ns": 23407
+            }
+          ],
+          "total_samples": 100,
+          "histogram_data": [
+            11695,
+            14271,
+            15615,
+            17439,
+            18575,
+            19487,
+            23327,
+            23407,
+            23407
+          ]
+        },
+        "throughput": {
+          "messages_per_second": 49960.18173515707,
+          "bytes_per_second": 51159226.09680084,
+          "total_messages": 100,
+          "total_bytes": 102400,
+          "duration_ns": 2001594
+        },
+        "timestamp": "2025-07-28T13:27:13.471327594Z"
+      },
+      "summary": {
+        "total_messages_sent": 200,
+        "total_bytes_transferred": 204800,
+        "average_throughput_mbps": 96.54013017316896,
+        "peak_throughput_mbps": 141.9210342495371,
+        "average_latency_ns": 8453.535,
+        "min_latency_ns": 1667,
+        "max_latency_ns": 23407,
+        "p95_latency_ns": 18687,
+        "p99_latency_ns": 23327,
+        "error_count": 0
+      },
+      "timestamp": "2025-07-28T13:27:13.465913680Z",
+      "test_duration": {
+        "secs": 0,
+        "nanos": 0
+      },
+      "system_info": {
+        "os": "linux",
+        "architecture": "x86_64",
+        "cpu_cores": 22,
+        "memory_gb": 16.0,
+        "rust_version": "1.75.0",
+        "benchmark_version": "0.1.0"
+      }
+    }
+  ],
+  "summary": {
+    "total_messages": 200,
+    "total_bytes": 204800,
+    "total_errors": 0,
+    "mechanisms": {
+      "Unix Domain Socket": {
+        "mechanism": "UnixDomainSocket",
+        "average_throughput_mbps": 96.54013017316896,
+        "p95_latency_ns": 18687,
+        "p99_latency_ns": 23327,
+        "total_messages": 200
+      }
+    },
+    "fastest_mechanism": "Unix Domain Socket",
+    "lowest_latency_mechanism": "Unix Domain Socket"
+  }
+}
