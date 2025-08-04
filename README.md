@@ -30,9 +30,10 @@ This benchmark suite provides a systematic way to evaluate the performance of va
 
 ### Output Formats
 
-- **JSON**: Machine-readable structured output
-- **Streaming**: Real-time results during execution
-- **Human-readable**: Formatted console output with progress indicators
+- **JSON**: Machine-readable structured output for final, aggregated results.
+- **Streaming**: Real-time, per-message latency data written to a file in a columnar JSON format. This allows for efficient, live monitoring of long-running tests. The format consists of a `headings` array and a `data` array containing value arrays for each message.
+- **Console Output**: User-friendly, color-coded summary on `stdout`.
+- **Detailed Logs**: Structured, timestamped logs written to a file or `stderr` for diagnostics.
 
 ## Installation
 
@@ -96,11 +97,23 @@ ipc-benchmark --concurrency 8
 ### Advanced Configuration
 
 ```bash
+# Run with a larger message size and for a fixed duration
+ipc-benchmark --message-size 65536 --duration 30s
+
 # Run with custom output file
 ipc-benchmark --output-file results.json
 
-# Enable streaming output during execution
-ipc-benchmark --streaming-output streaming_results.json
+# Enable streaming output to a custom file
+ipc-benchmark --streaming-output my_stream.json
+
+# Enable streaming output to the default file (benchmark_streaming_output.json)
+ipc-benchmark --streaming-output
+
+# Save detailed logs to a custom file
+ipc-benchmark --log-file /var/log/ipc-benchmark.log
+
+# Send detailed logs to stderr instead of a file
+ipc-benchmark --log-file stderr
 
 # Run only round-trip tests
 ipc-benchmark --round-trip --no-one-way
@@ -272,14 +285,25 @@ taskset -c 0-3 ipc-benchmark --concurrency 4
 3. **Memory Issues**: Reduce buffer sizes or concurrency for memory-constrained systems
 4. **Compilation Issues**: Ensure Rust toolchain is up to date
 
-### Debug Mode
+### Logging and Debugging
+
+The benchmark provides two log streams: a user-friendly console output and a detailed diagnostic log.
+
+- **Console Verbosity**: Control the level of detail on `stdout` with the `-v` flag.
+  - `-v`: Show `DEBUG` level messages.
+  - `-vv`: Show `TRACE` level messages for maximum detail.
+
+- **Diagnostic Logs**: By default, detailed logs are saved to `ipc_benchmark.log`. Use the `--log-file` flag to customize this.
 
 ```bash
-# Enable verbose logging
-RUST_LOG=debug ipc-benchmark --verbose
+# Run with DEBUG level console output and default log file
+./target/release/ipc-benchmark -v
 
-# Run with detailed tracing
-RUST_LOG=trace ipc-benchmark
+# Run with TRACE level console output and log to a custom file
+./target/release/ipc-benchmark -vv --log-file /tmp/ipc-debug.log
+
+# Send detailed diagnostic logs to stderr instead of a file
+./target/release/ipc-benchmark --log-file stderr
 ```
 
 ### Performance Issues
