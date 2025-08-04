@@ -91,7 +91,7 @@ async fn main() -> Result<()> {
         .init();
 
     info!("Starting IPC Benchmark Suite");
-    info!("Configuration: {:?}", args);
+    info!("{}", args);
 
     // Create benchmark configuration from parsed CLI arguments
     // This converts the user-friendly CLI format into the internal

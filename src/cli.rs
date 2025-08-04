@@ -39,6 +39,7 @@
 
 use clap::{builder::styling::{AnsiColor, Styles}, Parser, ValueEnum};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -561,5 +562,69 @@ mod tests {
             IpcMechanism::expand_all(vec![IpcMechanism::UnixDomainSocket, IpcMechanism::All]),
             all_mechanisms
         );
+    }
+}
+
+/// Provides a user-friendly, formatted summary of the benchmark configuration.
+///
+/// This implementation is used to display the settings at the start of a benchmark run,
+/// ensuring the user can verify the configuration at a glance. It handles special
+/// cases like expanding the "all" mechanism and showing which test types will run
+/// based on the default behavior (running both if neither is specified).
+impl fmt::Display for Args {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Expand the "all" mechanism to show the user the full list of tests that will be run.
+        let mechanisms = IpcMechanism::expand_all(self.mechanisms.clone());
+
+        // Determine the test types to be run, accounting for the default behavior.
+        // If neither --one-way nor --round-trip is specified, both tests are run by default.
+        // This logic ensures the displayed configuration matches the actual execution plan.
+        let test_types = {
+            let (one_way, round_trip) = if !self.one_way && !self.round_trip {
+                (true, true)
+            } else {
+                (self.one_way, self.round_trip)
+            };
+
+            let mut types = Vec::new();
+            if one_way {
+                types.push("One-Way");
+            }
+            if round_trip {
+                types.push("Round-Trip");
+            }
+            types.join(", ")
+        };
+
+        // Write the formatted configuration summary.
+        writeln!(f, "\nBenchmark Configuration:")?;
+        writeln!(f, "-----------------------------------------------------------------")?;
+        // Format the list of mechanisms into a user-friendly, comma-separated string.
+        // This is the idiomatic way to format a Vec of items that implement Display.
+        let mechanisms_str = mechanisms
+            .iter()
+            .map(|m| m.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(f, "  Mechanisms:         {}", mechanisms_str)?;
+        writeln!(f, "  Message Size:       {} bytes", self.message_size)?;
+
+        // Display duration if specified, as it takes precedence over iterations.
+        if let Some(duration) = self.duration {
+            writeln!(f, "  Test Duration:      {:?}", duration)?;
+        } else {
+            writeln!(f, "  Iterations:         {}", self.iterations)?;
+        }
+
+        writeln!(f, "  Warmup Iterations:  {}", self.warmup_iterations)?;
+        writeln!(f, "  Test Types:         {}", test_types)?;
+        // Display the path for the main JSON output file.
+        writeln!(f, "  Output File:        {}", self.output_file.display())?;
+        // Conditionally display the streaming output file if it has been specified.
+        if let Some(path) = self.streaming_output.as_ref() {
+            writeln!(f, "  Streaming Output:   {}", path.display())?;
+        }
+        writeln!(f, "  Continue on Error:  {}", self.continue_on_error)?;
+        write!(f, "-----------------------------------------------------------------")
     }
 }
