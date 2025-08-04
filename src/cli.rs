@@ -40,7 +40,7 @@
 use clap::{builder::styling::{AnsiColor, Styles}, Parser, ValueEnum};
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// IPC Benchmark Suite - A comprehensive tool for measuring IPC performance
@@ -178,6 +178,14 @@ pub struct Args {
     /// By default, only WARNING and ERROR messages are shown.
     #[arg(short, long, action = clap::ArgAction::Count, help_heading = "Output and Logging")]
     pub verbose: u8,
+
+    /// Path to the output log file for detailed diagnostics, or 'stderr'.
+    ///
+    /// Specifies the file where detailed, structured logs will be written.
+    /// Use the special value 'stderr' to direct logs to the standard error stream.
+    /// If not specified, logs default to 'ipc_benchmark.log' in the current directory.
+    #[arg(long, value_name = "PATH | stderr", help_heading = "Output and Logging")]
+    pub log_file: Option<String>,
 
     /// JSON output file for streaming results during execution
     ///
@@ -620,6 +628,10 @@ impl fmt::Display for Args {
         writeln!(f, "  Test Types:         {}", test_types)?;
         // Display the path for the main JSON output file.
         writeln!(f, "  Output File:        {}", self.output_file.display())?;
+        // Conditionally display the log file path if it has been specified.
+        if let Some(log_dest) = self.log_file.as_ref() {
+            writeln!(f, "  Log File:           {}", log_dest)?;
+        }
         // Conditionally display the streaming output file if it has been specified.
         if let Some(path) = self.streaming_output.as_ref() {
             writeln!(f, "  Streaming Output:   {}", path.display())?;
