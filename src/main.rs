@@ -39,8 +39,10 @@ use ipc_benchmark::{
 };
 use tracing::{error, info};
 use tracing_subscriber::{filter::LevelFilter, prelude::*};
-// Removed redundant import
 use anyhow::Result;
+
+mod logging;
+use logging::ColorizedFormatter;
 
 /// Main application entry point
 /// 
@@ -74,9 +76,7 @@ async fn main() -> Result<()> {
         Some(
             tracing_subscriber::fmt::layer()
                 .with_writer(std::io::stdout)
-                .with_target(false)
-                .with_level(false)
-                .without_time()
+                .event_format(ColorizedFormatter) // Use the custom formatter
                 .with_filter(LevelFilter::INFO),
         )
     } else {
