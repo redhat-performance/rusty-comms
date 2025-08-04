@@ -74,12 +74,31 @@ pub struct MessageLatencyRecord {
     /// Round-trip latency in nanoseconds (send to response received)
     /// None if this measurement is for one-way only
     pub round_trip_latency_ns: Option<u64>,
-    
-    /// Type of latency measurement performed
-    pub latency_type: LatencyType,
 }
 
 impl MessageLatencyRecord {
+    /// Column headings for columnar streaming output
+    pub const HEADINGS: &'static [&'static str] = &[
+        "timestamp_ns",
+        "message_id",
+        "mechanism",
+        "message_size",
+        "one_way_latency_ns",
+        "round_trip_latency_ns",
+    ];
+
+    /// Convert the record to a `serde_json::Value` array for columnar output
+    pub fn to_value_array(&self) -> Vec<serde_json::Value> {
+        vec![
+            serde_json::json!(self.timestamp_ns),
+            serde_json::json!(self.message_id),
+            serde_json::json!(self.mechanism),
+            serde_json::json!(self.message_size),
+            serde_json::json!(self.one_way_latency_ns),
+            serde_json::json!(self.round_trip_latency_ns),
+        ]
+    }
+
     /// Create a new message latency record with current timestamp
     ///
     /// ## Parameters
@@ -116,7 +135,6 @@ impl MessageLatencyRecord {
             message_size,
             one_way_latency_ns,
             round_trip_latency_ns,
-            latency_type,
         }
     }
 
@@ -150,7 +168,6 @@ impl MessageLatencyRecord {
             message_size,
             one_way_latency_ns: Some(one_way_latency.as_nanos() as u64),
             round_trip_latency_ns: Some(round_trip_latency.as_nanos() as u64),
-            latency_type: LatencyType::RoundTrip, // Use RoundTrip as default when both are present
         }
     }
 
@@ -171,14 +188,6 @@ impl MessageLatencyRecord {
         if other.round_trip_latency_ns.is_some() {
             self.round_trip_latency_ns = other.round_trip_latency_ns;
         }
-
-        // Update latency type based on what we have
-        self.latency_type = match (self.one_way_latency_ns.is_some(), self.round_trip_latency_ns.is_some()) {
-            (true, false) => LatencyType::OneWay,
-            (false, true) => LatencyType::RoundTrip,
-            (true, true) => LatencyType::RoundTrip, // Use RoundTrip as default when both present
-            (false, false) => self.latency_type, // Keep existing if neither
-        };
     }
 }
 
@@ -529,15 +538,18 @@ impl ResultsManager {
         self.per_message_streaming = true;
         self.first_record_streamed = true;
 
-        // Create/truncate the streaming file and initialize JSON array
+        // Create/truncate the streaming file and initialize columnar JSON object
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
             .open(&self.streaming_file.as_ref().unwrap())?;
 
-        // Write JSON array opening bracket
-        writeln!(file, "[")?;
+        // Write JSON object opening and headings array
+        writeln!(file, "{{")?;
+        let headings_json = serde_json::to_string(MessageLatencyRecord::HEADINGS)?;
+        writeln!(file, "  \"headings\": {},", headings_json)?;
+        write!(file, "  \"data\": [")?;
 
         debug!("Enabled per-message streaming to: {:?}", self.streaming_file);
         Ok(())
@@ -630,11 +642,15 @@ impl ResultsManager {
             // Add comma if not first record (proper JSON array formatting)
             if !self.first_record_streamed {
                 writeln!(file, ",")?;
+            } else {
+                // For the first record, add a newline to separate from the "data": [ line
+                writeln!(file)?;
             }
 
-            // Write JSON record
-            let json = serde_json::to_string(record)?;
-            write!(file, "{}", json)?;
+            // Write JSON array of values
+            let values = record.to_value_array();
+            let json = serde_json::to_string(&values)?;
+            write!(file, "    {}", json)?; // Indent for readability
             file.flush()?;
             
             self.first_record_streamed = false;
@@ -742,19 +758,25 @@ impl ResultsManager {
     pub async fn finalize(&mut self) -> Result<()> {
         info!("Finalizing benchmark results");
 
+        // Flush any remaining pending records before closing the file
+        self.flush_pending_records().await?;
+
         // Close streaming file if enabled
         if self.streaming_enabled {
             if let Some(ref streaming_file) = self.streaming_file {
                 let mut file = OpenOptions::new().append(true).open(streaming_file)?;
 
-                // Write JSON array closing bracket
-                writeln!(file, "\n]")?;
+                if self.per_message_streaming {
+                    // Close the columnar JSON format
+                    writeln!(file, "\n  ]")?;
+                    writeln!(file, "}}")?;
+                } else {
+                    // Close the simple JSON array of objects
+                    writeln!(file, "\n]")?;
+                }
                 file.flush()?;
             }
         }
-
-        // Flush any remaining pending records
-        self.flush_pending_records().await?;
 
         // Write final comprehensive results
         self.write_final_results()?;
