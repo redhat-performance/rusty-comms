@@ -192,7 +192,8 @@ pub struct Args {
     /// When specified, partial results are written to this file in real-time
     /// during benchmark execution. This allows monitoring progress for long-running
     /// tests and provides incremental results if the benchmark is interrupted.
-    #[arg(long)]
+    /// If the flag is provided without a path, it defaults to 'benchmark_streaming_output.json'.
+    #[arg(long, value_name = "FILE", num_args = 0..=1, default_missing_value = Some("benchmark_streaming_output.json"))]
     pub streaming_output: Option<PathBuf>,
 
     /// Percentiles to calculate for latency metrics
