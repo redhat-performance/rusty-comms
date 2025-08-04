@@ -37,7 +37,7 @@
 //! - **Output**: Result file paths and streaming options
 //! - **Advanced**: Buffer sizes, network settings, percentiles
 
-use clap::{Parser, ValueEnum};
+use clap::{builder::styling::{AnsiColor, Styles}, Parser, ValueEnum};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -65,8 +65,18 @@ use std::time::Duration;
 ///
 /// Both test types provide comprehensive statistics including percentiles,
 /// standard deviation, and throughput measurements.
+
+/// Defines the styles for the help message to replicate clap v3's appearance.
+fn styles() -> Styles {
+    Styles::styled()
+        .header(AnsiColor::Yellow.on_default())
+        .usage(AnsiColor::Yellow.on_default())
+        .literal(AnsiColor::Green.on_default())
+        .placeholder(AnsiColor::Green.on_default())
+}
+
 #[derive(Parser, Debug, Clone)]
-#[command(author, version, about, long_about = None)]
+#[command(author, version, about, long_about = None, styles = styles())]
 pub struct Args {
     /// IPC mechanisms to benchmark (space-separated: uds, shm, tcp, or all)
     ///
