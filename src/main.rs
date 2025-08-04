@@ -38,6 +38,7 @@ use ipc_benchmark::{
     results::ResultsManager,
 };
 use tracing::{error, info};
+use tracing_subscriber::{filter::LevelFilter, prelude::*};
 // Removed redundant import
 use anyhow::Result;
 
@@ -48,16 +49,46 @@ use anyhow::Result;
 /// required by the various IPC mechanisms being benchmarked.
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize structured logging with tracing
-    // The log level can be controlled via RUST_LOG environment variable
-    // Example: RUST_LOG=debug cargo run -- --mechanisms all
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
-
-    // Parse command-line arguments using clap derive API
-    // This includes validation of argument types and ranges
+    // Parse command-line arguments first, as they control logging behavior.
     let args = Args::parse();
+
+    // Configure diagnostic logging for stderr based on verbosity flags.
+    // The level is determined by the number of `-v` flags.
+    let stderr_level = match args.verbose {
+        0 => LevelFilter::WARN, // Default: only warnings and errors
+        1 => LevelFilter::INFO, // -v: info, warnings, and errors
+        2 => LevelFilter::DEBUG, // -vv: debug and above
+        _ => LevelFilter::TRACE, // -vvv and more: all levels
+    };
+
+    // This layer sends detailed, structured logs to stderr for debugging.
+    // Its verbosity is controlled by the `stderr_level` derived from `-v` flags.
+    let stderr_log = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_filter(stderr_level);
+
+    // This layer sends clean, user-facing output to stdout.
+    // It is only enabled if the --quiet flag is NOT present.
+    // It always shows INFO level messages, regardless of the -v flag.
+    let stdout_log = if !args.quiet {
+        Some(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stdout)
+                .with_target(false)
+                .with_level(false)
+                .without_time()
+                .with_filter(LevelFilter::INFO),
+        )
+    } else {
+        None
+    };
+
+    // Initialize the tracing subscriber by combining the layers.
+    // The `with` method on the registry conveniently handles the Option from the stdout layer.
+    tracing_subscriber::registry()
+        .with(stderr_log)
+        .with(stdout_log)
+        .init();
 
     info!("Starting IPC Benchmark Suite");
     info!("Configuration: {:?}", args);

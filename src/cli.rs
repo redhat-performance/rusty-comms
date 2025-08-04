@@ -65,8 +65,8 @@ use std::time::Duration;
 ///
 /// Both test types provide comprehensive statistics including percentiles,
 /// standard deviation, and throughput measurements.
-#[derive(Parser, Debug)]
-#[clap(version, about, long_about = None)]
+#[derive(Parser, Debug, Clone)]
+#[command(author, version, about, long_about = None)]
 pub struct Args {
     /// IPC mechanisms to benchmark (space-separated: uds, shm, tcp, or all)
     ///
@@ -151,13 +151,22 @@ pub struct Args {
     #[clap(long, default_value_t = false)]
     pub continue_on_error: bool,
 
-    /// Verbose output
+    /// Silence all user-facing informational output on stdout
     ///
-    /// Enables detailed logging output during benchmark execution.
-    /// Useful for debugging test issues or understanding execution flow.
-    /// Log level can also be controlled via the RUST_LOG environment variable.
-    #[clap(short = 'v', long, default_value_t = false)]
-    pub verbose: bool,
+    /// When this flag is present, only diagnostic logs on stderr will be shown.
+    /// This is useful for scripting or when piping results to another program.
+    #[clap(short = 'q', long, help_heading = "Output and Logging")]
+    pub quiet: bool,
+
+    /// Increase diagnostic log verbosity on stderr.
+    ///
+    /// Can be used multiple times to increase detail:
+    ///  -v: info
+    ///  -vv: debug
+    ///  -vvv: trace
+    /// By default, only WARNING and ERROR messages are shown.
+    #[clap(short, long, action = clap::ArgAction::Count, help_heading = "Output and Logging")]
+    pub verbose: u8,
 
     /// JSON output file for streaming results during execution
     ///
