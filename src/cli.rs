@@ -120,13 +120,12 @@ pub struct Args {
     #[arg(short = 'c', long, default_value_t = crate::defaults::CONCURRENCY)]
     pub concurrency: usize,
 
-    /// Output file for results (JSON format)
+    /// Path to the final JSON output file. If used without a path, defaults to 'benchmark_results.json'.
     ///
-    /// Specifies where to write the final benchmark results in structured JSON format.
-    /// The file contains comprehensive metrics, system information, and metadata
-    /// for reproducibility and analysis.
-    #[arg(short = 'o', long, default_value = crate::defaults::OUTPUT_FILE)]
-    pub output_file: PathBuf,
+    /// If the flag is not used, no final JSON file will be written, but a summary
+    /// will still be printed to the console.
+    #[arg(short, long, value_name = "FILE", num_args = 0..=1, default_missing_value = Some(crate::defaults::OUTPUT_FILE), help_heading = "Output and Logging")]
+    pub output_file: Option<PathBuf>,
 
     /// Include one-way latency measurements
     ///
@@ -632,8 +631,10 @@ impl fmt::Display for Args {
 
         writeln!(f, "  Warmup Iterations:  {}", self.warmup_iterations)?;
         writeln!(f, "  Test Types:         {}", test_types)?;
-        // Display the path for the main JSON output file.
-        writeln!(f, "  Output File:        {}", self.output_file.display())?;
+        // Conditionally display the path for the main JSON output file.
+        if let Some(output_dest) = self.output_file.as_ref() {
+            writeln!(f, "  Output File:        {}", output_dest.display())?;
+        }
         // Conditionally display the log file path if it has been specified.
         if let Some(log_dest) = self.log_file.as_ref() {
             writeln!(f, "  Log File:           {}", log_dest)?;

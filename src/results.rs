@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{debug, info};
 
@@ -414,10 +414,11 @@ pub struct SystemInfo {
 ///
 /// The streaming format allows monitoring of long-running benchmarks,
 /// while the final format provides complete analysis and comparison.
+#[derive(Debug)]
 pub struct ResultsManager {
-    /// Path for final results output
-    output_file: std::path::PathBuf,
-    
+    /// Optional path for final results output
+    output_file: Option<std::path::PathBuf>,
+
     /// Optional path for log file output
     log_file: Option<String>,
 
@@ -456,7 +457,8 @@ impl ResultsManager {
     /// Streaming is disabled by default and can be enabled separately.
     ///
     /// ## Parameters
-    /// - `output_file`: Path where final results will be written
+    /// - `output_file`: Optional path to the final JSON results file.
+    /// - `log_file`: Optional path to the log file.
     ///
     /// ## Returns
     /// - `Ok(ResultsManager)`: Configured manager ready for use
@@ -466,9 +468,9 @@ impl ResultsManager {
     ///
     /// The output file is not created until `finalize()` is called,
     /// allowing validation of the path without affecting existing files.
-    pub fn new(output_file: &Path, log_file: &Option<String>) -> Result<Self> {
+    pub fn new(output_file: &Option<PathBuf>, log_file: &Option<String>) -> Result<Self> {
         Ok(Self {
-            output_file: output_file.to_path_buf(),
+            output_file: output_file.clone(),
             log_file: log_file.clone(),
             streaming_file: None,
             streaming_csv_file: None,
@@ -845,35 +847,67 @@ impl ResultsManager {
         // Flush any remaining pending records before closing the file
         self.flush_pending_records().await?;
 
-        // Close streaming file if enabled
-        if self.streaming_enabled {
-            if let Some(ref streaming_file) = self.streaming_file {
-                let mut file = OpenOptions::new().append(true).open(streaming_file)?;
+        // Close streaming JSON file if enabled
+        self.close_streaming_json().await?;
 
-                if self.per_message_streaming {
-                    // Close the columnar JSON format
-                    writeln!(file, "\n  ]")?;
-                    writeln!(file, "}}")?;
-                } else {
-                    // Close the simple JSON array of objects
-                    writeln!(file, "\n]")?;
-                }
+        // Close streaming CSV file if enabled
+        self.close_streaming_csv().await?;
+
+        // Write final comprehensive results if an output file was specified
+        if self.output_file.is_some() {
+            self.write_final_results()?;
+        }
+
+        Ok(())
+    }
+
+    /// Closes the streaming JSON file, writing the final closing brackets.
+    ///
+    /// This function is called by `finalize()` to ensure that the output
+    /// is a valid JSON document. It opens the file in append mode and
+    /// writes the necessary closing syntax.
+    async fn close_streaming_json(&mut self) -> Result<()> {
+        if self.per_message_streaming {
+            if let Some(streaming_file) = &self.streaming_file {
+                info!("Closing streaming JSON file.");
+                let mut file = OpenOptions::new().append(true).open(streaming_file)?;
+                // Write the closing brackets for the JSON data array and the root object.
+                write!(file, "\n  ]\n}}\n")?;
+                file.flush()?;
+            }
+        } else if self.streaming_enabled {
+            // This handles the case of non-per-message streaming, which is a simple JSON array.
+            if let Some(streaming_file) = &self.streaming_file {
+                info!("Closing streaming JSON file.");
+                let mut file = OpenOptions::new().append(true).open(streaming_file)?;
+                // Write the closing bracket for the JSON array.
+                write!(file, "\n]\n")?;
                 file.flush()?;
             }
         }
+        Ok(())
+    }
 
-        // Write final comprehensive results
-        self.write_final_results()?;
-
-        info!("Results written to: {:?}", self.output_file);
+    /// Closes the streaming CSV file.
+    ///
+    /// This function is called by `finalize()` to ensure that all buffered
+    /// data is written to the file. Since each write is flushed immediately,
+    /// this function primarily serves for logging and symmetry.
+    async fn close_streaming_csv(&mut self) -> Result<()> {
+        if self.csv_streaming_enabled {
+            if let Some(path) = &self.streaming_csv_file {
+                info!("Finalizing streaming CSV file at {}", path.display());
+            }
+        }
         Ok(())
     }
 
     /// Flush any remaining pending records when streaming is complete
     ///
-    /// This method writes out any records that are still in the buffer when
-    /// streaming ends. This can happen when one test type completes before
-    /// the other in combined streaming mode.
+    /// In combined streaming mode, a one-way result might be recorded
+    /// before the corresponding round-trip result is available. This method
+    /// ensures that any such pending records are written out to the streaming
+    /// file before finalization.
     pub async fn flush_pending_records(&mut self) -> Result<()> {
         if self.both_tests_enabled && !self.pending_records.is_empty() {
             debug!("Flushing {} pending streaming records", self.pending_records.len());
@@ -912,20 +946,23 @@ impl ResultsManager {
     /// Results are written as pretty-printed JSON for human readability
     /// while maintaining machine parseability for analysis tools.
     fn write_final_results(&self) -> Result<()> {
-        let final_results = FinalBenchmarkResults {
-            metadata: BenchmarkMetadata {
-                version: crate::VERSION.to_string(),
-                timestamp: chrono::Utc::now(),
-                total_tests: self.results.len(),
-                system_info: self.get_system_info(),
-            },
-            results: self.results.clone(),
-            summary: self.calculate_overall_summary(),
-        };
+        if let Some(output_file) = &self.output_file {
+            info!("Writing final results to: {:?}", output_file);
+            let final_results = FinalBenchmarkResults {
+                metadata: BenchmarkMetadata {
+                    version: crate::VERSION.to_string(),
+                    timestamp: chrono::Utc::now(),
+                    total_tests: self.results.len(),
+                    system_info: self.get_system_info(),
+                },
+                results: self.results.clone(),
+                summary: self.calculate_overall_summary(),
+            };
 
-        let json = serde_json::to_string_pretty(&final_results)?;
-        std::fs::write(&self.output_file, json)?;
-
+            let json = serde_json::to_string_pretty(&final_results)?;
+            std::fs::write(output_file, json)?;
+            info!("Successfully wrote final results to: {:?}", output_file);
+        }
         Ok(())
     }
 
@@ -1119,7 +1156,9 @@ impl ResultsManager {
         println!("-----------------------------------------------------------------");
 
         println!("  Output Files Written:");
-        println!("    Final JSON Results:   {}", self.output_file.display());
+        if let Some(path) = &self.output_file {
+            println!("    Final JSON Results:   {}", path.display());
+        }
         if let Some(path) = &self.streaming_file {
             println!("    Streaming JSON:       {}", path.display());
         }
@@ -1629,9 +1668,10 @@ mod tests {
     #[test]
     fn test_results_manager_creation() {
         let temp_file = NamedTempFile::new().unwrap();
-        let manager = ResultsManager::new(temp_file.path()).unwrap();
+        let path = temp_file.path().to_path_buf();
+        let manager = ResultsManager::new(&Some(path.clone()), &None).unwrap();
 
-        assert_eq!(manager.output_file, temp_file.path());
+        assert_eq!(manager.output_file, Some(path));
         assert!(!manager.streaming_enabled);
         assert!(manager.results.is_empty());
     }

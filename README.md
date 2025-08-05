@@ -30,7 +30,7 @@ This benchmark suite provides a systematic way to evaluate the performance of va
 
 ### Output Formats
 
-- **JSON**: Machine-readable structured output for final, aggregated results.
+- **JSON**: Optional, machine-readable structured output for final, aggregated results. Generated only when the `--output-file` flag is used.
 - **Streaming JSON**: Real-time, per-message latency data written to a file in a columnar JSON format. This allows for efficient, live monitoring of long-running tests. The format consists of a `headings` array and a `data` array containing value arrays for each message.
 - **Streaming CSV**: Real-time, per-message latency data written to a standard CSV file. This format is ideal for easy import into spreadsheets and data analysis tools.
 - **Console Output**: User-friendly, color-coded summaries on `stdout`. Includes a configuration summary at startup and a detailed results summary upon completion.
@@ -73,7 +73,7 @@ The optimized binary will be available at `target/release/ipc-benchmark`.
 ### Basic Usage
 
 ```bash
-# Run benchmark with default settings
+# Run benchmark with default settings (prints summary to console, no file output)
 ipc-benchmark
 
 # Run with specific mechanisms
@@ -101,8 +101,11 @@ ipc-benchmark --concurrency 8
 # Run with a larger message size and for a fixed duration
 ipc-benchmark --message-size 65536 --duration 30s
 
-# Run with custom output file
-ipc-benchmark --output-file results.json
+# Create an output file with a custom name
+ipc-benchmark --output-file my_results.json
+
+# Create the default output file (benchmark_results.json)
+ipc-benchmark --output-file
 
 # Enable JSON streaming output to a custom file
 ipc-benchmark --streaming-output-json my_stream.json
@@ -266,6 +269,8 @@ The benchmark provides a human-readable summary directly in your terminal.
 
 **Configuration Summary (at startup):**
 
+This example shows a run where no final output file is being generated.
+
 ```
 Benchmark Configuration:
 -----------------------------------------------------------------
@@ -274,12 +279,12 @@ Benchmark Configuration:
   Iterations:         10000
   Warmup Iterations:  1000
   Test Types:         One-Way, Round-Trip
-  Output File:        benchmark_results.json
   Log File:             ipc_benchmark.log.2025-08-05
   Streaming CSV Output:    stream.csv
   Continue on Error:  true
 -----------------------------------------------------------------
 ```
+*Note: The `Output File` line will appear in the summary if the `--output-file` flag is used.*
 
 **Results Summary (at completion):**
 
@@ -289,7 +294,6 @@ This summary shows the performance metrics for each successful test and clearly 
 Benchmark Results:
 -----------------------------------------------------------------
   Output Files Written:
-    Final JSON Results:   benchmark_results.json
     Streaming CSV:        stream.csv
     Log File:             ipc_benchmark.log.2025-08-05
 -----------------------------------------------------------------
@@ -309,6 +313,7 @@ Mechanism: SharedMemory
     Error: Timed out waiting for client to connect
 -----------------------------------------------------------------
 ```
+*Note: The `Final JSON Results` line will appear in the "Output Files Written" section if the `--output-file` flag was used.*
 
 ## Performance Considerations
 
