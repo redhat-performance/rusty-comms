@@ -33,7 +33,7 @@ This benchmark suite provides a systematic way to evaluate the performance of va
 - **JSON**: Machine-readable structured output for final, aggregated results.
 - **Streaming JSON**: Real-time, per-message latency data written to a file in a columnar JSON format. This allows for efficient, live monitoring of long-running tests. The format consists of a `headings` array and a `data` array containing value arrays for each message.
 - **Streaming CSV**: Real-time, per-message latency data written to a standard CSV file. This format is ideal for easy import into spreadsheets and data analysis tools.
-- **Console Output**: User-friendly, color-coded summary on `stdout`.
+- **Console Output**: User-friendly, color-coded summaries on `stdout`. Includes a configuration summary at startup and a detailed results summary upon completion.
 - **Detailed Logs**: Structured, timestamped logs written to a file or `stderr` for diagnostics.
 
 ## Installation
@@ -121,6 +121,9 @@ ipc-benchmark --log-file /var/log/ipc-benchmark.log
 
 # Send detailed logs to stderr instead of a file
 ipc-benchmark --log-file stderr
+
+# Continue running tests even if one mechanism fails
+ipc-benchmark -m all --continue-on-error
 
 # Run only round-trip tests
 ipc-benchmark --round-trip --no-one-way
@@ -255,6 +258,56 @@ The benchmark generates comprehensive JSON output with the following structure:
     "lowest_latency_mechanism": "UnixDomainSocket"
   }
 }
+```
+
+### Console Output
+
+The benchmark provides a human-readable summary directly in your terminal.
+
+**Configuration Summary (at startup):**
+
+```
+Benchmark Configuration:
+-----------------------------------------------------------------
+  Mechanisms:         UnixDomainSocket, SharedMemory
+  Message Size:       1024 bytes
+  Iterations:         10000
+  Warmup Iterations:  1000
+  Test Types:         One-Way, Round-Trip
+  Output File:        benchmark_results.json
+  Log File:             ipc_benchmark.log.2025-08-05
+  Streaming CSV Output:    stream.csv
+  Continue on Error:  true
+-----------------------------------------------------------------
+```
+
+**Results Summary (at completion):**
+
+This summary shows the performance metrics for each successful test and clearly marks any tests that failed.
+
+```
+Benchmark Results:
+-----------------------------------------------------------------
+  Output Files Written:
+    Final JSON Results:   benchmark_results.json
+    Streaming CSV:        stream.csv
+    Log File:             ipc_benchmark.log.2025-08-05
+-----------------------------------------------------------------
+Mechanism: UnixDomainSocket
+  Message Size: 1024 bytes
+  Latency:
+      Mean: 3.15 us, P95: 5.21 us, P99: 8.43 us
+      Min:  1.50 us, Max: 45.12 us
+  Throughput:
+      Average: 310.50 MB/s, Peak: 312.80 MB/s
+  Totals:
+      Messages: 20000, Data: 19.53 MB
+-----------------------------------------------------------------
+Mechanism: SharedMemory
+  Message Size: 1024 bytes
+  Status: FAILED
+    Error: Timed out waiting for client to connect
+-----------------------------------------------------------------
 ```
 
 ## Performance Considerations

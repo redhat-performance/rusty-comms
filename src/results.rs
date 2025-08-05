@@ -29,10 +29,16 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{debug, info};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum BenchmarkStatus {
+    Success,
+    Failure(String),
+}
 
 /// Per-message latency record for streaming output
 ///
@@ -228,6 +234,9 @@ pub struct BenchmarkResults {
     /// The IPC mechanism that was tested
     pub mechanism: IpcMechanism,
     
+    /// The outcome of the benchmark test
+    pub status: BenchmarkStatus,
+    
     /// Configuration parameters used for this test
     pub test_config: TestConfiguration,
     
@@ -409,6 +418,9 @@ pub struct ResultsManager {
     /// Path for final results output
     output_file: std::path::PathBuf,
     
+    /// Optional path for log file output
+    log_file: Option<String>,
+
     /// Optional path for streaming results output
     streaming_file: Option<std::path::PathBuf>,
     
@@ -454,9 +466,10 @@ impl ResultsManager {
     ///
     /// The output file is not created until `finalize()` is called,
     /// allowing validation of the path without affecting existing files.
-    pub fn new(output_file: &Path) -> Result<Self> {
+    pub fn new(output_file: &Path, log_file: &Option<String>) -> Result<Self> {
         Ok(Self {
             output_file: output_file.to_path_buf(),
+            log_file: log_file.clone(),
             streaming_file: None,
             streaming_csv_file: None,
             results: Vec::new(),
@@ -1095,9 +1108,109 @@ impl ResultsManager {
     pub fn is_combined_streaming_enabled(&self) -> bool {
         self.both_tests_enabled && self.per_message_streaming && self.streaming_enabled
     }
+
+    /// Prints a human-readable summary of the benchmark run to the console.
+    ///
+    /// This method formats a summary that is displayed at the end of the
+    /// benchmark execution. It lists all the output files that were generated
+    /// during the run, matching the format of the configuration summary.
+    pub fn print_summary(&self) -> Result<()> {
+        println!("\nBenchmark Results:");
+        println!("-----------------------------------------------------------------");
+
+        println!("  Output Files Written:");
+        println!("    Final JSON Results:   {}", self.output_file.display());
+        if let Some(path) = &self.streaming_file {
+            println!("    Streaming JSON:       {}", path.display());
+        }
+        if let Some(path) = &self.streaming_csv_file {
+            println!("    Streaming CSV:        {}", path.display());
+        }
+        if let Some(path) = &self.log_file {
+            println!("    Log File:             {}", path);
+        }
+        println!("-----------------------------------------------------------------");
+
+        if self.results.is_empty() {
+            println!("No benchmark results to display.");
+        } else {
+            for result in &self.results {
+                println!("Mechanism: {}", result.mechanism);
+                println!("  Message Size: {} bytes", result.test_config.message_size);
+
+                match &result.status {
+                    BenchmarkStatus::Success => {
+                        Self::print_summary_details(&result.summary, "  ");
+                    }
+                    BenchmarkStatus::Failure(error_msg) => {
+                        println!("  Status: FAILED");
+                        println!("    Error: {}", error_msg);
+                    }
+                }
+                println!("-----------------------------------------------------------------");
+            }
+        }
+
+        io::stdout().flush()?;
+        Ok(())
+    }
+
+    /// Helper function to format and print the details from a BenchmarkSummary.
+    fn print_summary_details(summary: &BenchmarkSummary, indent: &str) {
+        if summary.average_latency_ns.is_some() {
+            println!("{}Latency:", indent);
+            println!(
+                "{}{:<8} Mean: {}, P95: {}, P99: {}",
+                indent,
+                "  ",
+                summary.average_latency_ns.map(|v| format_latency(v as u64)).unwrap_or_else(|| "N/A".to_string()),
+                summary.p95_latency_ns.map(format_latency).unwrap_or_else(|| "N/A".to_string()),
+                summary.p99_latency_ns.map(format_latency).unwrap_or_else(|| "N/A".to_string())
+            );
+            println!(
+                "{}{:<8} Min:  {}, Max: {}",
+                indent,
+                "  ",
+                summary.min_latency_ns.map(format_latency).unwrap_or_else(|| "N/A".to_string()),
+                summary.max_latency_ns.map(format_latency).unwrap_or_else(|| "N/A".to_string())
+            );
+        }
+
+        println!("{}Throughput:", indent);
+        // Note: The summary field is named _mbps, but the calculation in update_summary
+        // produces MB/s (Megabytes per second). The label reflects the calculation.
+        println!(
+            "{}{:<8} Average: {:.2} MB/s, Peak: {:.2} MB/s",
+            indent,
+            "  ",
+            summary.average_throughput_mbps,
+            summary.peak_throughput_mbps
+        );
+
+        println!("{}Totals:", indent);
+        println!(
+            "{}{:<8} Messages: {}, Data: {:.2} MB",
+            indent,
+            "  ",
+            summary.total_messages_sent,
+            summary.total_bytes_transferred as f64 / (1024.0 * 1024.0)
+        );
+    }
 }
 
-/// Final benchmark results structure
+/// Helper function to format latency values (in nanoseconds) into a
+/// human-readable string (us, ms).
+fn format_latency(ns: u64) -> String {
+    if ns >= 1_000_000 {
+        format!("{:.2} ms", ns as f64 / 1_000_000.0)
+    } else if ns >= 1_000 {
+        format!("{:.2} us", ns as f64 / 1_000.0)
+    } else {
+        format!("{} ns", ns)
+    }
+}
+
+/// Final benchmark results
 ///
 /// This structure represents the complete output of the benchmark suite,
 /// including all individual results, metadata, and cross-mechanism analysis.
@@ -1267,6 +1380,7 @@ impl BenchmarkResults {
 
         Self {
             mechanism,
+            status: BenchmarkStatus::Success,
             test_config,
             one_way_results: None,
             round_trip_results: None,
@@ -1275,6 +1389,11 @@ impl BenchmarkResults {
             test_duration: Duration::ZERO,
             system_info: SystemInfo::default(),
         }
+    }
+
+    /// Mark the benchmark result as a failure
+    pub fn set_failure(&mut self, error_message: String) {
+        self.status = BenchmarkStatus::Failure(error_message);
     }
 
     /// Add one-way test results

@@ -35,7 +35,7 @@ use clap::Parser;
 use ipc_benchmark::{
     benchmark::{BenchmarkConfig, BenchmarkRunner},
     cli::{Args, IpcMechanism},
-    results::ResultsManager,
+    results::{BenchmarkResults, ResultsManager},
 };
 use tracing::{error, info};
 use tracing_subscriber::{filter::LevelFilter, prelude::*, Layer};
@@ -133,13 +133,28 @@ async fn main() -> Result<()> {
     // configuration structure used by the benchmark engine
     let config = BenchmarkConfig::from_args(&args)?;
 
+    // Determine the actual log file path, accounting for daily rotation.
+    // This ensures the summary report shows the correct filename, which includes
+    // the date suffix added by the rolling file appender.
+    let log_file_for_manager = match args.log_file.as_deref() {
+        Some("stderr") => Some("stderr".to_string()),
+        Some(path_str) => {
+            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+            Some(format!("{}.{}", path_str, today))
+        }
+        None => {
+            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+            Some(format!("ipc_benchmark.log.{}", today))
+        }
+    };
+
     // Initialize results manager for handling output
     // This manages both final JSON output and optional streaming results
-    let mut results_manager = ResultsManager::new(&args.output_file)?;
+    let mut results_manager = ResultsManager::new(&args.output_file, &log_file_for_manager)?;
 
     // Enable per-message latency streaming if specified
-    // Per-message streaming captures individual message latency values with timestamps
-    // for real-time monitoring of latency characteristics during execution
+    // Per-message streaming captures individual message latency values with
+    // timestamps for real-time monitoring of latency characteristics during execution
     if let Some(ref streaming_file) = args.streaming_output_json {
         info!("Enabling per-message latency streaming to: {:?}", streaming_file);
         
@@ -165,31 +180,47 @@ async fn main() -> Result<()> {
     // all available IPC mechanisms for comprehensive testing
     let mechanisms = IpcMechanism::expand_all(args.mechanisms.clone());
 
-    // Run benchmarks for each specified IPC mechanism
-    // Each mechanism is tested independently with proper resource cleanup
-    for (i, mechanism) in mechanisms.iter().enumerate() {
-        info!("Running benchmark for mechanism: {:?}", mechanism);
-
-        // Add delay between mechanisms to allow proper resource cleanup
-        // This prevents resource conflicts and ensures clean test environments
-        // The delay is particularly important for:
-        // - Socket file cleanup (Unix Domain Sockets)
-        // - Shared memory segment cleanup
-        // - Port binding conflicts (TCP)
-        // - Message queue cleanup (POSIX Message Queues)
-        if i > 0 {
-            info!("Waiting for resource cleanup...");
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        }
-
-        // Execute benchmark for this mechanism with comprehensive error handling
-        match run_benchmark_for_mechanism(&config, mechanism, &mut results_manager).await {
-            Ok(_) => info!("Benchmark completed successfully for {:?}", mechanism),
+    // Run benchmarks for each selected mechanism.
+    // This loop iterates through the list of IPC mechanisms to be tested,
+    // executing the benchmark for each one sequentially.
+    for &mechanism in &mechanisms {
+        // Execute the benchmark for the current mechanism and handle the result.
+        // The `run_benchmark_for_mechanism` function encapsulates all logic for a single test.
+        match run_benchmark_for_mechanism(&config, &mechanism, &mut results_manager).await {
+            Ok(()) => {
+                // On success, the `run_benchmark_for_mechanism` function has already added
+                // the results to the `results_manager`. No further action is needed here.
+            }
             Err(e) => {
-                error!("Benchmark failed for {:?}: {}", mechanism, e);
-                // Depending on configuration, either fail fast or continue
-                // This allows users to get partial results even if one mechanism fails
-                if !args.continue_on_error {
+                // Handle benchmark failure for a specific mechanism.
+                let error_msg = e.to_string();
+                error!(
+                    "Benchmark for {} failed: {}. {}",
+                    mechanism,
+                    error_msg,
+                    if args.continue_on_error {
+                        "Continuing to next mechanism."
+                    } else {
+                        "Aborting."
+                    }
+                );
+
+                // If --continue-on-error is enabled, record the failure and proceed.
+                // Otherwise, propagate the error and terminate the application.
+                if args.continue_on_error {
+                    // Create a `BenchmarkResults` object with a `Failure` status
+                    // to ensure the failed test is included in the final report.
+                    let mut failed_result = BenchmarkResults::new(
+                        mechanism,
+                        config.message_size,
+                        config.concurrency,
+                        config.iterations,
+                        config.duration,
+                    );
+                    failed_result.set_failure(error_msg);
+                    results_manager.add_results(failed_result).await?;
+                } else {
+                    // If not continuing on error, abort the entire benchmark suite.
                     return Err(e);
                 }
             }
@@ -200,6 +231,11 @@ async fn main() -> Result<()> {
     // This performs final aggregation, calculates summary statistics,
     // and writes the comprehensive results to the output file
     results_manager.finalize().await?;
+
+    // Print a human-readable summary of the results to the console
+    if let Err(e) = results_manager.print_summary() {
+        error!("Failed to print results summary: {}", e);
+    }
 
     info!("IPC Benchmark Suite completed successfully");
     Ok(())
