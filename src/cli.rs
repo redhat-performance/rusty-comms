@@ -31,10 +31,10 @@
 //! ## Argument Categories
 //!
 //! Arguments are organized into logical groups:
-//! - **Core Options**: Primary test configuration (mechanisms, size, iterations)
+//! - **Options**: Primary test configuration (mechanisms, size, iterations)
 //! - **Timing**: Duration vs. iteration-based testing
 //! - **Concurrency**: Multi-threaded test configuration  
-//! - **Output**: Result file paths and streaming options
+//! - **Output and Logging**: Result file paths and streaming options
 //! - **Advanced**: Buffer sizes, network settings, percentiles
 
 use clap::{builder::styling::{AnsiColor, Styles}, Parser, ValueEnum};
@@ -76,6 +76,12 @@ fn styles() -> Styles {
         .placeholder(AnsiColor::Green.on_default())
 }
 
+// Define constants for help headings to ensure consistency.
+const TIMING: &str = "Timing";
+const CONCURRENCY: &str = "Concurrency";
+const OUTPUT_AND_LOGGING: &str = "Output and Logging";
+const ADVANCED: &str = "Advanced";
+
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None, styles = styles())]
 pub struct Args {
@@ -84,7 +90,7 @@ pub struct Args {
     /// Multiple mechanisms can be specified to run sequential tests.
     /// The "all" option expands to all available mechanisms for comprehensive testing.
     /// Each mechanism is tested independently with proper resource cleanup between runs.
-    #[arg(short = 'm', value_enum, default_values_t = vec![IpcMechanism::UnixDomainSocket], help_heading = "Core Options", num_args = 1..)]
+    #[arg(short = 'm', value_enum, default_values_t = vec![IpcMechanism::UnixDomainSocket], num_args = 1..)]
     pub mechanisms: Vec<IpcMechanism>,
 
     /// Message size in bytes
@@ -100,7 +106,7 @@ pub struct Args {
     /// Controls how many messages are sent during the test when using
     /// iteration-based testing. Higher values provide better statistical
     /// accuracy but increase test duration. Ignored when --duration is specified.
-    #[arg(short = 'i', long, default_value_t = crate::defaults::ITERATIONS)]
+    #[arg(short = 'i', long, default_value_t = crate::defaults::ITERATIONS, help_heading = TIMING)]
     pub iterations: usize,
 
     /// Duration to run the benchmark (takes precedence over iterations)
@@ -108,7 +114,7 @@ pub struct Args {
     /// When specified, tests run for a fixed time period rather than a fixed
     /// number of iterations. Supports human-readable formats like "30s", "5m", "1h".
     /// This mode is useful for consistent test durations across different mechanisms.
-    #[arg(short = 'd', long, value_parser = parse_duration)]
+    #[arg(short = 'd', long, value_parser = parse_duration, help_heading = TIMING)]
     pub duration: Option<Duration>,
 
     /// Number of concurrent processes/threads
@@ -117,14 +123,14 @@ pub struct Args {
     /// scalability characteristics but may introduce resource contention.
     /// Note: Some mechanisms (like shared memory) may force concurrency to 1
     /// to avoid race conditions in the current implementation.
-    #[arg(short = 'c', long, default_value_t = crate::defaults::CONCURRENCY)]
+    #[arg(short = 'c', long, default_value_t = crate::defaults::CONCURRENCY, help_heading = CONCURRENCY)]
     pub concurrency: usize,
 
     /// Path to the final JSON output file. If used without a path, defaults to 'benchmark_results.json'.
     ///
     /// If the flag is not used, no final JSON file will be written, but a summary
     /// will still be printed to the console.
-    #[arg(short, long, value_name = "FILE", num_args = 0..=1, default_missing_value = Some(crate::defaults::OUTPUT_FILE), help_heading = "Output and Logging")]
+    #[arg(short, long, value_name = "FILE", num_args = 0..=1, default_missing_value = Some(crate::defaults::OUTPUT_FILE), help_heading = OUTPUT_AND_LOGGING)]
     pub output_file: Option<PathBuf>,
 
     /// Include one-way latency measurements
@@ -150,7 +156,7 @@ pub struct Args {
     /// Specifies how many messages to send before starting measurement.
     /// Warmup helps stabilize performance by allowing caches to fill,
     /// connections to establish, and OS buffers to optimize.
-    #[arg(short = 'w', long, default_value_t = crate::defaults::WARMUP_ITERATIONS)]
+    #[arg(short = 'w', long, default_value_t = crate::defaults::WARMUP_ITERATIONS, help_heading = TIMING)]
     pub warmup_iterations: usize,
 
     /// Continue running other benchmarks even if one fails
@@ -158,14 +164,14 @@ pub struct Args {
     /// By default, the suite stops on the first benchmark failure.
     /// This flag allows testing to continue with remaining mechanisms,
     /// useful for comprehensive testing even when some mechanisms fail.
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, help_heading = ADVANCED)]
     pub continue_on_error: bool,
 
     /// Silence all user-facing informational output on stdout
     ///
     /// When this flag is present, only diagnostic logs on stderr will be shown.
     /// This is useful for scripting or when piping results to another program.
-    #[arg(short = 'q', long, help_heading = "Output and Logging")]
+    #[arg(short = 'q', long, help_heading = OUTPUT_AND_LOGGING)]
     pub quiet: bool,
 
     /// Increase diagnostic log verbosity on stderr.
@@ -175,7 +181,7 @@ pub struct Args {
     ///  -vv: debug
     ///  -vvv: trace
     /// By default, only WARNING and ERROR messages are shown.
-    #[arg(short, long, action = clap::ArgAction::Count, help_heading = "Output and Logging")]
+    #[arg(short, long, action = clap::ArgAction::Count, help_heading = OUTPUT_AND_LOGGING)]
     pub verbose: u8,
 
     /// Path to the output log file for detailed diagnostics, or 'stderr'.
@@ -183,21 +189,21 @@ pub struct Args {
     /// Specifies the file where detailed, structured logs will be written.
     /// Use the special value 'stderr' to direct logs to the standard error stream.
     /// If not specified, logs default to 'ipc_benchmark.log' in the current directory.
-    #[arg(long, value_name = "PATH | stderr", help_heading = "Output and Logging")]
+    #[arg(long, value_name = "PATH | stderr", help_heading = OUTPUT_AND_LOGGING)]
     pub log_file: Option<String>,
 
     /// JSON output file for streaming results. If used without a path, defaults to 'benchmark_streaming_output.json'.
     ///
     /// Writes partial results to this file in real-time during the benchmark.
     /// This allows for progress monitoring and provides incremental results.
-    #[arg(long, value_name = "FILE", num_args = 0..=1, default_missing_value = Some("benchmark_streaming_output.json"))]
+    #[arg(long, value_name = "FILE", num_args = 0..=1, default_missing_value = Some("benchmark_streaming_output.json"), help_heading = OUTPUT_AND_LOGGING)]
     pub streaming_output_json: Option<PathBuf>,
 
     /// CSV output file for streaming results. If used without a path, defaults to 'benchmark_streaming_output.csv'.
     ///
     /// Writes partial results to this file in real-time during the benchmark,
     /// providing incremental results in CSV format.
-    #[arg(long, value_name = "FILE", num_args = 0..=1, default_missing_value = Some("benchmark_streaming_output.csv"))]
+    #[arg(long, value_name = "FILE", num_args = 0..=1, default_missing_value = Some("benchmark_streaming_output.csv"), help_heading = OUTPUT_AND_LOGGING)]
     pub streaming_output_csv: Option<PathBuf>,
 
     /// Percentiles to calculate for latency metrics
@@ -205,7 +211,7 @@ pub struct Args {
     /// Specifies which percentile values to calculate and report in results.
     /// Common values include P50 (median), P95, P99, and P99.9.
     /// Multiple values can be specified to get a comprehensive latency distribution view.
-    #[arg(long, default_values_t = vec![50.0, 95.0, 99.0, 99.9])]
+    #[arg(long, default_values_t = vec![50.0, 95.0, 99.0, 99.9], help_heading = ADVANCED)]
     pub percentiles: Vec<f64>,
 
     /// Buffer size for message queues and shared memory
@@ -213,7 +219,7 @@ pub struct Args {
     /// Controls the size of internal buffers used by IPC mechanisms.
     /// Larger buffers can improve throughput but increase memory usage.
     /// The optimal size depends on message size and concurrency level.
-    #[arg(long, default_value_t = 8192)]
+    #[arg(long, default_value_t = 8192, help_heading = ADVANCED)]
     pub buffer_size: usize,
 
     /// Host address for TCP sockets
@@ -221,7 +227,7 @@ pub struct Args {
     /// Specifies the network interface to bind for TCP socket tests.
     /// Use "127.0.0.1" for localhost testing or "0.0.0.0" to accept
     /// connections from any interface (useful for distributed testing).
-    #[arg(long, default_value = "127.0.0.1")]
+    #[arg(long, default_value = "127.0.0.1", help_heading = ADVANCED)]
     pub host: String,
 
     /// Port for TCP sockets
@@ -229,7 +235,7 @@ pub struct Args {
     /// Specifies the TCP port number for socket communication.
     /// The benchmark will automatically use unique ports for each test
     /// to avoid conflicts when testing multiple mechanisms.
-    #[arg(long, default_value_t = 8080)]
+    #[arg(long, default_value_t = 8080, help_heading = ADVANCED)]
     pub port: u16,
 }
 
