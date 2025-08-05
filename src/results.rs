@@ -107,15 +107,26 @@ impl MessageLatencyRecord {
 
     /// Convert the record to a CSV record string
     pub fn to_csv_record(&self) -> String {
-        format!(
-            "{},{},{},{},{},{}",
-            self.timestamp_ns,
-            self.message_id,
-            self.mechanism,
-            self.message_size,
-            self.one_way_latency_ns.map_or("".to_string(), |v| v.to_string()),
-            self.round_trip_latency_ns.map_or("".to_string(), |v| v.to_string())
+        use std::fmt::Write;
+        // Pre-allocating a reasonable capacity avoids reallocations.
+        let mut s = String::with_capacity(128);
+
+        // Writing to a String can't fail, so .unwrap() is safe.
+        write!(
+            &mut s,
+            "{},{},{},{},",
+            self.timestamp_ns, self.message_id, self.mechanism, self.message_size
         )
+        .unwrap();
+
+        if let Some(latency) = self.one_way_latency_ns {
+            write!(&mut s, "{}", latency).unwrap();
+        }
+        s.push(',');
+        if let Some(latency) = self.round_trip_latency_ns {
+            write!(&mut s, "{}", latency).unwrap();
+        }
+        s
     }
 
     /// Create a new message latency record with current timestamp

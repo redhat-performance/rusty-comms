@@ -133,17 +133,19 @@ async fn main() -> Result<()> {
     // configuration structure used by the benchmark engine
     let config = BenchmarkConfig::from_args(&args)?;
 
+    const DATE_FORMAT: &str = "%Y-%m-%d";
+
     // Determine the actual log file path, accounting for daily rotation.
     // This ensures the summary report shows the correct filename, which includes
     // the date suffix added by the rolling file appender.
     let log_file_for_manager = match args.log_file.as_deref() {
         Some("stderr") => Some("stderr".to_string()),
         Some(path_str) => {
-            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+            let today = chrono::Local::now().format(DATE_FORMAT).to_string();
             Some(format!("{}.{}", path_str, today))
         }
         None => {
-            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+            let today = chrono::Local::now().format(DATE_FORMAT).to_string();
             Some(format!("ipc_benchmark.log.{}", today))
         }
     };

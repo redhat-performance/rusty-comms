@@ -1,8 +1,42 @@
-// filepath: /home/dblack/git/redhat-performance/rusty-comms/src/logging.rs
+//! # Logging Configuration Module
+//!
+//! This module provides centralized logging setup and management for the
+//! benchmark suite. It configures the `tracing` framework to provide
+//! flexible, structured, and performant logging to both the console and
+//! optional log files.
+//!
+//! ## Key Features
+//!
+//! - **Dual Output**: Supports simultaneous logging to both the console
+//!   (stdout) and a dedicated log file.
+//! - **Level Control**: Allows independent configuration of log levels for
+//!   console and file outputs.
+//! - **Dynamic Filtering**: Uses `tracing_subscriber` to allow log levels
+//!   to be set via environment variables (e.g., `RUST_LOG`).
+//! - **Human-Readable Format**: Configures a clean, readable format for
+//!   console output to improve developer experience.
+//!
+//! ## Usage
+//!
+//! The primary function, `init_logging`, should be called once at the
+//! beginning of the application's `main` function to set up the global
+//! logger.
+//!
+//! ```rust,ignore
+//! // In main.rs
+//! use rusty_comms::logging;
+//!
+//! fn main() -> anyhow::Result<()> {
+//!     let log_file = Some("benchmark.log".to_string());
+//!     logging::init_logging(log_level, &log_file)?;
+//!     // ... rest of the application
+//!     Ok(())
+//! }
+//! ```
+
 use colored::*;
 use std::fmt;
 use tracing::{Event, Level, Subscriber};
-// Correct the import paths for tracing_subscriber items.
 use tracing_subscriber::fmt::FmtContext;
 use tracing_subscriber::fmt::format::{FormatEvent, FormatFields, Writer};
 use tracing_subscriber::registry::LookupSpan;
