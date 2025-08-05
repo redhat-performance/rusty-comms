@@ -140,7 +140,7 @@ async fn main() -> Result<()> {
     // Enable per-message latency streaming if specified
     // Per-message streaming captures individual message latency values with timestamps
     // for real-time monitoring of latency characteristics during execution
-    if let Some(ref streaming_file) = args.streaming_output {
+    if let Some(ref streaming_file) = args.streaming_output_json {
         info!("Enabling per-message latency streaming to: {:?}", streaming_file);
         
         // Check if both test types are enabled for combined streaming
@@ -152,6 +152,12 @@ async fn main() -> Result<()> {
         } else {
             results_manager.enable_per_message_streaming(streaming_file)?;
         }
+    }
+
+    // Enable CSV latency streaming if specified
+    if let Some(ref streaming_file) = args.streaming_output_csv {
+        info!("Enabling CSV latency streaming to: {:?}", streaming_file);
+        results_manager.enable_csv_streaming(streaming_file)?;
     }
 
     // Get expanded mechanisms (handles 'all' expansion)

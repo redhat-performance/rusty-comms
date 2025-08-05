@@ -31,7 +31,8 @@ This benchmark suite provides a systematic way to evaluate the performance of va
 ### Output Formats
 
 - **JSON**: Machine-readable structured output for final, aggregated results.
-- **Streaming**: Real-time, per-message latency data written to a file in a columnar JSON format. This allows for efficient, live monitoring of long-running tests. The format consists of a `headings` array and a `data` array containing value arrays for each message.
+- **Streaming JSON**: Real-time, per-message latency data written to a file in a columnar JSON format. This allows for efficient, live monitoring of long-running tests. The format consists of a `headings` array and a `data` array containing value arrays for each message.
+- **Streaming CSV**: Real-time, per-message latency data written to a standard CSV file. This format is ideal for easy import into spreadsheets and data analysis tools.
 - **Console Output**: User-friendly, color-coded summary on `stdout`.
 - **Detailed Logs**: Structured, timestamped logs written to a file or `stderr` for diagnostics.
 
@@ -103,11 +104,17 @@ ipc-benchmark --message-size 65536 --duration 30s
 # Run with custom output file
 ipc-benchmark --output-file results.json
 
-# Enable streaming output to a custom file
-ipc-benchmark --streaming-output my_stream.json
+# Enable JSON streaming output to a custom file
+ipc-benchmark --streaming-output-json my_stream.json
 
-# Enable streaming output to the default file (benchmark_streaming_output.json)
-ipc-benchmark --streaming-output
+# Enable JSON streaming output to the default file (benchmark_streaming_output.json)
+ipc-benchmark --streaming-output-json
+
+# Enable CSV streaming output to a custom file
+ipc-benchmark --streaming-output-csv my_stream.csv
+
+# Enable CSV streaming output to the default file (benchmark_streaming_output.csv)
+ipc-benchmark --streaming-output-csv
 
 # Save detailed logs to a custom file
 ipc-benchmark --log-file /var/log/ipc-benchmark.log

@@ -187,14 +187,19 @@ pub struct Args {
     #[arg(long, value_name = "PATH | stderr", help_heading = "Output and Logging")]
     pub log_file: Option<String>,
 
-    /// JSON output file for streaming results during execution
+    /// JSON output file for streaming results. If used without a path, defaults to 'benchmark_streaming_output.json'.
     ///
-    /// When specified, partial results are written to this file in real-time
-    /// during benchmark execution. This allows monitoring progress for long-running
-    /// tests and provides incremental results if the benchmark is interrupted.
-    /// If the flag is provided without a path, it defaults to 'benchmark_streaming_output.json'.
+    /// Writes partial results to this file in real-time during the benchmark.
+    /// This allows for progress monitoring and provides incremental results.
     #[arg(long, value_name = "FILE", num_args = 0..=1, default_missing_value = Some("benchmark_streaming_output.json"))]
-    pub streaming_output: Option<PathBuf>,
+    pub streaming_output_json: Option<PathBuf>,
+
+    /// CSV output file for streaming results. If used without a path, defaults to 'benchmark_streaming_output.csv'.
+    ///
+    /// Writes partial results to this file in real-time during the benchmark,
+    /// providing incremental results in CSV format.
+    #[arg(long, value_name = "FILE", num_args = 0..=1, default_missing_value = Some("benchmark_streaming_output.csv"))]
+    pub streaming_output_csv: Option<PathBuf>,
 
     /// Percentiles to calculate for latency metrics
     ///
@@ -634,8 +639,12 @@ impl fmt::Display for Args {
             writeln!(f, "  Log File:           {}", log_dest)?;
         }
         // Conditionally display the streaming output file if it has been specified.
-        if let Some(path) = self.streaming_output.as_ref() {
-            writeln!(f, "  Streaming Output:   {}", path.display())?;
+        if let Some(path) = self.streaming_output_json.as_ref() {
+            writeln!(f, "  Streaming JSON Output:   {}", path.display())?;
+        }
+        // Conditionally display the streaming CSV output file if it has been specified.
+        if let Some(path) = self.streaming_output_csv.as_ref() {
+            writeln!(f, "  Streaming CSV Output:    {}", path.display())?;
         }
         writeln!(f, "  Continue on Error:  {}", self.continue_on_error)?;
         write!(f, "-----------------------------------------------------------------")

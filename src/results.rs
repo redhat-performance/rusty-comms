@@ -99,6 +99,19 @@ impl MessageLatencyRecord {
         ]
     }
 
+    /// Convert the record to a CSV record string
+    pub fn to_csv_record(&self) -> String {
+        format!(
+            "{},{},{},{},{},{}",
+            self.timestamp_ns,
+            self.message_id,
+            self.mechanism,
+            self.message_size,
+            self.one_way_latency_ns.map_or("".to_string(), |v| v.to_string()),
+            self.round_trip_latency_ns.map_or("".to_string(), |v| v.to_string())
+        )
+    }
+
     /// Create a new message latency record with current timestamp
     ///
     /// ## Parameters
@@ -399,12 +412,18 @@ pub struct ResultsManager {
     /// Optional path for streaming results output
     streaming_file: Option<std::path::PathBuf>,
     
+    /// Optional path for streaming CSV results output
+    streaming_csv_file: Option<std::path::PathBuf>,
+
     /// Accumulated results from all benchmark runs
     results: Vec<BenchmarkResults>,
     
     /// Whether streaming is enabled
     streaming_enabled: bool,
     
+    /// Whether CSV streaming is enabled
+    csv_streaming_enabled: bool,
+
     /// Whether to stream per-message latency records instead of final results
     per_message_streaming: bool,
     
@@ -439,8 +458,10 @@ impl ResultsManager {
         Ok(Self {
             output_file: output_file.to_path_buf(),
             streaming_file: None,
+            streaming_csv_file: None,
             results: Vec::new(),
             streaming_enabled: false,
+            csv_streaming_enabled: false,
             per_message_streaming: false,
             first_record_streamed: true,
             both_tests_enabled: false,
@@ -575,6 +596,46 @@ impl ResultsManager {
         Ok(())
     }
 
+    /// Enable CSV latency streaming to a file
+    ///
+    /// Configures real-time per-message latency streaming in CSV format.
+    /// This provides a simple, efficient format for capturing individual
+    /// message timing data for analysis in spreadsheets or data processing tools.
+    ///
+    /// ## Parameters
+    /// - `streaming_file`: Path where CSV latency records will be written
+    ///
+    /// ## Returns
+    /// - `Ok(())`: CSV streaming enabled successfully
+    /// - `Err(anyhow::Error)`: File creation or write permission error
+    ///
+    /// ## CSV Format
+    ///
+    /// The file contains a header row followed by data rows:
+    /// ```csv
+    /// timestamp_ns,message_id,mechanism,message_size,one_way_latency_ns,round_trip_latency_ns
+    /// 1640995200000000000,1,UnixDomainSocket,1024,50000,
+    /// ...
+    /// ```
+    pub fn enable_csv_streaming<P: AsRef<Path>>(&mut self, streaming_file: P) -> Result<()> {
+        self.streaming_csv_file = Some(streaming_file.as_ref().to_path_buf());
+        self.csv_streaming_enabled = true;
+
+        // Create/truncate the streaming file and write header
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&self.streaming_csv_file.as_ref().unwrap())?;
+
+        // Write CSV header
+        let header = MessageLatencyRecord::HEADINGS.join(",");
+        writeln!(file, "{}", header)?;
+
+        debug!("Enabled CSV streaming to: {:?}", self.streaming_csv_file);
+        Ok(())
+    }
+
     /// Stream a single message latency record
     ///
     /// Immediately writes a single message latency record to the streaming file.
@@ -654,6 +715,16 @@ impl ResultsManager {
             file.flush()?;
             
             self.first_record_streamed = false;
+        }
+
+        // Stream to CSV if enabled
+        if self.csv_streaming_enabled {
+            if let Some(ref streaming_csv_file) = self.streaming_csv_file {
+                let mut file = OpenOptions::new().append(true).open(streaming_csv_file)?;
+                let csv_record = record.to_csv_record();
+                writeln!(file, "{}", csv_record)?;
+                file.flush()?;
+            }
         }
 
         Ok(())
