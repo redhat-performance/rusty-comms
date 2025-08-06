@@ -34,9 +34,22 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{debug, info};
 
+/// Represents the final status of a benchmark test for a single mechanism.
+///
+/// This enum is used to clearly indicate whether a test completed successfully
+/// or failed, and to capture the error details in case of failure. This allows
+/// the final report to accurately reflect the outcome of each test.
+///
+/// ## Variants
+///
+/// - **Success**: The benchmark completed without any critical errors.
+/// - **Failure**: The benchmark terminated due to an error. The associated
+///   `String` contains a descriptive error message.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum BenchmarkStatus {
+    /// The benchmark completed successfully.
     Success,
+    /// The benchmark failed with the specified error message.
     Failure(String),
 }
 
@@ -108,8 +121,8 @@ impl MessageLatencyRecord {
     /// Convert the record to a CSV record string
     pub fn to_csv_record(&self) -> String {
         use std::fmt::Write;
-        // Pre-allocating a reasonable capacity avoids reallocations.
-        let mut s = String::with_capacity(128);
+        // A capacity of 256 should be sufficient for most records, avoiding reallocations.
+        let mut s = String::with_capacity(256);
 
         // Writing to a String can't fail, so .unwrap() is safe.
         write!(
@@ -479,10 +492,10 @@ impl ResultsManager {
     ///
     /// The output file is not created until `finalize()` is called,
     /// allowing validation of the path without affecting existing files.
-    pub fn new(output_file: &Option<PathBuf>, log_file: &Option<String>) -> Result<Self> {
+    pub fn new<P: AsRef<Path>>(output_file: Option<P>, log_file: Option<&str>) -> Result<Self> {
         Ok(Self {
-            output_file: output_file.clone(),
-            log_file: log_file.clone(),
+            output_file: output_file.map(|p| p.as_ref().to_path_buf()),
+            log_file: log_file.map(|s| s.to_string()),
             streaming_file: None,
             streaming_csv_file: None,
             results: Vec::new(),
@@ -865,8 +878,8 @@ impl ResultsManager {
         self.close_streaming_csv().await?;
 
         // Write final comprehensive results if an output file was specified
-        if self.output_file.is_some() {
-            self.write_final_results()?;
+        if let Some(output_file) = &self.output_file {
+            self.write_final_results(output_file)?;
         }
 
         Ok(())
@@ -956,24 +969,22 @@ impl ResultsManager {
     ///
     /// Results are written as pretty-printed JSON for human readability
     /// while maintaining machine parseability for analysis tools.
-    fn write_final_results(&self) -> Result<()> {
-        if let Some(output_file) = &self.output_file {
-            info!("Writing final results to: {:?}", output_file);
-            let final_results = FinalBenchmarkResults {
-                metadata: BenchmarkMetadata {
-                    version: crate::VERSION.to_string(),
-                    timestamp: chrono::Utc::now(),
-                    total_tests: self.results.len(),
-                    system_info: self.get_system_info(),
-                },
-                results: self.results.clone(),
-                summary: self.calculate_overall_summary(),
-            };
+    fn write_final_results(&self, output_file: &Path) -> Result<()> {
+        info!("Writing final results to: {:?}", output_file);
+        let final_results = FinalBenchmarkResults {
+            metadata: BenchmarkMetadata {
+                version: crate::VERSION.to_string(),
+                timestamp: chrono::Utc::now(),
+                total_tests: self.results.len(),
+                system_info: self.get_system_info(),
+            },
+            results: self.results.clone(),
+            summary: self.calculate_overall_summary(),
+        };
 
-            let json = serde_json::to_string_pretty(&final_results)?;
-            std::fs::write(output_file, json)?;
-            info!("Successfully wrote final results to: {:?}", output_file);
-        }
+        let json = serde_json::to_string_pretty(&final_results)?;
+        std::fs::write(output_file, json)?;
+        info!("Successfully wrote final results to: {:?}", output_file);
         Ok(())
     }
 

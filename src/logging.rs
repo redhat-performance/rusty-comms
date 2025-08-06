@@ -24,7 +24,7 @@
 //!
 //! ```rust,ignore
 //! // In main.rs
-//! use rusty_comms::logging;
+//! use ipc_benchmark::logging;
 //!
 //! fn main() -> anyhow::Result<()> {
 //!     let log_file = Some("benchmark.log".to_string());

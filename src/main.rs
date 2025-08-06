@@ -121,9 +121,9 @@ async fn main() -> Result<()> {
         .with(stdout_log)
         .init();
 
-    // Keep the guard alive for the duration of the program.
-    // If we don't assign it, it gets dropped immediately, and file logging stops working.
-    let _guard = guard;
+    // Keep the logging guard alive for the duration of the program.
+    // If we don't assign it to a variable, it gets dropped immediately, and file logging stops working.
+    let _log_guard = guard;
 
     info!("Starting IPC Benchmark Suite");
     info!("{}", args);
@@ -152,7 +152,8 @@ async fn main() -> Result<()> {
 
     // Initialize results manager for handling output
     // This manages both final JSON output and optional streaming results
-    let mut results_manager = ResultsManager::new(&args.output_file, &log_file_for_manager)?;
+    let mut results_manager =
+        ResultsManager::new(args.output_file.as_ref(), log_file_for_manager.as_deref())?;
 
     // Enable per-message latency streaming if specified
     // Per-message streaming captures individual message latency values with
