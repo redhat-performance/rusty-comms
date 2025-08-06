@@ -121,7 +121,9 @@ impl MessageLatencyRecord {
     /// Convert the record to a CSV record string
     pub fn to_csv_record(&self) -> String {
         use std::fmt::Write;
-        // A capacity of 256 should be sufficient for most records, avoiding reallocations.
+        // A capacity of 256 should be sufficient for most records, avoiding reallocations, 
+        // even for a test running for an hour or longer. Capacity is per-record, and a
+        // worst-case record with all fields filled is unlikely to exceed even 125 bytes.
         let mut s = String::with_capacity(256);
 
         // Writing to a String can't fail, so .unwrap() is safe.
@@ -492,9 +494,9 @@ impl ResultsManager {
     ///
     /// The output file is not created until `finalize()` is called,
     /// allowing validation of the path without affecting existing files.
-    pub fn new<P: AsRef<Path>>(output_file: Option<P>, log_file: Option<&str>) -> Result<Self> {
+    pub fn new(output_file: Option<&Path>, log_file: Option<&str>) -> Result<Self> {
         Ok(Self {
-            output_file: output_file.map(|p| p.as_ref().to_path_buf()),
+            output_file: output_file.map(|p| p.to_path_buf()),
             log_file: log_file.map(|s| s.to_string()),
             streaming_file: None,
             streaming_csv_file: None,
@@ -537,8 +539,8 @@ impl ResultsManager {
     /// The streaming file is created immediately and truncated if it exists.
     /// The JSON array opening bracket is written immediately to establish
     /// the format for incremental updates.
-    pub fn enable_streaming<P: AsRef<Path>>(&mut self, streaming_file: P) -> Result<()> {
-        self.streaming_file = Some(streaming_file.as_ref().to_path_buf());
+    pub fn enable_streaming(&mut self, streaming_file: &Path) -> Result<()> {
+        self.streaming_file = Some(streaming_file.to_path_buf());
         self.streaming_enabled = true;
         self.per_message_streaming = false; // Default to final results streaming
 
@@ -592,8 +594,8 @@ impl ResultsManager {
     /// Per-message streaming generates significant I/O activity and should
     /// be used carefully in high-throughput scenarios to avoid affecting
     /// benchmark results.
-    pub fn enable_per_message_streaming<P: AsRef<Path>>(&mut self, streaming_file: P) -> Result<()> {
-        self.streaming_file = Some(streaming_file.as_ref().to_path_buf());
+    pub fn enable_per_message_streaming(&mut self, streaming_file: &Path) -> Result<()> {
+        self.streaming_file = Some(streaming_file.to_path_buf());
         self.streaming_enabled = true;
         self.per_message_streaming = true;
         self.first_record_streamed = true;
@@ -627,7 +629,7 @@ impl ResultsManager {
     /// ## Returns
     /// - `Ok(())`: Combined streaming enabled successfully
     /// - `Err(anyhow::Error)`: File creation or write permission error
-    pub fn enable_combined_streaming<P: AsRef<Path>>(&mut self, streaming_file: P, both_tests_enabled: bool) -> Result<()> {
+    pub fn enable_combined_streaming(&mut self, streaming_file: &Path, both_tests_enabled: bool) -> Result<()> {
         self.enable_per_message_streaming(streaming_file)?;
         self.both_tests_enabled = both_tests_enabled;
         
@@ -656,8 +658,8 @@ impl ResultsManager {
     /// 1640995200000000000,1,UnixDomainSocket,1024,50000,
     /// ...
     /// ```
-    pub fn enable_csv_streaming<P: AsRef<Path>>(&mut self, streaming_file: P) -> Result<()> {
-        self.streaming_csv_file = Some(streaming_file.as_ref().to_path_buf());
+    pub fn enable_csv_streaming(&mut self, streaming_file: &Path) -> Result<()> {
+        self.streaming_csv_file = Some(streaming_file.to_path_buf());
         self.csv_streaming_enabled = true;
 
         // Create/truncate the streaming file and write header
