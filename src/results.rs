@@ -29,10 +29,29 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::OpenOptions;
-use std::io::Write;
-use std::path::Path;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{debug, info};
+
+/// Represents the final status of a benchmark test for a single mechanism.
+///
+/// This enum is used to clearly indicate whether a test completed successfully
+/// or failed, and to capture the error details in case of failure. This allows
+/// the final report to accurately reflect the outcome of each test.
+///
+/// ## Variants
+///
+/// - **Success**: The benchmark completed without any critical errors.
+/// - **Failure**: The benchmark terminated due to an error. The associated
+///   `String` contains a descriptive error message.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum BenchmarkStatus {
+    /// The benchmark completed successfully.
+    Success,
+    /// The benchmark failed with the specified error message.
+    Failure(String),
+}
 
 /// Per-message latency record for streaming output
 ///
@@ -74,12 +93,57 @@ pub struct MessageLatencyRecord {
     /// Round-trip latency in nanoseconds (send to response received)
     /// None if this measurement is for one-way only
     pub round_trip_latency_ns: Option<u64>,
-    
-    /// Type of latency measurement performed
-    pub latency_type: LatencyType,
 }
 
 impl MessageLatencyRecord {
+    /// Column headings for columnar streaming output
+    pub const HEADINGS: &'static [&'static str] = &[
+        "timestamp_ns",
+        "message_id",
+        "mechanism",
+        "message_size",
+        "one_way_latency_ns",
+        "round_trip_latency_ns",
+    ];
+
+    /// Convert the record to a `serde_json::Value` array for columnar output
+    pub fn to_value_array(&self) -> Vec<serde_json::Value> {
+        vec![
+            serde_json::json!(self.timestamp_ns),
+            serde_json::json!(self.message_id),
+            serde_json::json!(self.mechanism),
+            serde_json::json!(self.message_size),
+            serde_json::json!(self.one_way_latency_ns),
+            serde_json::json!(self.round_trip_latency_ns),
+        ]
+    }
+
+    /// Convert the record to a CSV record string
+    pub fn to_csv_record(&self) -> String {
+        use std::fmt::Write;
+        // A capacity of 256 should be sufficient for most records, avoiding reallocations, 
+        // even for a test running for an hour or longer. Capacity is per-record, and a
+        // worst-case record with all fields filled is unlikely to exceed even 125 bytes.
+        let mut s = String::with_capacity(256);
+
+        // Writing to a String can't fail, so .unwrap() is safe.
+        write!(
+            &mut s,
+            "{},{},{},{},",
+            self.timestamp_ns, self.message_id, self.mechanism, self.message_size
+        )
+        .unwrap();
+
+        if let Some(latency) = self.one_way_latency_ns {
+            write!(&mut s, "{}", latency).unwrap();
+        }
+        s.push(',');
+        if let Some(latency) = self.round_trip_latency_ns {
+            write!(&mut s, "{}", latency).unwrap();
+        }
+        s
+    }
+
     /// Create a new message latency record with current timestamp
     ///
     /// ## Parameters
@@ -116,7 +180,6 @@ impl MessageLatencyRecord {
             message_size,
             one_way_latency_ns,
             round_trip_latency_ns,
-            latency_type,
         }
     }
 
@@ -150,7 +213,6 @@ impl MessageLatencyRecord {
             message_size,
             one_way_latency_ns: Some(one_way_latency.as_nanos() as u64),
             round_trip_latency_ns: Some(round_trip_latency.as_nanos() as u64),
-            latency_type: LatencyType::RoundTrip, // Use RoundTrip as default when both are present
         }
     }
 
@@ -171,14 +233,6 @@ impl MessageLatencyRecord {
         if other.round_trip_latency_ns.is_some() {
             self.round_trip_latency_ns = other.round_trip_latency_ns;
         }
-
-        // Update latency type based on what we have
-        self.latency_type = match (self.one_way_latency_ns.is_some(), self.round_trip_latency_ns.is_some()) {
-            (true, false) => LatencyType::OneWay,
-            (false, true) => LatencyType::RoundTrip,
-            (true, true) => LatencyType::RoundTrip, // Use RoundTrip as default when both present
-            (false, false) => self.latency_type, // Keep existing if neither
-        };
     }
 }
 
@@ -205,6 +259,9 @@ impl MessageLatencyRecord {
 pub struct BenchmarkResults {
     /// The IPC mechanism that was tested
     pub mechanism: IpcMechanism,
+    
+    /// The outcome of the benchmark test
+    pub status: BenchmarkStatus,
     
     /// Configuration parameters used for this test
     pub test_config: TestConfiguration,
@@ -383,19 +440,29 @@ pub struct SystemInfo {
 ///
 /// The streaming format allows monitoring of long-running benchmarks,
 /// while the final format provides complete analysis and comparison.
+#[derive(Debug)]
 pub struct ResultsManager {
-    /// Path for final results output
-    output_file: std::path::PathBuf,
-    
+    /// Optional path for final results output
+    output_file: Option<std::path::PathBuf>,
+
+    /// Optional path for log file output
+    log_file: Option<String>,
+
     /// Optional path for streaming results output
     streaming_file: Option<std::path::PathBuf>,
     
+    /// Optional path for streaming CSV results output
+    streaming_csv_file: Option<std::path::PathBuf>,
+
     /// Accumulated results from all benchmark runs
     results: Vec<BenchmarkResults>,
     
     /// Whether streaming is enabled
     streaming_enabled: bool,
     
+    /// Whether CSV streaming is enabled
+    csv_streaming_enabled: bool,
+
     /// Whether to stream per-message latency records instead of final results
     per_message_streaming: bool,
     
@@ -416,7 +483,8 @@ impl ResultsManager {
     /// Streaming is disabled by default and can be enabled separately.
     ///
     /// ## Parameters
-    /// - `output_file`: Path where final results will be written
+    /// - `output_file`: Optional path to the final JSON results file.
+    /// - `log_file`: Optional path to the log file.
     ///
     /// ## Returns
     /// - `Ok(ResultsManager)`: Configured manager ready for use
@@ -426,12 +494,15 @@ impl ResultsManager {
     ///
     /// The output file is not created until `finalize()` is called,
     /// allowing validation of the path without affecting existing files.
-    pub fn new(output_file: &Path) -> Result<Self> {
+    pub fn new(output_file: Option<&Path>, log_file: Option<&str>) -> Result<Self> {
         Ok(Self {
-            output_file: output_file.to_path_buf(),
+            output_file: output_file.map(|p| p.to_path_buf()),
+            log_file: log_file.map(|s| s.to_string()),
             streaming_file: None,
+            streaming_csv_file: None,
             results: Vec::new(),
             streaming_enabled: false,
+            csv_streaming_enabled: false,
             per_message_streaming: false,
             first_record_streamed: true,
             both_tests_enabled: false,
@@ -468,8 +539,8 @@ impl ResultsManager {
     /// The streaming file is created immediately and truncated if it exists.
     /// The JSON array opening bracket is written immediately to establish
     /// the format for incremental updates.
-    pub fn enable_streaming<P: AsRef<Path>>(&mut self, streaming_file: P) -> Result<()> {
-        self.streaming_file = Some(streaming_file.as_ref().to_path_buf());
+    pub fn enable_streaming(&mut self, streaming_file: &Path) -> Result<()> {
+        self.streaming_file = Some(streaming_file.to_path_buf());
         self.streaming_enabled = true;
         self.per_message_streaming = false; // Default to final results streaming
 
@@ -523,21 +594,24 @@ impl ResultsManager {
     /// Per-message streaming generates significant I/O activity and should
     /// be used carefully in high-throughput scenarios to avoid affecting
     /// benchmark results.
-    pub fn enable_per_message_streaming<P: AsRef<Path>>(&mut self, streaming_file: P) -> Result<()> {
-        self.streaming_file = Some(streaming_file.as_ref().to_path_buf());
+    pub fn enable_per_message_streaming(&mut self, streaming_file: &Path) -> Result<()> {
+        self.streaming_file = Some(streaming_file.to_path_buf());
         self.streaming_enabled = true;
         self.per_message_streaming = true;
         self.first_record_streamed = true;
 
-        // Create/truncate the streaming file and initialize JSON array
+        // Create/truncate the streaming file and initialize columnar JSON object
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
             .open(&self.streaming_file.as_ref().unwrap())?;
 
-        // Write JSON array opening bracket
-        writeln!(file, "[")?;
+        // Write JSON object opening and headings array
+        writeln!(file, "{{")?;
+        let headings_json = serde_json::to_string(MessageLatencyRecord::HEADINGS)?;
+        writeln!(file, "  \"headings\": {},", headings_json)?;
+        write!(file, "  \"data\": [")?;
 
         debug!("Enabled per-message streaming to: {:?}", self.streaming_file);
         Ok(())
@@ -555,11 +629,51 @@ impl ResultsManager {
     /// ## Returns
     /// - `Ok(())`: Combined streaming enabled successfully
     /// - `Err(anyhow::Error)`: File creation or write permission error
-    pub fn enable_combined_streaming<P: AsRef<Path>>(&mut self, streaming_file: P, both_tests_enabled: bool) -> Result<()> {
+    pub fn enable_combined_streaming(&mut self, streaming_file: &Path, both_tests_enabled: bool) -> Result<()> {
         self.enable_per_message_streaming(streaming_file)?;
         self.both_tests_enabled = both_tests_enabled;
         
         debug!("Enabled combined streaming mode: both_tests={}", both_tests_enabled);
+        Ok(())
+    }
+
+    /// Enable CSV latency streaming to a file
+    ///
+    /// Configures real-time per-message latency streaming in CSV format.
+    /// This provides a simple, efficient format for capturing individual
+    /// message timing data for analysis in spreadsheets or data processing tools.
+    ///
+    /// ## Parameters
+    /// - `streaming_file`: Path where CSV latency records will be written
+    ///
+    /// ## Returns
+    /// - `Ok(())`: CSV streaming enabled successfully
+    /// - `Err(anyhow::Error)`: File creation or write permission error
+    ///
+    /// ## CSV Format
+    ///
+    /// The file contains a header row followed by data rows:
+    /// ```csv
+    /// timestamp_ns,message_id,mechanism,message_size,one_way_latency_ns,round_trip_latency_ns
+    /// 1640995200000000000,1,UnixDomainSocket,1024,50000,
+    /// ...
+    /// ```
+    pub fn enable_csv_streaming(&mut self, streaming_file: &Path) -> Result<()> {
+        self.streaming_csv_file = Some(streaming_file.to_path_buf());
+        self.csv_streaming_enabled = true;
+
+        // Create/truncate the streaming file and write header
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&self.streaming_csv_file.as_ref().unwrap())?;
+
+        // Write CSV header
+        let header = MessageLatencyRecord::HEADINGS.join(",");
+        writeln!(file, "{}", header)?;
+
+        debug!("Enabled CSV streaming to: {:?}", self.streaming_csv_file);
         Ok(())
     }
 
@@ -630,14 +744,28 @@ impl ResultsManager {
             // Add comma if not first record (proper JSON array formatting)
             if !self.first_record_streamed {
                 writeln!(file, ",")?;
+            } else {
+                // For the first record, add a newline to separate from the "data": [ line
+                writeln!(file)?;
             }
 
-            // Write JSON record
-            let json = serde_json::to_string(record)?;
-            write!(file, "{}", json)?;
+            // Write JSON array of values
+            let values = record.to_value_array();
+            let json = serde_json::to_string(&values)?;
+            write!(file, "    {}", json)?; // Indent for readability
             file.flush()?;
             
             self.first_record_streamed = false;
+        }
+
+        // Stream to CSV if enabled
+        if self.csv_streaming_enabled {
+            if let Some(ref streaming_csv_file) = self.streaming_csv_file {
+                let mut file = OpenOptions::new().append(true).open(streaming_csv_file)?;
+                let csv_record = record.to_csv_record();
+                writeln!(file, "{}", csv_record)?;
+                file.flush()?;
+            }
         }
 
         Ok(())
@@ -742,32 +870,70 @@ impl ResultsManager {
     pub async fn finalize(&mut self) -> Result<()> {
         info!("Finalizing benchmark results");
 
-        // Close streaming file if enabled
-        if self.streaming_enabled {
-            if let Some(ref streaming_file) = self.streaming_file {
-                let mut file = OpenOptions::new().append(true).open(streaming_file)?;
+        // Flush any remaining pending records before closing the file
+        self.flush_pending_records().await?;
 
-                // Write JSON array closing bracket
-                writeln!(file, "\n]")?;
+        // Close streaming JSON file if enabled
+        self.close_streaming_json().await?;
+
+        // Close streaming CSV file if enabled
+        self.close_streaming_csv().await?;
+
+        // Write final comprehensive results if an output file was specified
+        if let Some(output_file) = &self.output_file {
+            self.write_final_results(output_file)?;
+        }
+
+        Ok(())
+    }
+
+    /// Closes the streaming JSON file, writing the final closing brackets.
+    ///
+    /// This function is called by `finalize()` to ensure that the output
+    /// is a valid JSON document. It opens the file in append mode and
+    /// writes the necessary closing syntax.
+    async fn close_streaming_json(&mut self) -> Result<()> {
+        if self.per_message_streaming {
+            if let Some(streaming_file) = &self.streaming_file {
+                info!("Closing streaming JSON file.");
+                let mut file = OpenOptions::new().append(true).open(streaming_file)?;
+                // Write the closing brackets for the JSON data array and the root object.
+                write!(file, "\n  ]\n}}\n")?;
+                file.flush()?;
+            }
+        } else if self.streaming_enabled {
+            // This handles the case of non-per-message streaming, which is a simple JSON array.
+            if let Some(streaming_file) = &self.streaming_file {
+                info!("Closing streaming JSON file.");
+                let mut file = OpenOptions::new().append(true).open(streaming_file)?;
+                // Write the closing bracket for the JSON array.
+                write!(file, "\n]\n")?;
                 file.flush()?;
             }
         }
+        Ok(())
+    }
 
-        // Flush any remaining pending records
-        self.flush_pending_records().await?;
-
-        // Write final comprehensive results
-        self.write_final_results()?;
-
-        info!("Results written to: {:?}", self.output_file);
+    /// Closes the streaming CSV file.
+    ///
+    /// This function is called by `finalize()` to ensure that all buffered
+    /// data is written to the file. Since each write is flushed immediately,
+    /// this function primarily serves for logging and symmetry.
+    async fn close_streaming_csv(&mut self) -> Result<()> {
+        if self.csv_streaming_enabled {
+            if let Some(path) = &self.streaming_csv_file {
+                info!("Finalizing streaming CSV file at {}", path.display());
+            }
+        }
         Ok(())
     }
 
     /// Flush any remaining pending records when streaming is complete
     ///
-    /// This method writes out any records that are still in the buffer when
-    /// streaming ends. This can happen when one test type completes before
-    /// the other in combined streaming mode.
+    /// In combined streaming mode, a one-way result might be recorded
+    /// before the corresponding round-trip result is available. This method
+    /// ensures that any such pending records are written out to the streaming
+    /// file before finalization.
     pub async fn flush_pending_records(&mut self) -> Result<()> {
         if self.both_tests_enabled && !self.pending_records.is_empty() {
             debug!("Flushing {} pending streaming records", self.pending_records.len());
@@ -805,7 +971,8 @@ impl ResultsManager {
     ///
     /// Results are written as pretty-printed JSON for human readability
     /// while maintaining machine parseability for analysis tools.
-    fn write_final_results(&self) -> Result<()> {
+    fn write_final_results(&self, output_file: &Path) -> Result<()> {
+        info!("Writing final results to: {:?}", output_file);
         let final_results = FinalBenchmarkResults {
             metadata: BenchmarkMetadata {
                 version: crate::VERSION.to_string(),
@@ -818,8 +985,8 @@ impl ResultsManager {
         };
 
         let json = serde_json::to_string_pretty(&final_results)?;
-        std::fs::write(&self.output_file, json)?;
-
+        std::fs::write(output_file, json)?;
+        info!("Successfully wrote final results to: {:?}", output_file);
         Ok(())
     }
 
@@ -1002,9 +1169,111 @@ impl ResultsManager {
     pub fn is_combined_streaming_enabled(&self) -> bool {
         self.both_tests_enabled && self.per_message_streaming && self.streaming_enabled
     }
+
+    /// Prints a human-readable summary of the benchmark run to the console.
+    ///
+    /// This method formats a summary that is displayed at the end of the
+    /// benchmark execution. It lists all the output files that were generated
+    /// during the run, matching the format of the configuration summary.
+    pub fn print_summary(&self) -> Result<()> {
+        println!("\nBenchmark Results:");
+        println!("-----------------------------------------------------------------");
+
+        println!("  Output Files Written:");
+        if let Some(path) = &self.output_file {
+            println!("    Final JSON Results:   {}", path.display());
+        }
+        if let Some(path) = &self.streaming_file {
+            println!("    Streaming JSON:       {}", path.display());
+        }
+        if let Some(path) = &self.streaming_csv_file {
+            println!("    Streaming CSV:        {}", path.display());
+        }
+        if let Some(path) = &self.log_file {
+            println!("    Log File:             {}", path);
+        }
+        println!("-----------------------------------------------------------------");
+
+        if self.results.is_empty() {
+            println!("No benchmark results to display.");
+        } else {
+            for result in &self.results {
+                println!("Mechanism: {}", result.mechanism);
+                println!("  Message Size: {} bytes", result.test_config.message_size);
+
+                match &result.status {
+                    BenchmarkStatus::Success => {
+                        Self::print_summary_details(&result.summary, "  ");
+                    }
+                    BenchmarkStatus::Failure(error_msg) => {
+                        println!("  Status: FAILED");
+                        println!("    Error: {}", error_msg);
+                    }
+                }
+                println!("-----------------------------------------------------------------");
+            }
+        }
+
+        io::stdout().flush()?;
+        Ok(())
+    }
+
+    /// Helper function to format and print the details from a BenchmarkSummary.
+    fn print_summary_details(summary: &BenchmarkSummary, indent: &str) {
+        if summary.average_latency_ns.is_some() {
+            println!("{}Latency:", indent);
+            println!(
+                "{}{:<8} Mean: {}, P95: {}, P99: {}",
+                indent,
+                "  ",
+                summary.average_latency_ns.map(|v| format_latency(v as u64)).unwrap_or_else(|| "N/A".to_string()),
+                summary.p95_latency_ns.map(format_latency).unwrap_or_else(|| "N/A".to_string()),
+                summary.p99_latency_ns.map(format_latency).unwrap_or_else(|| "N/A".to_string())
+            );
+            println!(
+                "{}{:<8} Min:  {}, Max: {}",
+                indent,
+                "  ",
+                summary.min_latency_ns.map(format_latency).unwrap_or_else(|| "N/A".to_string()),
+                summary.max_latency_ns.map(format_latency).unwrap_or_else(|| "N/A".to_string())
+            );
+        }
+
+        println!("{}Throughput:", indent);
+        // Note: The summary field is named _mbps, but the calculation in update_summary
+        // produces MB/s (Megabytes per second). The label reflects the calculation.
+        println!(
+            "{}{:<8} Average: {:.2} MB/s, Peak: {:.2} MB/s",
+            indent,
+            "  ",
+            summary.average_throughput_mbps,
+            summary.peak_throughput_mbps
+        );
+
+        println!("{}Totals:", indent);
+        println!(
+            "{}{:<8} Messages: {}, Data: {:.2} MB",
+            indent,
+            "  ",
+            summary.total_messages_sent,
+            summary.total_bytes_transferred as f64 / (1024.0 * 1024.0)
+        );
+    }
 }
 
-/// Final benchmark results structure
+/// Helper function to format latency values (in nanoseconds) into a
+/// human-readable string (us, ms).
+fn format_latency(ns: u64) -> String {
+    if ns >= 1_000_000 {
+        format!("{:.2} ms", ns as f64 / 1_000_000.0)
+    } else if ns >= 1_000 {
+        format!("{:.2} us", ns as f64 / 1_000.0)
+    } else {
+        format!("{} ns", ns)
+    }
+}
+
+/// Final benchmark results
 ///
 /// This structure represents the complete output of the benchmark suite,
 /// including all individual results, metadata, and cross-mechanism analysis.
@@ -1174,6 +1443,7 @@ impl BenchmarkResults {
 
         Self {
             mechanism,
+            status: BenchmarkStatus::Success,
             test_config,
             one_way_results: None,
             round_trip_results: None,
@@ -1182,6 +1452,11 @@ impl BenchmarkResults {
             test_duration: Duration::ZERO,
             system_info: SystemInfo::default(),
         }
+    }
+
+    /// Mark the benchmark result as a failure
+    pub fn set_failure(&mut self, error_message: String) {
+        self.status = BenchmarkStatus::Failure(error_message);
     }
 
     /// Add one-way test results
@@ -1417,9 +1692,10 @@ mod tests {
     #[test]
     fn test_results_manager_creation() {
         let temp_file = NamedTempFile::new().unwrap();
-        let manager = ResultsManager::new(temp_file.path()).unwrap();
+        let path = temp_file.path().to_path_buf();
+        let manager = ResultsManager::new(&Some(path.clone()), &None).unwrap();
 
-        assert_eq!(manager.output_file, temp_file.path());
+        assert_eq!(manager.output_file, Some(path));
         assert!(!manager.streaming_enabled);
         assert!(manager.results.is_empty());
     }

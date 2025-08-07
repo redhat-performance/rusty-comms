@@ -31,15 +31,16 @@
 //! ## Argument Categories
 //!
 //! Arguments are organized into logical groups:
-//! - **Core Options**: Primary test configuration (mechanisms, size, iterations)
+//! - **Options**: Primary test configuration (mechanisms, size, iterations)
 //! - **Timing**: Duration vs. iteration-based testing
 //! - **Concurrency**: Multi-threaded test configuration  
-//! - **Output**: Result file paths and streaming options
+//! - **Output and Logging**: Result file paths and streaming options
 //! - **Advanced**: Buffer sizes, network settings, percentiles
 
-use clap::{Parser, ValueEnum};
+use clap::{builder::styling::{AnsiColor, Styles}, Parser, ValueEnum};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::fmt;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// IPC Benchmark Suite - A comprehensive tool for measuring IPC performance
@@ -65,15 +66,31 @@ use std::time::Duration;
 ///
 /// Both test types provide comprehensive statistics including percentiles,
 /// standard deviation, and throughput measurements.
-#[derive(Parser, Debug)]
-#[clap(version, about, long_about = None)]
+
+/// Defines the styles for the help message to replicate clap v3's appearance.
+fn styles() -> Styles {
+    Styles::styled()
+        .header(AnsiColor::Yellow.on_default())
+        .usage(AnsiColor::Yellow.on_default())
+        .literal(AnsiColor::Green.on_default())
+        .placeholder(AnsiColor::Green.on_default())
+}
+
+// Define constants for help headings to ensure consistency.
+const TIMING: &str = "Timing";
+const CONCURRENCY: &str = "Concurrency";
+const OUTPUT_AND_LOGGING: &str = "Output and Logging";
+const ADVANCED: &str = "Advanced";
+
+#[derive(Parser, Debug, Clone)]
+#[command(author, version, about, long_about = None, styles = styles())]
 pub struct Args {
     /// IPC mechanisms to benchmark (space-separated: uds, shm, tcp, or all)
     ///
     /// Multiple mechanisms can be specified to run sequential tests.
     /// The "all" option expands to all available mechanisms for comprehensive testing.
     /// Each mechanism is tested independently with proper resource cleanup between runs.
-    #[clap(short = 'm', value_enum, default_values_t = vec![IpcMechanism::UnixDomainSocket], help_heading = "Core Options", num_args = 1..)]
+    #[arg(short = 'm', value_enum, default_values_t = vec![IpcMechanism::UnixDomainSocket], num_args = 1..)]
     pub mechanisms: Vec<IpcMechanism>,
 
     /// Message size in bytes
@@ -81,7 +98,7 @@ pub struct Args {
     /// Determines the payload size for each message sent during testing.
     /// Larger messages test throughput capabilities while smaller messages
     /// focus on latency characteristics. Range: 1 byte to 16MB.
-    #[clap(short = 's', long, default_value_t = crate::defaults::MESSAGE_SIZE)]
+    #[arg(short = 's', long, default_value_t = crate::defaults::MESSAGE_SIZE)]
     pub message_size: usize,
 
     /// Number of iterations to run (ignored if duration is specified)
@@ -89,7 +106,7 @@ pub struct Args {
     /// Controls how many messages are sent during the test when using
     /// iteration-based testing. Higher values provide better statistical
     /// accuracy but increase test duration. Ignored when --duration is specified.
-    #[clap(short = 'i', long, default_value_t = crate::defaults::ITERATIONS)]
+    #[arg(short = 'i', long, default_value_t = crate::defaults::ITERATIONS, help_heading = TIMING)]
     pub iterations: usize,
 
     /// Duration to run the benchmark (takes precedence over iterations)
@@ -97,7 +114,7 @@ pub struct Args {
     /// When specified, tests run for a fixed time period rather than a fixed
     /// number of iterations. Supports human-readable formats like "30s", "5m", "1h".
     /// This mode is useful for consistent test durations across different mechanisms.
-    #[clap(short = 'd', long, value_parser = parse_duration)]
+    #[arg(short = 'd', long, value_parser = parse_duration, help_heading = TIMING)]
     pub duration: Option<Duration>,
 
     /// Number of concurrent processes/threads
@@ -106,16 +123,15 @@ pub struct Args {
     /// scalability characteristics but may introduce resource contention.
     /// Note: Some mechanisms (like shared memory) may force concurrency to 1
     /// to avoid race conditions in the current implementation.
-    #[clap(short = 'c', long, default_value_t = crate::defaults::CONCURRENCY)]
+    #[arg(short = 'c', long, default_value_t = crate::defaults::CONCURRENCY, help_heading = CONCURRENCY)]
     pub concurrency: usize,
 
-    /// Output file for results (JSON format)
+    /// Path to the final JSON output file. If used without a path, defaults to 'benchmark_results.json'.
     ///
-    /// Specifies where to write the final benchmark results in structured JSON format.
-    /// The file contains comprehensive metrics, system information, and metadata
-    /// for reproducibility and analysis.
-    #[clap(short = 'o', long, default_value = crate::defaults::OUTPUT_FILE)]
-    pub output_file: PathBuf,
+    /// If the flag is not used, no final JSON file will be written, but a summary
+    /// will still be printed to the console.
+    #[arg(short, long, value_name = "FILE", num_args = 0..=1, default_missing_value = Some(crate::defaults::OUTPUT_FILE), help_heading = OUTPUT_AND_LOGGING)]
+    pub output_file: Option<PathBuf>,
 
     /// Include one-way latency measurements
     ///
@@ -123,7 +139,7 @@ pub struct Args {
     /// This measures the time from when a message is sent until it's received,
     /// providing insights into pure transmission latency.
     /// If neither --one-way nor --round-trip is specified, both tests run by default.
-    #[clap(long)]
+    #[arg(long)]
     pub one_way: bool,
 
     /// Include round-trip latency measurements  
@@ -132,7 +148,7 @@ pub struct Args {
     /// This measures the time from sending a request until receiving a response,
     /// providing insights into full communication cycle performance.
     /// If neither --one-way nor --round-trip is specified, both tests run by default.
-    #[clap(long)]
+    #[arg(long)]
     pub round_trip: bool,
 
     /// Number of warmup iterations
@@ -140,7 +156,7 @@ pub struct Args {
     /// Specifies how many messages to send before starting measurement.
     /// Warmup helps stabilize performance by allowing caches to fill,
     /// connections to establish, and OS buffers to optimize.
-    #[clap(short = 'w', long, default_value_t = crate::defaults::WARMUP_ITERATIONS)]
+    #[arg(short = 'w', long, default_value_t = crate::defaults::WARMUP_ITERATIONS, help_heading = TIMING)]
     pub warmup_iterations: usize,
 
     /// Continue running other benchmarks even if one fails
@@ -148,31 +164,54 @@ pub struct Args {
     /// By default, the suite stops on the first benchmark failure.
     /// This flag allows testing to continue with remaining mechanisms,
     /// useful for comprehensive testing even when some mechanisms fail.
-    #[clap(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, help_heading = ADVANCED)]
     pub continue_on_error: bool,
 
-    /// Verbose output
+    /// Silence all user-facing informational output on stdout
     ///
-    /// Enables detailed logging output during benchmark execution.
-    /// Useful for debugging test issues or understanding execution flow.
-    /// Log level can also be controlled via the RUST_LOG environment variable.
-    #[clap(short = 'v', long, default_value_t = false)]
-    pub verbose: bool,
+    /// When this flag is present, only diagnostic logs on stderr will be shown.
+    /// This is useful for scripting or when piping results to another program.
+    #[arg(short = 'q', long, help_heading = OUTPUT_AND_LOGGING)]
+    pub quiet: bool,
 
-    /// JSON output file for streaming results during execution
+    /// Increase diagnostic log verbosity on stderr.
     ///
-    /// When specified, partial results are written to this file in real-time
-    /// during benchmark execution. This allows monitoring progress for long-running
-    /// tests and provides incremental results if the benchmark is interrupted.
-    #[clap(long)]
-    pub streaming_output: Option<PathBuf>,
+    /// Can be used multiple times to increase detail:
+    ///  -v: info
+    ///  -vv: debug
+    ///  -vvv: trace
+    /// By default, only WARNING and ERROR messages are shown.
+    #[arg(short, long, action = clap::ArgAction::Count, help_heading = OUTPUT_AND_LOGGING)]
+    pub verbose: u8,
+
+    /// Path to the output log file for detailed diagnostics, or 'stderr'.
+    ///
+    /// Specifies the file where detailed, structured logs will be written.
+    /// Use the special value 'stderr' to direct logs to the standard error stream.
+    /// If not specified, logs default to 'ipc_benchmark.log' in the current directory.
+    #[arg(long, value_name = "PATH | stderr", help_heading = OUTPUT_AND_LOGGING)]
+    pub log_file: Option<String>,
+
+    /// JSON output file for streaming results. If used without a path, defaults to 'benchmark_streaming_output.json'.
+    ///
+    /// Writes partial results to this file in real-time during the benchmark.
+    /// This allows for progress monitoring and provides incremental results.
+    #[arg(long, value_name = "FILE", num_args = 0..=1, default_missing_value = Some("benchmark_streaming_output.json"), help_heading = OUTPUT_AND_LOGGING)]
+    pub streaming_output_json: Option<PathBuf>,
+
+    /// CSV output file for streaming results. If used without a path, defaults to 'benchmark_streaming_output.csv'.
+    ///
+    /// Writes partial results to this file in real-time during the benchmark,
+    /// providing incremental results in CSV format.
+    #[arg(long, value_name = "FILE", num_args = 0..=1, default_missing_value = Some("benchmark_streaming_output.csv"), help_heading = OUTPUT_AND_LOGGING)]
+    pub streaming_output_csv: Option<PathBuf>,
 
     /// Percentiles to calculate for latency metrics
     ///
     /// Specifies which percentile values to calculate and report in results.
     /// Common values include P50 (median), P95, P99, and P99.9.
     /// Multiple values can be specified to get a comprehensive latency distribution view.
-    #[clap(long, default_values_t = vec![50.0, 95.0, 99.0, 99.9])]
+    #[arg(long, default_values_t = vec![50.0, 95.0, 99.0, 99.9], help_heading = ADVANCED)]
     pub percentiles: Vec<f64>,
 
     /// Buffer size for message queues and shared memory
@@ -180,7 +219,7 @@ pub struct Args {
     /// Controls the size of internal buffers used by IPC mechanisms.
     /// Larger buffers can improve throughput but increase memory usage.
     /// The optimal size depends on message size and concurrency level.
-    #[clap(long, default_value_t = 8192)]
+    #[arg(long, default_value_t = 8192, help_heading = ADVANCED)]
     pub buffer_size: usize,
 
     /// Host address for TCP sockets
@@ -188,7 +227,7 @@ pub struct Args {
     /// Specifies the network interface to bind for TCP socket tests.
     /// Use "127.0.0.1" for localhost testing or "0.0.0.0" to accept
     /// connections from any interface (useful for distributed testing).
-    #[clap(long, default_value = "127.0.0.1")]
+    #[arg(long, default_value = "127.0.0.1", help_heading = ADVANCED)]
     pub host: String,
 
     /// Port for TCP sockets
@@ -196,7 +235,7 @@ pub struct Args {
     /// Specifies the TCP port number for socket communication.
     /// The benchmark will automatically use unique ports for each test
     /// to avoid conflicts when testing multiple mechanisms.
-    #[clap(long, default_value_t = 8080)]
+    #[arg(long, default_value_t = 8080, help_heading = ADVANCED)]
     pub port: u16,
 }
 
@@ -219,7 +258,7 @@ pub enum IpcMechanism {
     /// High-performance local sockets that provide reliable, ordered communication
     /// between processes on the same machine. Supports full-duplex communication
     /// and multiple concurrent clients. Ideal for local service architectures.
-    #[clap(name = "uds")]
+    #[value(name = "uds")]
     UnixDomainSocket,
 
     /// Shared Memory
@@ -227,7 +266,7 @@ pub enum IpcMechanism {
     /// Direct memory sharing between processes using a custom ring buffer implementation.
     /// Provides the highest throughput and lowest latency but requires careful
     /// synchronization. Limited to single client-server pairs in current implementation.
-    #[clap(name = "shm")]
+    #[value(name = "shm")]
     SharedMemory,
 
     /// TCP Sockets
@@ -235,7 +274,7 @@ pub enum IpcMechanism {
     /// Standard network sockets that can work locally or across networks.
     /// Provides good performance with broad compatibility and multi-client support.
     /// Socket options are tuned for low latency (TCP_NODELAY, buffer sizes).
-    #[clap(name = "tcp")]
+    #[value(name = "tcp")]
     TcpSocket,
 
     /// POSIX Message Queues
@@ -243,7 +282,7 @@ pub enum IpcMechanism {
     /// System-level message queues that preserve message boundaries and support
     /// priority-based delivery. Integrated with OS scheduling but limited by
     /// system-imposed queue depth restrictions (typically 10 messages).
-    #[clap(name = "pmq")]
+    #[value(name = "pmq")]
     PosixMessageQueue,
 
     /// All available mechanisms
@@ -251,7 +290,7 @@ pub enum IpcMechanism {
     /// Convenience option that expands to test all supported IPC mechanisms
     /// sequentially. Useful for comprehensive performance comparisons across
     /// all available transport types.
-    #[clap(name = "all")]
+    #[value(name = "all")]
     All,
 }
 
@@ -542,5 +581,79 @@ mod tests {
             IpcMechanism::expand_all(vec![IpcMechanism::UnixDomainSocket, IpcMechanism::All]),
             all_mechanisms
         );
+    }
+}
+
+/// Provides a user-friendly, formatted summary of the benchmark configuration.
+///
+/// This implementation is used to display the settings at the start of a benchmark run,
+/// ensuring the user can verify the configuration at a glance. It handles special
+/// cases like expanding the "all" mechanism and showing which test types will run
+/// based on the default behavior (running both if neither is specified).
+impl fmt::Display for Args {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Expand the "all" mechanism to show the user the full list of tests that will be run.
+        let mechanisms = IpcMechanism::expand_all(self.mechanisms.clone());
+
+        // Determine the test types to be run, accounting for the default behavior.
+        // If neither --one-way nor --round-trip is specified, both tests are run by default.
+        // This logic ensures the displayed configuration matches the actual execution plan.
+        let test_types = {
+            let (one_way, round_trip) = if !self.one_way && !self.round_trip {
+                (true, true)
+            } else {
+                (self.one_way, self.round_trip)
+            };
+
+            let mut types = Vec::new();
+            if one_way {
+                types.push("One-Way");
+            }
+            if round_trip {
+                types.push("Round-Trip");
+            }
+            types.join(", ")
+        };
+
+        // Write the formatted configuration summary.
+        writeln!(f, "\nBenchmark Configuration:")?;
+        writeln!(f, "-----------------------------------------------------------------")?;
+        // Format the list of mechanisms into a user-friendly, comma-separated string.
+        // This is the idiomatic way to format a Vec of items that implement Display.
+        let mechanisms_str = mechanisms
+            .iter()
+            .map(|m| m.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(f, "  Mechanisms:         {}", mechanisms_str)?;
+        writeln!(f, "  Message Size:       {} bytes", self.message_size)?;
+
+        // Display duration if specified, as it takes precedence over iterations.
+        if let Some(duration) = self.duration {
+            writeln!(f, "  Test Duration:      {:?}", duration)?;
+        } else {
+            writeln!(f, "  Iterations:         {}", self.iterations)?;
+        }
+
+        writeln!(f, "  Warmup Iterations:  {}", self.warmup_iterations)?;
+        writeln!(f, "  Test Types:         {}", test_types)?;
+        // Conditionally display the path for the main JSON output file.
+        if let Some(output_dest) = self.output_file.as_ref() {
+            writeln!(f, "  Output File:        {}", output_dest.display())?;
+        }
+        // Conditionally display the log file path if it has been specified.
+        if let Some(log_dest) = self.log_file.as_ref() {
+            writeln!(f, "  Log File:           {}", log_dest)?;
+        }
+        // Conditionally display the streaming output file if it has been specified.
+        if let Some(path) = self.streaming_output_json.as_ref() {
+            writeln!(f, "  Streaming JSON Output:   {}", path.display())?;
+        }
+        // Conditionally display the streaming CSV output file if it has been specified.
+        if let Some(path) = self.streaming_output_csv.as_ref() {
+            writeln!(f, "  Streaming CSV Output:    {}", path.display())?;
+        }
+        writeln!(f, "  Continue on Error:  {}", self.continue_on_error)?;
+        write!(f, "-----------------------------------------------------------------")
     }
 }

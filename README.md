@@ -30,9 +30,11 @@ This benchmark suite provides a systematic way to evaluate the performance of va
 
 ### Output Formats
 
-- **JSON**: Machine-readable structured output
-- **Streaming**: Real-time results during execution
-- **Human-readable**: Formatted console output with progress indicators
+- **JSON**: Optional, machine-readable structured output for final, aggregated results. Generated only when the `--output-file` flag is used.
+- **Streaming JSON**: Real-time, per-message latency data written to a file in a columnar JSON format. This allows for efficient, live monitoring of long-running tests. The format consists of a `headings` array and a `data` array containing value arrays for each message.
+- **Streaming CSV**: Real-time, per-message latency data written to a standard CSV file. This format is ideal for easy import into spreadsheets and data analysis tools.
+- **Console Output**: User-friendly, color-coded summaries on `stdout`. Includes a configuration summary at startup and a detailed results summary upon completion.
+- **Detailed Logs**: Structured, timestamped logs written to a file or `stderr` for diagnostics.
 
 ## Installation
 
@@ -71,7 +73,7 @@ The optimized binary will be available at `target/release/ipc-benchmark`.
 ### Basic Usage
 
 ```bash
-# Run benchmark with default settings
+# Run benchmark with default settings (prints summary to console, no file output)
 ipc-benchmark
 
 # Run with specific mechanisms
@@ -96,11 +98,35 @@ ipc-benchmark --concurrency 8
 ### Advanced Configuration
 
 ```bash
-# Run with custom output file
-ipc-benchmark --output-file results.json
+# Run with a larger message size and for a fixed duration
+ipc-benchmark --message-size 65536 --duration 30s
 
-# Enable streaming output during execution
-ipc-benchmark --streaming-output streaming_results.json
+# Create an output file with a custom name
+ipc-benchmark --output-file my_results.json
+
+# Create the default output file (benchmark_results.json)
+ipc-benchmark --output-file
+
+# Enable JSON streaming output to a custom file
+ipc-benchmark --streaming-output-json my_stream.json
+
+# Enable JSON streaming output to the default file (benchmark_streaming_output.json)
+ipc-benchmark --streaming-output-json
+
+# Enable CSV streaming output to a custom file
+ipc-benchmark --streaming-output-csv my_stream.csv
+
+# Enable CSV streaming output to the default file (benchmark_streaming_output.csv)
+ipc-benchmark --streaming-output-csv
+
+# Save detailed logs to a custom file
+ipc-benchmark --log-file /var/log/ipc-benchmark.log
+
+# Send detailed logs to stderr instead of a file
+ipc-benchmark --log-file stderr
+
+# Continue running tests even if one mechanism fails
+ipc-benchmark -m all --continue-on-error
 
 # Run only round-trip tests
 ipc-benchmark --round-trip --no-one-way
@@ -237,6 +263,58 @@ The benchmark generates comprehensive JSON output with the following structure:
 }
 ```
 
+### Console Output
+
+The benchmark provides a human-readable summary directly in your terminal.
+
+**Configuration Summary (at startup):**
+
+This example shows a run where no final output file is being generated.
+
+```
+Benchmark Configuration:
+-----------------------------------------------------------------
+  Mechanisms:         UnixDomainSocket, SharedMemory
+  Message Size:       1024 bytes
+  Iterations:         10000
+  Warmup Iterations:  1000
+  Test Types:         One-Way, Round-Trip
+  Log File:             ipc_benchmark.log.2025-08-05
+  Streaming CSV Output:    stream.csv
+  Continue on Error:  true
+-----------------------------------------------------------------
+```
+*Note: The `Output File` line will appear in the summary if the `--output-file` flag is used.*
+
+**Results Summary (at completion):**
+
+This summary shows the performance metrics for each successful test and clearly marks any tests that failed.
+
+```
+Benchmark Results:
+-----------------------------------------------------------------
+  Output Files Written:
+    Streaming CSV:        stream.csv
+    Log File:             ipc_benchmark.log.2025-08-05
+-----------------------------------------------------------------
+Mechanism: UnixDomainSocket
+  Message Size: 1024 bytes
+  Latency:
+      Mean: 3.15 us, P95: 5.21 us, P99: 8.43 us
+      Min:  1.50 us, Max: 45.12 us
+  Throughput:
+      Average: 310.50 MB/s, Peak: 312.80 MB/s
+  Totals:
+      Messages: 20000, Data: 19.53 MB
+-----------------------------------------------------------------
+Mechanism: SharedMemory
+  Message Size: 1024 bytes
+  Status: FAILED
+    Error: Timed out waiting for client to connect
+-----------------------------------------------------------------
+```
+*Note: The `Final JSON Results` line will appear in the "Output Files Written" section if the `--output-file` flag was used.*
+
 ## Performance Considerations
 
 ### System Configuration
@@ -272,14 +350,25 @@ taskset -c 0-3 ipc-benchmark --concurrency 4
 3. **Memory Issues**: Reduce buffer sizes or concurrency for memory-constrained systems
 4. **Compilation Issues**: Ensure Rust toolchain is up to date
 
-### Debug Mode
+### Logging and Debugging
+
+The benchmark provides two log streams: a user-friendly console output and a detailed diagnostic log.
+
+- **Console Verbosity**: Control the level of detail on `stdout` with the `-v` flag.
+  - `-v`: Show `DEBUG` level messages.
+  - `-vv`: Show `TRACE` level messages for maximum detail.
+
+- **Diagnostic Logs**: By default, detailed logs are saved to `ipc_benchmark.log`. Use the `--log-file` flag to customize this.
 
 ```bash
-# Enable verbose logging
-RUST_LOG=debug ipc-benchmark --verbose
+# Run with DEBUG level console output and default log file
+./target/release/ipc-benchmark -v
 
-# Run with detailed tracing
-RUST_LOG=trace ipc-benchmark
+# Run with TRACE level console output and log to a custom file
+./target/release/ipc-benchmark -vv --log-file /tmp/ipc-debug.log
+
+# Send detailed diagnostic logs to stderr instead of a file
+./target/release/ipc-benchmark --log-file stderr
 ```
 
 ### Performance Issues
