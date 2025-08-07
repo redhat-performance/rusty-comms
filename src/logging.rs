@@ -35,11 +35,18 @@
 //! ```
 
 use colored::*;
+use std::cell::RefCell;
 use std::fmt;
 use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::fmt::FmtContext;
 use tracing_subscriber::fmt::format::{FormatEvent, FormatFields, Writer};
 use tracing_subscriber::registry::LookupSpan;
+
+// A thread-local buffer for formatting log messages to avoid allocations on every event.
+// A generous capacity is chosen to prevent reallocations for most log messages.
+thread_local! {
+    static BUF: RefCell<String> = RefCell::new(String::with_capacity(1024));
+}
 
 /// A custom tracing event formatter for colorizing log output based on level.
 ///
@@ -59,22 +66,25 @@ where
         mut writer: Writer<'_>,
         event: &Event<'_>,
     ) -> fmt::Result {
-        // Buffer the formatted fields to apply color to the entire line.
-        // This is necessary because the format_fields method writes directly.
-        let mut buffer = String::new();
-        let mut buf_writer = Writer::new(&mut buffer);
-        ctx.format_fields(buf_writer.by_ref(), event)?;
+        BUF.with(|buf| {
+            let mut buffer = buf.borrow_mut();
+            // Clear the buffer to reuse it for the current event.
+            buffer.clear();
 
-        // Apply color based on the event's log level.
-        let colored_output = match *event.metadata().level() {
-            Level::INFO => buffer.white(),
-            Level::WARN => buffer.yellow(),
-            Level::ERROR => buffer.red(),
-            Level::DEBUG => buffer.blue(),
-            Level::TRACE => buffer.purple(),
-        };
+            let mut buf_writer = Writer::new(&mut *buffer);
+            ctx.format_fields(buf_writer.by_ref(), event)?;
 
-        // Write the colored line to the actual output.
-        writeln!(writer, "{}", colored_output)
+            // Apply color based on the event's log level.
+            let colored_output = match *event.metadata().level() {
+                Level::INFO => buffer.white(),
+                Level::WARN => buffer.yellow(),
+                Level::ERROR => buffer.red(),
+                Level::DEBUG => buffer.blue(),
+                Level::TRACE => buffer.purple(),
+            };
+
+            // Write the colored line to the actual output.
+            writeln!(writer, "{}", colored_output)
+        })
     }
 }
