@@ -168,16 +168,16 @@ pub mod defaults {
     /// - Typical of many real-world message payloads
     pub const MESSAGE_SIZE: usize = 1024;
 
-    /// Default number of iterations
+    /// Default number of messages to send
     ///
-    /// 10,000 iterations provides sufficient statistical significance
+    /// 10,000 messages provides sufficient statistical significance
     /// while keeping test duration reasonable. This can be overridden
-    /// with the `--iterations` flag for longer or shorter tests.
-    pub const ITERATIONS: usize = 10000;
+    /// with the `--msg-count` flag for longer or shorter tests.
+    pub const MSG_COUNT: usize = 10000;
 
     /// Default test duration
     ///
-    /// When using duration-based testing instead of iteration-based,
+    /// When using duration-based testing instead of message-count-based,
     /// 10 seconds provides enough time for performance to stabilize
     /// while keeping total benchmark time manageable.
     pub const DURATION: Duration = Duration::from_secs(10);

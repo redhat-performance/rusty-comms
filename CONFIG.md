@@ -20,7 +20,7 @@ This document provides detailed information about configuring the IPC Benchmark 
 |--------|-------|------|---------|-------------|
 | `-m` | | String[] | `[uds]` | IPC mechanisms to benchmark (uds, shm, tcp, pmq, all) |
 | `--message-size` | `-s` | Number | `1024` | Message size in bytes |
-| `--iterations` | `-i` | Number | `10000` | Number of iterations to run |
+| `--msg-count` | `-i` | Number | `10000` | Number of messages to send |
 | `--duration` | `-d` | String | - | Duration to run (e.g., "30s", "5m") |
 | `--concurrency` | `-c` | Number | `1` | Number of concurrent workers |
 | `--output-file` | `-o` | String | `benchmark_results.json` | Output file path |
@@ -49,13 +49,13 @@ This document provides detailed information about configuring the IPC Benchmark 
 
 ```bash
 # Basic usage
-ipc-benchmark -m uds shm pmq --message-size 4096 --iterations 50000
+ipc-benchmark -m uds shm pmq --message-size 4096 --msg-count 50000
 
 # Test all mechanisms (including PMQ)
-ipc-benchmark -m all --message-size 1024 --iterations 10000
+ipc-benchmark -m all --message-size 1024 --msg-count 10000
 
 # Test POSIX message queues specifically
-ipc-benchmark -m pmq --message-size 2048 --iterations 5000
+ipc-benchmark -m pmq --message-size 2048 --msg-count 5000
 
 # Duration-based testing
 ipc-benchmark --duration 60s --concurrency 8
@@ -78,7 +78,7 @@ You can create a configuration file to avoid repeating command-line arguments:
   "mechanisms": ["uds", "shm", "tcp", "pmq"],
   // Alternative: "mechanisms": ["all"] to test all available mechanisms
   "message_size": 1024,
-  "iterations": 10000,
+  "msg_count": 10000,
   "concurrency": 4,
   "one_way": true,
   "round_trip": true,
@@ -98,7 +98,7 @@ You can create a configuration file to avoid repeating command-line arguments:
 mechanisms = ["uds", "shm", "tcp", "pmq"]
 # Alternative: mechanisms = ["all"]  # to test all available mechanisms
 message_size = 1024
-iterations = 10000
+msg_count = 10000
 concurrency = 4
 one_way = true
 round_trip = true
@@ -262,7 +262,7 @@ echo always | sudo tee /sys/kernel/mm/transparent_hugepage/enabled
 ipc-benchmark \
   -m uds \
   --message-size 64 \
-  --iterations 100000 \
+  --msg-count 100000 \
   --concurrency 1 \
   --warmup-iterations 10000 \
   --percentiles 50 90 95 99 99.9 99.99 \
@@ -273,7 +273,7 @@ ipc-benchmark \
 **Configuration:**
 - Single-threaded to eliminate contention
 - Small message sizes to minimize serialization overhead
-- Many iterations for statistical significance
+- Many messages for statistical significance
 - Focus on round-trip measurements
 
 ### Throughput-Focused Testing
@@ -308,7 +308,7 @@ for concurrency in 1 2 4 8 16; do
     -m uds shm tcp pmq \
     --concurrency $concurrency \
     --message-size 1024 \
-    --iterations 10000 \
+    --msg-count 10000 \
     --output-file "results_c${concurrency}.json"
 done
 
@@ -318,7 +318,7 @@ for concurrency in 1 2 4 8; do
     -m all \
     --concurrency $concurrency \
     --message-size 1024 \
-    --iterations 10000 \
+    --msg-count 10000 \
     --output-file "results_all_c${concurrency}.json"
 done
 
@@ -327,7 +327,7 @@ for msg_size in 64 512 2048 8192; do
   ipc-benchmark \
     -m pmq \
     --message-size $msg_size \
-    --iterations 5000 \
+    --msg-count 5000 \
     --concurrency 1 \
     --output-file "results_pmq_${msg_size}.json"
 done
@@ -341,7 +341,7 @@ done
 ipc-benchmark \
   -m uds shm tcp \
   --message-size 1024 \
-  --iterations 50000 \
+  --msg-count 50000 \
   --concurrency 4 \
   --one-way \
   --round-trip \
@@ -351,7 +351,7 @@ ipc-benchmark \
 ipc-benchmark \
   -m all \
   --message-size 1024 \
-  --iterations 50000 \
+  --msg-count 50000 \
   --concurrency 4 \
   --one-way \
   --round-trip \

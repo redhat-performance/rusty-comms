@@ -76,13 +76,13 @@ pub struct BenchmarkConfig {
     /// messages focus on latency. Affects buffer sizing and timeout calculations.
     pub message_size: usize,
     
-    /// Number of iterations to run (None for duration-based tests)
+    /// Number of messages to run (None for duration-based tests)
     ///
     /// When specified, the test runs for exactly this many message exchanges.
     /// Mutually exclusive with duration-based testing.
-    pub iterations: Option<usize>,
+    pub msg_count: Option<usize>,
     
-    /// Duration to run tests (takes precedence over iterations)
+    /// Duration to run tests (takes precedence over message count)
     ///
     /// When specified, tests run for this time period regardless of message count.
     /// Provides more consistent test timing across different mechanisms.
@@ -167,12 +167,12 @@ impl BenchmarkConfig {
             mechanism: IpcMechanism::UnixDomainSocket, // Will be overridden per test
             message_size: args.message_size,
             
-            // Duration takes precedence over iterations
+            // Duration takes precedence over message count
             // This provides more predictable test timing
-            iterations: if args.duration.is_some() {
+            msg_count: if args.duration.is_some() {
                 None
             } else {
-                Some(args.iterations)
+                Some(args.msg_count)
             },
             
             duration: args.duration,
@@ -521,7 +521,7 @@ impl BenchmarkRunner {
             let config = transport_config.clone();
             let mechanism = self.mechanism;
             let duration = self.config.duration;
-            let iterations = self.get_iteration_count();
+            let msg_count = self.get_msg_count();
 
             tokio::spawn(async move {
                 let mut transport = TransportFactory::create(&mechanism)?;
@@ -534,14 +534,14 @@ impl BenchmarkRunner {
                 let start_time = Instant::now();
                 let mut received = 0;
 
-                // Server receive loop - adapts to duration or iteration mode
+                // Server receive loop - adapts to duration or message count mode
                 loop {
-                    // Check if we should stop based on duration or iterations
+                    // Check if we should stop based on duration or message count
                     if let Some(dur) = duration {
                         if start_time.elapsed() >= dur {
                             break;
                         }
-                    } else if received >= iterations {
+                    } else if received >= msg_count {
                         break;
                     }
 
@@ -556,7 +556,7 @@ impl BenchmarkRunner {
                             if duration.is_some() {
                                 continue; // Keep waiting for duration-based test
                             } else {
-                                break; // Iteration-based test with no more messages
+                                break; // Message-count-based test with no more messages
                             }
                         }
                     }
@@ -620,10 +620,10 @@ impl BenchmarkRunner {
                 }
             }
         } else {
-            // Iteration-based test: loop for fixed number of iterations
-            let iterations = self.get_iteration_count();
+            // Message-count-based test: loop for fixed number of messages
+            let msg_count = self.get_msg_count();
 
-            for i in 0..iterations {
+            for i in 0..msg_count {
                 let send_time = Instant::now();
                 let message = Message::new(i as u64, payload.clone(), MessageType::OneWay);
                 client_transport.send(&message).await?;
@@ -687,7 +687,7 @@ impl BenchmarkRunner {
             let config = transport_config.clone();
             let mechanism = self.mechanism;
             let duration = self.config.duration;
-            let iterations = self.get_iteration_count();
+            let msg_count = self.get_msg_count();
 
             tokio::spawn(async move {
                 let mut transport = TransportFactory::create(&mechanism)?;
@@ -707,7 +707,7 @@ impl BenchmarkRunner {
                         if start_time.elapsed() >= dur {
                             break;
                         }
-                    } else if received >= iterations {
+                    } else if received >= msg_count {
                         break;
                     }
 
@@ -731,7 +731,7 @@ impl BenchmarkRunner {
                             if duration.is_some() {
                                 continue; // Keep waiting for duration-based test
                             } else {
-                                break; // Iteration-based test with no more messages
+                                break; // Message-count-based test with no more messages
                             }
                         }
                     }
@@ -813,10 +813,10 @@ impl BenchmarkRunner {
                 }
             }
         } else {
-            // Iteration-based test: loop for fixed number of iterations
-            let iterations = self.get_iteration_count();
+            // Message-count-based test: loop for fixed number of messages
+            let msg_count = self.get_msg_count();
 
-            for i in 0..iterations {
+            for i in 0..msg_count {
                 let send_time = Instant::now();
                 let message = Message::new(i as u64, payload.clone(), MessageType::Request);
                 client_transport.send(&message).await?;
@@ -878,13 +878,13 @@ impl BenchmarkRunner {
         warn!("Running simulated multi-threaded one-way test. This is a placeholder and does not achieve true concurrency.");
 
         let mut all_worker_metrics = Vec::new();
-        let iterations_per_worker = self.get_iteration_count() / self.config.concurrency;
+        let messages_per_worker = self.get_msg_count() / self.config.concurrency;
 
         // Run each "worker" sequentially to avoid connection conflicts
         for worker_id in 0..self.config.concurrency {
             debug!(
-                "Running worker {} with {} iterations",
-                worker_id, iterations_per_worker
+                "Running worker {} with {} messages",
+                worker_id, messages_per_worker
             );
 
             let mut worker_metrics =
@@ -943,13 +943,13 @@ impl BenchmarkRunner {
         warn!("Running simulated multi-threaded round-trip test. This is a placeholder and does not achieve true concurrency.");
 
         let mut all_worker_metrics = Vec::new();
-        let iterations_per_worker = self.get_iteration_count() / self.config.concurrency;
+        let messages_per_worker = self.get_msg_count() / self.config.concurrency;
 
         // Run each "worker" sequentially to avoid connection conflicts
         for worker_id in 0..self.config.concurrency {
             debug!(
-                "Running worker {} with {} iterations",
-                worker_id, iterations_per_worker
+                "Running worker {} with {} messages",
+                worker_id, messages_per_worker
             );
 
             let mut worker_metrics = MetricsCollector::new(
@@ -1046,7 +1046,7 @@ impl BenchmarkRunner {
             let config = transport_config.clone();
             let mechanism = self.mechanism;
             let duration = self.config.duration;
-            let iterations = self.get_iteration_count();
+            let msg_count = self.get_msg_count();
 
             tokio::spawn(async move {
                 let mut transport = TransportFactory::create(&mechanism)?;
@@ -1066,7 +1066,7 @@ impl BenchmarkRunner {
                         if start_time.elapsed() >= dur {
                             break;
                         }
-                    } else if processed >= iterations {
+                    } else if processed >= msg_count {
                         break;
                     }
 
@@ -1088,7 +1088,7 @@ impl BenchmarkRunner {
                             if duration.is_some() {
                                 continue; // Keep waiting for duration-based test
                             } else {
-                                break; // Iteration-based test with no more messages
+                                break; // Message-count-based test with no more messages
                             }
                         }
                     }
@@ -1162,10 +1162,10 @@ impl BenchmarkRunner {
                 }
             }
         } else {
-            // Iteration-based test: loop for fixed number of iterations
-            let iterations = self.get_iteration_count();
+            // Message-count-based test: loop for fixed number of messages
+            let msg_count = self.get_msg_count();
 
-            for i in 0..iterations {
+            for i in 0..msg_count {
                 let send_start = Instant::now();
                 let message = Message::new(i as u64, payload.clone(), MessageType::Request);
                 
@@ -1228,13 +1228,13 @@ impl BenchmarkRunner {
 
         // Validate buffer size for shared memory to prevent EOF errors
         if self.mechanism == IpcMechanism::SharedMemory {
-            let total_message_data = self.get_iteration_count() * (self.config.message_size + 32); // 32 bytes overhead per message
+            let total_message_data = self.get_msg_count() * (self.config.message_size + 32); // 32 bytes overhead per message
             if adaptive_buffer_size < total_message_data {
                 warn!(
-                    "Buffer size ({} bytes) may be too small for {} iterations of {} byte messages. \
-                     Consider using --buffer-size {} or reducing iterations/message size.",
+                    "Buffer size ({} bytes) may be too small for {} messages of {} byte messages. \
+                     Consider using --buffer-size {} or reducing message count/message size.",
                     adaptive_buffer_size,
-                    self.get_iteration_count(),
+                    self.get_msg_count(),
                     self.config.message_size,
                     total_message_data * 2 // Suggest 2x the calculated size
                 );
@@ -1243,14 +1243,14 @@ impl BenchmarkRunner {
 
         // Conservative queue depth for PMQ - most systems have very low limits (often just 10)
         let adaptive_queue_depth = if self.mechanism == IpcMechanism::PosixMessageQueue {
-            let iterations = self.get_iteration_count();
+            let msg_count = self.get_msg_count();
             
             // Warn about PMQ limitations for high-throughput tests
-            if iterations > 10000 {
+            if msg_count > 10000 {
                 warn!(
-                    "PMQ with {} iterations may be very slow due to system queue depth limits (typically 10). \
-                     Consider using fewer iterations or a different mechanism for high-throughput testing.",
-                    iterations
+                    "PMQ with {} messages may be very slow due to system queue depth limits (typically 10). \
+                     Consider using fewer messages or a different mechanism for high-throughput testing.",
+                    msg_count
                 );
             }
             
@@ -1258,7 +1258,7 @@ impl BenchmarkRunner {
             // Most systems default to msg_max=10, so we'll stay at that limit
             let queue_depth = 10; // Always use system default
             
-            debug!("PMQ using conservative queue depth: {} iterations -> depth {}", iterations, queue_depth);
+            debug!("PMQ using conservative queue depth: {} messages -> depth {}", msg_count, queue_depth);
             queue_depth
         } else {
             10 // Default for other mechanisms
@@ -1296,15 +1296,15 @@ impl BenchmarkRunner {
     /// reduce the likelihood of buffer overflow conditions.
     fn calculate_adaptive_buffer_size(&self) -> usize {
         let base_buffer_size = self.config.buffer_size;
-        let iterations = self.get_iteration_count();
+        let msg_count = self.get_msg_count();
         let message_size = self.config.message_size;
 
-        // For shared memory with high iteration counts, increase buffer size more aggressively
-        if self.mechanism == IpcMechanism::SharedMemory && iterations > 8000 {
+        // For shared memory with high message counts, increase buffer size more aggressively
+        if self.mechanism == IpcMechanism::SharedMemory && msg_count > 8000 {
             // Calculate buffer size to hold more messages for high throughput
-            let messages_to_buffer = if iterations >= 50_000 {
+            let messages_to_buffer = if msg_count >= 50_000 {
                 300 // Buffer for 300 messages for very high counts
-            } else if iterations >= 20_000 {
+            } else if msg_count >= 20_000 {
                 200 // Buffer for 200 messages for high counts
             } else {
                 150 // Buffer for 150 messages for moderate-high counts
@@ -1317,8 +1317,8 @@ impl BenchmarkRunner {
             let adaptive_size = calculated_size.max(base_buffer_size).min(2 * 1024 * 1024);
 
             debug!(
-                "Adaptive buffer sizing for {} iterations: {} bytes (was {} bytes)",
-                iterations, adaptive_size, base_buffer_size
+                "Adaptive buffer sizing for {} messages: {} bytes (was {} bytes)",
+                msg_count, adaptive_size, base_buffer_size
             );
 
             adaptive_size
@@ -1327,15 +1327,15 @@ impl BenchmarkRunner {
         }
     }
 
-    /// Get the number of iterations to run
+    /// Get the number of messages to run
     ///
-    /// This helper method provides a consistent way to determine the iteration
+    /// This helper method provides a consistent way to determine the message
     /// count, falling back to a reasonable default when not specified.
     ///
     /// ## Returns
-    /// The number of iterations to execute, either from configuration or default
-    fn get_iteration_count(&self) -> usize {
-        self.config.iterations.unwrap_or(10000)
+    /// The number of messages to execute, either from configuration or default
+    fn get_msg_count(&self) -> usize {
+        self.config.msg_count.unwrap_or(10000)
     }
 }
 
@@ -1350,7 +1350,7 @@ mod tests {
         let config = BenchmarkConfig {
             mechanism: IpcMechanism::UnixDomainSocket,
             message_size: 1024,
-            iterations: Some(1000),
+            msg_count: Some(1000),
             duration: None,
             concurrency: 1,
             one_way: true,
@@ -1363,7 +1363,7 @@ mod tests {
         };
 
         assert_eq!(config.message_size, 1024);
-        assert_eq!(config.iterations, Some(1000));
+        assert_eq!(config.msg_count, Some(1000));
         assert_eq!(config.concurrency, 1);
         assert!(config.one_way);
         assert!(!config.round_trip);
@@ -1375,7 +1375,7 @@ mod tests {
         let config = BenchmarkConfig {
             mechanism: IpcMechanism::UnixDomainSocket,
             message_size: 1024,
-            iterations: Some(100),
+            msg_count: Some(100),
             duration: None,
             concurrency: 1,
             one_way: true,

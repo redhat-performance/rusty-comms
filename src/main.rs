@@ -216,7 +216,7 @@ async fn main() -> Result<()> {
                         mechanism,
                         config.message_size,
                         config.concurrency,
-                        config.iterations,
+                        config.msg_count,
                         config.duration,
                     );
                     failed_result.set_failure(error_msg);
@@ -250,7 +250,7 @@ async fn main() -> Result<()> {
 /// executes both one-way and round-trip latency tests as configured.
 ///
 /// ## Parameters
-/// - `config`: Benchmark configuration (message size, iterations, etc.)
+/// - `config`: Benchmark configuration (message size, message count, etc.)
 /// - `mechanism`: The specific IPC mechanism to test 
 /// - `results_manager`: Manager for collecting and outputting results
 ///

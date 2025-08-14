@@ -64,7 +64,7 @@ The optimized binary will be available at `target/release/ipc-benchmark`.
 ./target/release/ipc-benchmark \
   -m uds shm tcp \
   --message-size 4096 \
-  --iterations 50000 \
+  --msg-count 50000 \
   --concurrency 4
 ```
 
@@ -83,10 +83,10 @@ ipc-benchmark -m uds shm pmq
 ipc-benchmark -m all
 
 # Test POSIX message queue specifically
-ipc-benchmark -m pmq --message-size 1024 --iterations 10000
+ipc-benchmark -m pmq --message-size 1024 --msg-count 10000
 
-# Run with custom message size and iterations
-ipc-benchmark --message-size 1024 --iterations 10000
+# Run with custom message size and message count
+ipc-benchmark --message-size 1024 --msg-count 10000
 
 # Run for a specific duration
 ipc-benchmark --duration 30s
@@ -158,7 +158,7 @@ ipc-benchmark \
 ipc-benchmark \
   -m uds \
   --message-size 64 \
-  --iterations 100000 \
+  --msg-count 100000 \
   --warmup-iterations 10000 \
   --percentiles 50 95 99 99.9 99.99
 ```
@@ -168,7 +168,7 @@ ipc-benchmark \
 ipc-benchmark \
   -m uds shm tcp pmq \
   --message-size 1024 \
-  --iterations 50000 \
+  --msg-count 50000 \
   --concurrency 4 \
   --output-file comparison.json
 ```
@@ -178,7 +178,7 @@ ipc-benchmark \
 ipc-benchmark \
   -m all \
   --message-size 1024 \
-  --iterations 50000 \
+  --msg-count 50000 \
   --concurrency 1 \
   --output-file complete_comparison.json
 ```
@@ -189,14 +189,14 @@ ipc-benchmark \
 ipc-benchmark \
   -m pmq \
   --message-size 1024 \
-  --iterations 10000 \
+  --msg-count 10000 \
   --percentiles 50 95 99
 
 # PMQ with concurrency testing
 ipc-benchmark \
   -m pmq \
   --message-size 512 \
-  --iterations 5000 \
+  --msg-count 5000 \
   --concurrency 2 \
   --duration 30s
 ```
@@ -226,7 +226,7 @@ The benchmark generates comprehensive JSON output with the following structure:
       "test_config": {
         "message_size": 1024,
         "concurrency": 1,
-        "iterations": 10000
+        "msg_count": 10000
       },
       "one_way_results": {
         "latency": {
@@ -339,7 +339,7 @@ taskset -c 0-3 ipc-benchmark --concurrency 4
 - **Warmup**: Use warmup iterations to stabilize performance
 - **Duration**: Longer test durations provide more stable results
 - **Noise**: Run tests on idle systems for best accuracy
-- **Repetition**: Run multiple test iterations and average results
+- **Repetition**: Run multiple test executions and average results
 
 ## Troubleshooting
 
@@ -481,7 +481,7 @@ The benchmark now validates buffer sizes for shared memory to prevent buffer ove
 # This will show a warning:
 ipc-benchmark -m shm -i 10000 -s 1024 --buffer-size 8192
 
-# Warning: Buffer size (8192 bytes) may be too small for 10000 iterations 
+# Warning: Buffer size (8192 bytes) may be too small for 10000 messages 
 # of 1024 byte messages. Consider using --buffer-size 20971520
 ```
 
