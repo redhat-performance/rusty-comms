@@ -61,6 +61,7 @@ use super::{ConnectionId, IpcTransport, Message, TransportConfig, TransportState
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use nix::errno::Errno;
+#[cfg(target_os = "linux")]
 use nix::mqueue::{mq_close, mq_open, mq_receive, mq_send, mq_unlink, MQ_OFlag, MqAttr, MqdT};
 use nix::sys::stat::Mode;
 use std::os::unix::io::{AsRawFd, FromRawFd};

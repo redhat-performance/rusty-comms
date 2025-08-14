@@ -75,6 +75,16 @@ pub mod benchmark;
 /// - Output file and streaming configuration
 pub mod cli;
 
+/// Cross-environment coordination for host-container IPC testing  
+///
+/// Implements process coordination logic for Issue #11 automotive
+/// cross-environment benchmarking. Features:
+/// - Host coordinator for spawning multiple server processes
+/// - Client coordinator for container-side passive operation
+/// - Result aggregation from multiple processes
+/// - Synchronization between host and container environments
+pub mod coordination;
+
 /// IPC transport implementations and abstractions
 ///
 /// Contains the core transport abstraction (`IpcTransport` trait) and specific
@@ -126,7 +136,13 @@ pub use benchmark::{BenchmarkConfig, BenchmarkRunner};
 ///
 /// Re-exported for applications that want to use the same CLI parsing logic
 /// or need access to the `IpcMechanism` enumeration for programmatic usage.
-pub use cli::{Args, IpcMechanism};
+pub use cli::{Args, ExecutionMode, IpcMechanism};
+
+/// Cross-environment coordination types
+///
+/// Key types for orchestrating cross-environment IPC testing between
+/// host and container environments.
+pub use coordination::{HostCoordinator, ClientProcess, ProcessId};
 
 /// Core IPC abstractions
 ///

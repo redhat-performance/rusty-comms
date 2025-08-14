@@ -182,6 +182,21 @@ async fn main() -> Result<()> {
     // all available IPC mechanisms for comprehensive testing
     let mechanisms = IpcMechanism::expand_all(args.mechanisms.clone());
 
+    // Check execution mode and route to appropriate coordination logic
+    use ipc_benchmark::cli::ExecutionMode;
+    match config.mode {
+        ExecutionMode::Host | ExecutionMode::Client => {
+            // Cross-environment coordination mode
+            info!("Running in {} mode for cross-environment IPC testing", config.mode);
+            run_cross_environment_coordination(&config).await?;
+            return Ok(());
+        }
+        ExecutionMode::Standalone => {
+            // Traditional single-environment benchmarking
+            info!("Running in standalone mode for single-environment benchmarking");
+        }
+    }
+
     // Run benchmarks for each selected mechanism.
     // This loop iterates through the list of IPC mechanisms to be tested,
     // executing the benchmark for each one sequentially.
@@ -282,5 +297,55 @@ async fn run_benchmark_for_mechanism(
     // The manager handles both immediate streaming (if enabled)
     // and final consolidated output formatting
     results_manager.add_results(results).await?;
+    Ok(())
+}
+
+/// Run cross-environment coordination for host-container IPC testing
+///
+/// This function handles the coordination logic for Issue #11 cross-environment
+/// benchmarking. It creates the appropriate coordinator based on execution mode
+/// and orchestrates the testing process.
+///
+/// ## Host Mode
+/// - Spawns multiple server processes for each expected client
+/// - Waits for container clients to connect 
+/// - Coordinates benchmark execution across all processes
+/// - Collects and aggregates results
+///
+/// ## Client Mode  
+/// - Operates in passive mode waiting for host connections
+/// - Participates in benchmarks as directed by host coordinator
+/// - Reports results back to host
+async fn run_cross_environment_coordination(config: &BenchmarkConfig) -> Result<()> {
+    use ipc_benchmark::coordination;
+    use ipc_benchmark::cli::ExecutionMode;
+
+    match config.mode {
+        ExecutionMode::Host => {
+            info!("Starting host coordinator for {} clients", config.client_count);
+            let mut coordinator = coordination::HostCoordinator::new(config.clone())?;
+            let results = coordinator.run().await?;
+            
+            info!("Host coordination completed with {} result sets", results.len());
+            
+            // TODO: Add proper result formatting and output
+            if !results.is_empty() {
+                info!("Cross-environment benchmark completed successfully");
+            } else {
+                warn!("No results collected from cross-environment benchmark");
+            }
+        }
+        ExecutionMode::Client => {
+            info!("Starting client process, waiting for host connection");
+            let coordinator = coordination::ClientProcess::new(config.clone())?;
+            coordinator.run().await?;
+            
+            info!("Client process completed");
+        }
+        ExecutionMode::Standalone => {
+            return Err(anyhow::anyhow!("Standalone mode should not use cross-environment coordination"));
+        }
+    }
+
     Ok(())
 }

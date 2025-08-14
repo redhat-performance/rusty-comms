@@ -800,7 +800,16 @@ impl TransportFactory {
             IpcMechanism::UnixDomainSocket => Ok(Box::new(UnixDomainSocketTransport::new())),
             IpcMechanism::SharedMemory => Ok(Box::new(SharedMemoryTransport::new())),
             IpcMechanism::TcpSocket => Ok(Box::new(TcpSocketTransport::new())),
-            IpcMechanism::PosixMessageQueue => Ok(Box::new(PosixMessageQueueTransport::new())),
+            IpcMechanism::PosixMessageQueue => {
+                #[cfg(target_os = "linux")]
+                {
+                    Ok(Box::new(PosixMessageQueueTransport::new()))
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    Err(anyhow::anyhow!("POSIX Message Queues are not supported on this platform. Please use Linux for PMQ testing."))
+                }
+            }
             IpcMechanism::All => {
                 Err(anyhow::anyhow!("'All' mechanism should be expanded before transport creation"))
             }

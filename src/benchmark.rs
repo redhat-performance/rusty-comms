@@ -260,7 +260,7 @@ impl BenchmarkRunner {
             self.mechanism,
             self.config.message_size,
             self.config.concurrency,
-            self.config.iterations,
+            self.config.msg_count,
             self.config.duration,
         );
 

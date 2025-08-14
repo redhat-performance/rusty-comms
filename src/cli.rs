@@ -81,6 +81,7 @@ const TIMING: &str = "Timing";
 const CONCURRENCY: &str = "Concurrency";
 const OUTPUT_AND_LOGGING: &str = "Output and Logging";
 const ADVANCED: &str = "Advanced";
+const CROSS_ENVIRONMENT: &str = "Cross-Environment (Issue #11)";
 
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None, styles = styles())]
@@ -237,6 +238,47 @@ pub struct Args {
     /// to avoid conflicts when testing multiple mechanisms.
     #[arg(long, default_value_t = 8080, help_heading = ADVANCED)]
     pub port: u16,
+
+    /// Execution mode for cross-environment IPC benchmarking
+    ///
+    /// Controls how rusty-comms operates in cross-environment scenarios:
+    /// - standalone: Traditional single-environment testing (default)
+    /// - host: Host coordinator that spawns server processes
+    /// - client: Container client that connects to host servers
+    #[arg(long, value_enum, default_value = "standalone", help_heading = CROSS_ENVIRONMENT)]
+    pub mode: ExecutionMode,
+
+    /// Number of client connections to support in host mode
+    ///
+    /// When running in host mode, this specifies how many container clients
+    /// the host coordinator should expect to connect. Each client gets its
+    /// own dedicated server process for isolated testing.
+    #[arg(long, default_value_t = 1, help_heading = CROSS_ENVIRONMENT)]
+    pub client_count: usize,
+
+    /// IPC socket path for cross-environment communication
+    ///
+    /// Specifies the file system path for IPC communication between
+    /// host and container environments. This path should be mounted
+    /// as a shared volume in container deployments.
+    #[arg(long, help_heading = CROSS_ENVIRONMENT)]
+    pub ipc_path: Option<PathBuf>,
+
+    /// Wait timeout for client connections in host mode (seconds)
+    ///
+    /// Maximum time the host coordinator will wait for all expected
+    /// clients to connect before timing out. Useful for automated
+    /// testing scenarios with container orchestration.
+    #[arg(long, default_value_t = 30, help_heading = CROSS_ENVIRONMENT)]
+    pub connection_timeout: u64,
+
+    /// Enable cross-environment coordination logs
+    ///
+    /// Provides detailed logging for cross-environment coordination,
+    /// including client connection status, process spawning, and
+    /// synchronization events. Useful for debugging container setups.
+    #[arg(long, help_heading = CROSS_ENVIRONMENT)]
+    pub cross_env_debug: bool,
 }
 
 /// Available IPC mechanisms for benchmarking
@@ -292,6 +334,53 @@ pub enum IpcMechanism {
     /// all available transport types.
     #[value(name = "all")]
     All,
+}
+
+/// Execution mode for cross-environment IPC benchmarking
+///
+/// This enumeration defines the different execution modes for supporting
+/// cross-environment IPC testing between host and container environments,
+/// as specified in Issue #11.
+///
+/// ## Modes
+///
+/// - **Standalone**: Traditional single-environment benchmarking (default)
+/// - **Host**: Host-side coordination mode that spawns multiple server processes
+/// - **Client**: Container-side client mode that connects to host servers
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+pub enum ExecutionMode {
+    /// Standalone mode (default) - traditional single-environment benchmarking
+    ///
+    /// Runs both client and server in the same process, suitable for
+    /// single-environment testing. This is the legacy behavior.
+    #[value(name = "standalone")]
+    Standalone,
+
+    /// Host mode - coordinates multiple server processes for cross-environment testing
+    ///
+    /// In this mode, rusty-comms acts as a coordinator that spawns multiple
+    /// server processes to communicate with containerized clients. This mode
+    /// is designed for the host (safety domain) in automotive systems.
+    #[value(name = "host")]
+    Host,
+
+    /// Client mode - passive client that connects to host servers
+    ///
+    /// In this mode, rusty-comms acts as a passive client that waits for
+    /// connections from host-side servers. This mode is designed for
+    /// containerized environments (non-safety domain).
+    #[value(name = "client")]
+    Client,
+}
+
+impl std::fmt::Display for ExecutionMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExecutionMode::Standalone => write!(f, "Standalone"),
+            ExecutionMode::Host => write!(f, "Host Coordinator"),
+            ExecutionMode::Client => write!(f, "Container Client"),
+        }
+    }
 }
 
 impl std::fmt::Display for IpcMechanism {
@@ -401,6 +490,21 @@ pub struct BenchmarkConfiguration {
     
     /// Port number for network-based mechanisms
     pub port: u16,
+    
+    /// Execution mode for cross-environment testing
+    pub mode: ExecutionMode,
+    
+    /// Number of client connections to support (host mode)
+    pub client_count: usize,
+    
+    /// IPC socket path for cross-environment communication
+    pub ipc_path: Option<PathBuf>,
+    
+    /// Connection timeout for client connections (seconds)
+    pub connection_timeout: u64,
+    
+    /// Enable cross-environment coordination debugging
+    pub cross_env_debug: bool,
 }
 
 impl From<&Args> for BenchmarkConfiguration {
@@ -444,6 +548,11 @@ impl From<&Args> for BenchmarkConfiguration {
             buffer_size: args.buffer_size,
             host: args.host.clone(),
             port: args.port,
+            mode: args.mode,
+            client_count: args.client_count,
+            ipc_path: args.ipc_path.clone(),
+            connection_timeout: args.connection_timeout,
+            cross_env_debug: args.cross_env_debug,
         }
     }
 }
