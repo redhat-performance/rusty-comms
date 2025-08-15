@@ -634,6 +634,9 @@ impl ResultsManager {
     pub fn enable_csv_streaming(&mut self, streaming_file: &Path) -> Result<()> {
         self.streaming_csv_file = Some(streaming_file.to_path_buf());
         self.csv_streaming_enabled = true;
+        // Enable per-message streaming so that records are actually written
+        self.per_message_streaming = true;
+        self.streaming_enabled = true;
 
         // Create/truncate the streaming file and write header
         let mut file = std::fs::OpenOptions::new()
