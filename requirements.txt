@@ -1,0 +1,5 @@
+# Dashboard Dependencies for Rusty-Comms Benchmark Visualization
+dash>=2.14.0
+plotly>=5.17.0
+pandas>=2.0.0
+numpy>=1.24.0
