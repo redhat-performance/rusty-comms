@@ -697,64 +697,137 @@ class DashboardApp:
         return filtered
     
     def generate_performance_insights(self, percentile_df: pd.DataFrame, throughput_df: pd.DataFrame = None, max_latency_df: pd.DataFrame = None) -> Dict:
-        """Generate smart insights and recommendations from the data."""
+        """Generate mechanism + message size specific performance recommendations based on lowest jitter and worst-case latency."""
         insights = {
             'best_mechanism': None,
             'best_latency': None,
             'best_max_latency': None,
             'best_max_mechanism': None,
+            'best_consistency_mechanism': None,
             'best_throughput': None,
             'recommendations': [],
             'summary_stats': {}
         }
         
         if percentile_df.empty:
+            insights['recommendations'].append("📈 **NO DATA**: Select mechanisms and message sizes to generate performance insights")
             return insights
-            
-        # Find best mechanism for latency (lowest P50)
+        
+        # Get one-way latency data for analysis
         one_way_p50 = percentile_df[
             (percentile_df['latency_type'] == 'One-way') & 
             (percentile_df['percentile'] == 'P50 (Median)')
         ]
+        one_way_p95 = percentile_df[
+            (percentile_df['latency_type'] == 'One-way') & 
+            (percentile_df['percentile'] == 'P95')
+        ]
         
-        if not one_way_p50.empty:
-            best_latency_row = one_way_p50.loc[one_way_p50['latency_us'].idxmin()]
-            insights['best_mechanism'] = best_latency_row['mechanism']
-            insights['best_latency'] = best_latency_row['latency_us']
-            insights['summary_stats']['best_p50'] = best_latency_row['latency_us']
+        if one_way_p50.empty or max_latency_df is None or max_latency_df.empty:
+            insights['recommendations'].append("📊 **INSUFFICIENT DATA**: Need P50, P95, and max latency data for analysis")
+            return insights
+        
+        one_way_max = max_latency_df[max_latency_df['latency_type'] == 'One-way']
+        if one_way_max.empty:
+            insights['recommendations'].append("📊 **INSUFFICIENT DATA**: Need max latency data for analysis")
+            return insights
+        
+        # Calculate performance scores for each mechanism + message size combination
+        performance_scores = []
+        
+        for message_size in sorted(one_way_p50['message_size'].unique()):
+            size_p50 = one_way_p50[one_way_p50['message_size'] == message_size]
+            size_p95 = one_way_p95[one_way_p95['message_size'] == message_size]
+            size_max = one_way_max[one_way_max['message_size'] == message_size]
             
-            # Calculate performance advantages
-            worst_latency = one_way_p50['latency_us'].max()
-            if worst_latency > insights['best_latency']:
-                improvement = ((worst_latency - insights['best_latency']) / worst_latency) * 100
+            for mechanism in size_p50['mechanism'].unique():
+                p50_data = size_p50[size_p50['mechanism'] == mechanism]['latency_us']
+                p95_data = size_p95[size_p95['mechanism'] == mechanism]['latency_us']
+                max_data = size_max[size_max['mechanism'] == mechanism]['max_latency_us']
+                
+                if not p50_data.empty and not p95_data.empty and not max_data.empty:
+                    p50_val = p50_data.iloc[0]
+                    p95_val = p95_data.iloc[0]
+                    max_val = max_data.iloc[0]
+                    
+                    # Calculate jitter (P95-P50 spread) - lower is better
+                    jitter = p95_val - p50_val
+                    
+                    # Combined score: normalize both jitter and max latency, then combine
+                    # Lower scores are better
+                    performance_scores.append({
+                        'mechanism': mechanism,
+                        'message_size': message_size,
+                        'p50': p50_val,
+                        'p95': p95_val,
+                        'max': max_val,
+                        'jitter': jitter,
+                        'score': max_val + jitter  # Simple combination: max latency + jitter penalty
+                    })
+        
+        if not performance_scores:
+            insights['recommendations'].append("📊 **NO DATA**: Unable to calculate performance scores")
+            return insights
+        
+        # Generate recommendations by message size
+        message_sizes = sorted(set(score['message_size'] for score in performance_scores))
+        
+        for message_size in message_sizes:
+            size_scores = [s for s in performance_scores if s['message_size'] == message_size]
+            if len(size_scores) <= 1:
+                continue
+                
+            # Sort by combined score (lower is better)
+            size_scores.sort(key=lambda x: x['score'])
+            
+            best = size_scores[0]
+            worst = size_scores[-1]
+            
+            # Create recommendation
+            if len(size_scores) == 2:
+                # Simple comparison between two mechanisms
+                score_improvement = ((worst['score'] - best['score']) / worst['score']) * 100
                 insights['recommendations'].append(
-                    f"{insights['best_mechanism']} is {improvement:.1f}% faster than the slowest mechanism"
+                    f"📊 **{message_size}B**: {best['mechanism']} excels with {best['jitter']:.1f}μs jitter + {best['max']:.1f}μs max latency ({score_improvement:.0f}% better than {worst['mechanism']})"
+                )
+            else:
+                # Multiple mechanisms - show best and mention others
+                runner_up = size_scores[1]
+                insights['recommendations'].append(
+                    f"📊 **{message_size}B**: {best['mechanism']} leads with {best['jitter']:.1f}μs jitter + {best['max']:.1f}μs max latency (beats {runner_up['mechanism']} and {len(size_scores)-2} others)"
                 )
         
-        # Max latency analysis
-        if max_latency_df is not None and not max_latency_df.empty:
-            one_way_max = max_latency_df[max_latency_df['latency_type'] == 'One-way']
-            if not one_way_max.empty:
-                best_max_row = one_way_max.loc[one_way_max['max_latency_us'].idxmin()]
-                insights['best_max_latency'] = best_max_row['max_latency_us']
-                insights['best_max_mechanism'] = best_max_row['mechanism']
-                insights['summary_stats']['best_max_latency'] = best_max_row['max_latency_us']
-                
-                # Calculate max latency advantages
-                worst_max_latency = one_way_max['max_latency_us'].max()
-                if worst_max_latency > insights['best_max_latency']:
-                    max_improvement = ((worst_max_latency - insights['best_max_latency']) / worst_max_latency) * 100
-                    insights['recommendations'].append(
-                        f"{insights['best_max_mechanism']} has {max_improvement:.1f}% better worst-case latency performance"
-                    )
-                
-                # Compare with P50 best mechanism for consistency
-                if insights['best_mechanism'] and insights['best_max_mechanism'] != insights['best_mechanism']:
-                    insights['recommendations'].append(
-                        f"Different mechanisms excel at typical ({insights['best_mechanism']}) vs worst-case ({insights['best_max_mechanism']}) performance"
-                    )
+        # Overall analysis: find the mechanism that appears most often as winner
+        mechanism_wins = {}
+        for message_size in message_sizes:
+            size_scores = [s for s in performance_scores if s['message_size'] == message_size]
+            if size_scores:
+                size_scores.sort(key=lambda x: x['score'])
+                winner = size_scores[0]['mechanism']
+                mechanism_wins[winner] = mechanism_wins.get(winner, 0) + 1
         
-        # Throughput analysis
+        if mechanism_wins:
+            overall_winner = max(mechanism_wins, key=mechanism_wins.get)
+            win_count = mechanism_wins[overall_winner]
+            total_sizes = len(message_sizes)
+            
+            if win_count == total_sizes:
+                insights['recommendations'].insert(0, f"🏆 **CHAMPION**: {overall_winner} dominates across ALL {total_sizes} message sizes with optimal jitter + max latency")
+            elif win_count > total_sizes / 2:
+                insights['recommendations'].insert(0, f"🥇 **TOP PERFORMER**: {overall_winner} wins {win_count}/{total_sizes} message sizes with superior jitter + max latency control")
+            else:
+                insights['recommendations'].insert(0, f"🎯 **CONTEXT MATTERS**: No single winner - choose {overall_winner} for {win_count} sizes, others context-dependent")
+        
+        # Add warning for extreme outliers
+        extreme_outliers = [s for s in performance_scores if s['max'] > s['p50'] * 20 and s['max'] > 100]
+        if extreme_outliers:
+            worst_outlier = max(extreme_outliers, key=lambda x: x['max'] / x['p50'])
+            ratio = worst_outlier['max'] / worst_outlier['p50']
+            insights['recommendations'].insert(0, 
+                f"⚠️ **WARNING**: {worst_outlier['mechanism']} at {worst_outlier['message_size']}B has extreme spikes ({worst_outlier['max']:.0f}μs max vs {worst_outlier['p50']:.1f}μs typical = {ratio:.0f}x worse)"
+            )
+        
+        # Throughput analysis for summary stats
         if throughput_df is not None and not throughput_df.empty:
             one_way_throughput = throughput_df[throughput_df['type'] == 'One-way']
             if not one_way_throughput.empty:
@@ -765,15 +838,15 @@ class DashboardApp:
                     'message_size': best_throughput_row['message_size']
                 }
         
-        # Generate message size recommendations
-        if len(one_way_p50) > 1:
-            for message_size in one_way_p50['message_size'].unique():
-                size_data = one_way_p50[one_way_p50['message_size'] == message_size]
-                if len(size_data) > 1:
-                    best_for_size = size_data.loc[size_data['latency_us'].idxmin()]
-                    insights['recommendations'].append(
-                        f"For {message_size}B messages: {best_for_size['mechanism']} performs best ({best_for_size['latency_us']:.1f}μs P50)"
-                    )
+        # Store summary stats for cards
+        if performance_scores:
+            best_overall = min(performance_scores, key=lambda x: x['score'])
+            insights['best_mechanism'] = best_overall['mechanism']
+            insights['best_latency'] = best_overall['p50']
+            insights['best_max_latency'] = best_overall['max']
+            insights['best_max_mechanism'] = best_overall['mechanism']
+            insights['summary_stats']['best_p50'] = best_overall['p50']
+            insights['summary_stats']['best_max_latency'] = best_overall['max']
         
         return insights
     
@@ -845,21 +918,34 @@ class DashboardApp:
             })
         ], style={'flex': '1', 'min-width': '0'})
         
-        # Performance Stats Card
-        one_way_p50 = percentile_df[
-            (percentile_df['latency_type'] == 'One-way') & 
-            (percentile_df['percentile'] == 'P50 (Median)')
-        ]
+        # Performance Range Card for Best Mechanism
+        best_mechanism = insights.get('best_mechanism', 'N/A')
         
-        min_latency = one_way_p50['latency_us'].min() if not one_way_p50.empty else 0
-        max_latency = one_way_p50['latency_us'].max() if not one_way_p50.empty else 0
-        avg_latency = one_way_p50['latency_us'].mean() if not one_way_p50.empty else 0
+        # Get all latency data for the best mechanism (not just P50)
+        if best_mechanism != 'N/A' and not percentile_df.empty:
+            best_mechanism_data = percentile_df[
+                (percentile_df['mechanism'] == best_mechanism) & 
+                (percentile_df['latency_type'] == 'One-way')
+            ]
+            
+            if not best_mechanism_data.empty:
+                min_latency = best_mechanism_data['latency_us'].min()
+                max_latency = best_mechanism_data['latency_us'].max()
+                p99_latency = best_mechanism_data[
+                    best_mechanism_data['percentile'] == 'P99'
+                ]['latency_us'].iloc[0] if len(best_mechanism_data[
+                    best_mechanism_data['percentile'] == 'P99'
+                ]) > 0 else 0
+            else:
+                min_latency = max_latency = p99_latency = 0
+        else:
+            min_latency = max_latency = p99_latency = 0
         
         performance_card = html.Div([
             html.Div([
                 html.H4("📊 Performance Range", style={'margin': '0', 'color': '#1e40af', 'font-size': '0.9rem'}),
                 html.H2(f"{min_latency:.1f} - {max_latency:.1f}μs", style={'margin': '5px 0', 'color': '#1e3a8a'}),
-                html.P(f"Average: {avg_latency:.1f}μs", style={'margin': '0', 'color': '#6b7280', 'font-size': '0.9rem'})
+                html.P(f"{best_mechanism} (P99: {p99_latency:.1f}μs)", style={'margin': '0', 'color': '#6b7280', 'font-size': '0.9rem'})
             ], style={
                 'background': 'linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%)',
                 'padding': '20px', 'border-radius': '12px', 'text-align': 'center',
@@ -902,24 +988,9 @@ class DashboardApp:
                 ], style={'flex': '1', 'min-width': '0'})
         
         # Insights Card (adjusted width)
-        recommendations = insights.get('recommendations', [])
-        insight_text = recommendations[0] if recommendations else "Select data to see insights"
-        
-        insights_card = html.Div([
-            html.Div([
-                html.H4("💡 Key Insight", style={'margin': '0', 'color': '#7c2d12', 'font-size': '0.9rem'}),
-                html.P(insight_text, style={'margin': '10px 0', 'color': '#1f2937', 'font-size': '0.85rem', 'line-height': '1.4'})
-            ], style={
-                'background': 'linear-gradient(135deg, #fef7cd 0%, #fef3c7 100%)',
-                'padding': '20px', 'border-radius': '12px', 'text-align': 'center',
-                'box-shadow': '0 4px 6px rgba(0, 0, 0, 0.1)', 'border': '1px solid #f59e0b'
-            })
-        ], style={'flex': '1', 'min-width': '0'})
-        
         cards = [best_mechanism_card, performance_card, throughput_card]
         if max_latency_card.children:  # Only add if max latency data exists
             cards.append(max_latency_card)
-        cards.append(insights_card)
         
         return html.Div(cards, style={
             'display': 'flex',
