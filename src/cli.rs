@@ -101,18 +101,18 @@ pub struct Args {
     #[arg(short = 's', long, default_value_t = crate::defaults::MESSAGE_SIZE)]
     pub message_size: usize,
 
-    /// Number of iterations to run (ignored if duration is specified)
+    /// Number of messages to send (ignored if duration is specified)
     ///
     /// Controls how many messages are sent during the test when using
-    /// iteration-based testing. Higher values provide better statistical
+    /// message-count-based testing. Higher values provide better statistical
     /// accuracy but increase test duration. Ignored when --duration is specified.
-    #[arg(short = 'i', long, default_value_t = crate::defaults::ITERATIONS, help_heading = TIMING)]
-    pub iterations: usize,
+    #[arg(short = 'i', long, default_value_t = crate::defaults::MSG_COUNT, help_heading = TIMING)]
+    pub msg_count: usize,
 
-    /// Duration to run the benchmark (takes precedence over iterations)
+    /// Duration to run the benchmark (takes precedence over message count)
     ///
     /// When specified, tests run for a fixed time period rather than a fixed
-    /// number of iterations. Supports human-readable formats like "30s", "5m", "1h".
+    /// number of messages. Supports human-readable formats like "30s", "5m", "1h".
     /// This mode is useful for consistent test durations across different mechanisms.
     #[arg(short = 'd', long, value_parser = parse_duration, help_heading = TIMING)]
     pub duration: Option<Duration>,
@@ -372,10 +372,10 @@ pub struct BenchmarkConfiguration {
     /// Size of message payloads in bytes
     pub message_size: usize,
     
-    /// Number of iterations (None if duration-based)
-    pub iterations: Option<usize>,
+    /// Number of messages (None if duration-based)
+    pub msg_count: Option<usize>,
     
-    /// Test duration (takes precedence over iterations)
+    /// Test duration (takes precedence over message count)
     pub duration: Option<Duration>,
     
     /// Number of concurrent workers
@@ -408,7 +408,7 @@ impl From<&Args> for BenchmarkConfiguration {
     ///
     /// This conversion handles several important transformations:
     /// 1. **Mechanism expansion**: Converts "all" to concrete mechanism list
-    /// 2. **Duration precedence**: If duration is specified, iterations becomes None
+    /// 2. **Duration precedence**: If duration is specified, message count becomes None
     /// 3. **Test type selection**: If neither test type is specified, both run by default
     /// 4. **Value validation**: Ensures all parameters are within valid ranges
     ///
@@ -427,12 +427,12 @@ impl From<&Args> for BenchmarkConfiguration {
             
             message_size: args.message_size,
             
-            // Duration takes precedence over iterations
-            // If duration is specified, we ignore the iteration count
-            iterations: if args.duration.is_some() {
+            // Duration takes precedence over message count
+            // If duration is specified, we ignore the message count
+            msg_count: if args.duration.is_some() {
                 None
             } else {
-                Some(args.iterations)
+                Some(args.msg_count)
             },
             
             duration: args.duration,
@@ -628,11 +628,11 @@ impl fmt::Display for Args {
         writeln!(f, "  Mechanisms:         {}", mechanisms_str)?;
         writeln!(f, "  Message Size:       {} bytes", self.message_size)?;
 
-        // Display duration if specified, as it takes precedence over iterations.
+        // Display duration if specified, as it takes precedence over message count.
         if let Some(duration) = self.duration {
             writeln!(f, "  Test Duration:      {:?}", duration)?;
         } else {
-            writeln!(f, "  Iterations:         {}", self.iterations)?;
+            writeln!(f, "  Message Count:      {}", self.msg_count)?;
         }
 
         writeln!(f, "  Warmup Iterations:  {}", self.warmup_iterations)?;

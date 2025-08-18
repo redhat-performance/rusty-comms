@@ -294,7 +294,7 @@ pub struct BenchmarkResults {
 /// ## Configuration Categories
 ///
 /// - **Message Parameters**: Size and payload characteristics
-/// - **Test Control**: Duration, iterations, and concurrency settings
+/// - **Test Control**: Duration, message count, and concurrency settings
 /// - **Test Types**: Which measurement patterns were enabled
 /// - **Performance Tuning**: Buffer sizes and optimization parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -305,10 +305,10 @@ pub struct TestConfiguration {
     /// Number of concurrent workers used
     pub concurrency: usize,
     
-    /// Number of iterations run (None for duration-based tests)
-    pub iterations: Option<usize>,
+    /// Number of messages run (None for duration-based tests)
+    pub msg_count: Option<usize>,
     
-    /// Test duration (None for iteration-based tests)
+    /// Test duration (None for message-count-based tests)
     pub duration: Option<Duration>,
     
     /// Whether one-way latency testing was enabled
@@ -1412,8 +1412,8 @@ impl BenchmarkResults {
     /// - `mechanism`: The IPC mechanism being tested
     /// - `message_size`: Size of messages used in testing
     /// - `concurrency`: Number of concurrent workers
-    /// - `iterations`: Number of iterations (None for duration-based)
-    /// - `duration`: Test duration (None for iteration-based)
+    /// - `msg_count`: Number of messages (None for duration-based)
+    /// - `duration`: Test duration (None for message-count-based)
     ///
     /// ## Returns
     /// Initialized results structure ready for data collection
@@ -1426,13 +1426,13 @@ impl BenchmarkResults {
         mechanism: IpcMechanism,
         message_size: usize,
         concurrency: usize,
-        iterations: Option<usize>,
+        msg_count: Option<usize>,
         duration: Option<Duration>,
     ) -> Self {
         let test_config = TestConfiguration {
             message_size,
             concurrency,
-            iterations,
+            msg_count,
             duration,
             one_way_enabled: false,
             round_trip_enabled: false,
@@ -1683,7 +1683,7 @@ mod tests {
         assert_eq!(results.mechanism, IpcMechanism::UnixDomainSocket);
         assert_eq!(results.test_config.message_size, 1024);
         assert_eq!(results.test_config.concurrency, 1);
-        assert_eq!(results.test_config.iterations, Some(1000));
+        assert_eq!(results.test_config.msg_count, Some(1000));
         assert!(results.one_way_results.is_none());
         assert!(results.round_trip_results.is_none());
     }
