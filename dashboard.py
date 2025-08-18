@@ -15,11 +15,17 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import dash
 from dash import dcc, html, Input, Output, State, callback, dash_table
+from dash.exceptions import PreventUpdate
 import numpy as np
+
+from scipy import stats
+try:
+    from sklearn.ensemble import IsolationForest
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union
-import hashlib
-from datetime import datetime
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -282,10 +288,10 @@ class DashboardApp:
             # Validate directory path
             dir_path = Path(directory_path)
             if not dir_path.exists():
-                return False, f"❌ Error: Directory '{directory_path}' does not exist."
+                return False, f"Error: Directory '{directory_path}' does not exist."
             
             if not dir_path.is_dir():
-                return False, f"❌ Error: '{directory_path}' is not a directory."
+                return False, f"Error: '{directory_path}' is not a directory."
             
             # Load data from new directory
             logger.info(f"Reloading data from directory: {directory_path}")
@@ -297,19 +303,19 @@ class DashboardApp:
             streaming_count = len(new_data_store['streaming_data'])
             
             if summary_count == 0 and streaming_count == 0:
-                return False, f"⚠️ Warning: No benchmark data files found in '{directory_path}'."
+                return False, f"Warning: No benchmark data files found in '{directory_path}'."
             
             # Update the data store
             self.data_store.update(new_data_store)
             
             # Success message
-            success_msg = f"✅ Success: Loaded {summary_count} summary records and {streaming_count:,} streaming records from '{directory_path}'."
+            success_msg = f"Success: Loaded {summary_count} summary records and {streaming_count:,} streaming records from '{directory_path}'."
             logger.info(success_msg)
             
             return True, success_msg
             
         except Exception as e:
-            error_msg = f"❌ Error loading data: {str(e)}"
+            error_msg = f"Error loading data: {str(e)}"
             logger.error(error_msg)
             return False, error_msg
     
@@ -362,13 +368,13 @@ class DashboardApp:
                             dcc.Dropdown(
                                 id='data-directory-dropdown',
                                 options=[
-                                    {'label': '📁 Current Directory (.)', 'value': '.'},
-                                    {'label': '📁 Parent Directory (..)', 'value': '..'},
-                                    {'label': '📁 Home Directory (~)', 'value': '~'},
-                                    {'label': '📁 Desktop (~/Desktop)', 'value': '~/Desktop'},
-                                    {'label': '📁 Downloads (~/Downloads)', 'value': '~/Downloads'},
-                                    {'label': '📁 Documents (~/Documents)', 'value': '~/Documents'},
-                                    {'label': '🔧 Custom Path...', 'value': 'custom'}
+                                    {'label': 'Current Directory (.)', 'value': '.'},
+                                    {'label': 'Parent Directory (..)', 'value': '..'},
+                                    {'label': 'Home Directory (~)', 'value': '~'},
+                                    {'label': 'Desktop (~/Desktop)', 'value': '~/Desktop'},
+                                    {'label': 'Downloads (~/Downloads)', 'value': '~/Downloads'},
+                                    {'label': 'Documents (~/Documents)', 'value': '~/Documents'},
+                                    {'label': 'Custom Path...', 'value': 'custom'}
                                 ],
                                 value='.',
                                 clearable=False,
@@ -393,7 +399,7 @@ class DashboardApp:
                             ], id='custom-path-container', style={'display': 'none', 'margin-bottom': '10px'}),
                             
                             html.Button(
-                                '🔄 Reload Data', 
+                                'Reload Data', 
                                 id='reload-data-button',
                                 n_clicks=0,
                                 style={
@@ -416,14 +422,14 @@ class DashboardApp:
                     
                     html.Div([
                         html.H3("Filters"),
-                        html.P("Select items to filter data. Leave empty to show all.", 
+                        html.P("Select items to filter data. All options are selected by default.", 
                                style={'color': '#6b7280', 'font-size': '0.9rem', 'margin-bottom': '15px', 'font-style': 'italic'}),
                         
                         html.Label("Mechanisms:"),
                         dcc.Checklist(
                             id='mechanism-filter',
                             options=[{'label': m, 'value': m} for m in filter_options['mechanisms']],
-                            value=[],  # Start with no filters selected (show all data)
+                            value=filter_options['mechanisms'],  # Start with all mechanisms selected
                             className="filter-checklist"
                         ),
                     ], className="filter-section"),
@@ -433,7 +439,7 @@ class DashboardApp:
                         dcc.Checklist(
                             id='message-size-filter',
                             options=[{'label': f"{s}B", 'value': s} for s in filter_options['message_sizes']],
-                            value=[],  # Start with no filters selected (show all data)
+                            value=filter_options['message_sizes'],  # Start with all message sizes selected
                             className="filter-checklist"
                         ),
                     ], className="filter-section"),
@@ -480,9 +486,6 @@ class DashboardApp:
     def setup_callbacks(self):
         """Setup all dashboard callbacks."""
         
-        # Setup initial components for threshold callbacks
-        available_mechanisms = self.get_filter_options()['mechanisms']
-        
         @self.app.callback(
             Output("tab-content", "children"),
             [Input("main-tabs", "value"),
@@ -498,89 +501,209 @@ class DashboardApp:
                 return self.render_timeseries_tab(mechanisms, message_sizes)
             return html.Div("Select a tab")
         
-        # Dynamic threshold controls callback
-        @self.app.callback(
-            Output('threshold-controls-container', 'children'),
-            [Input("mechanism-filter", "value")],
-            prevent_initial_call=False
-        )
-        def update_threshold_controls(mechanisms):
-            if not mechanisms or len(mechanisms) == 0:
-                return [
-                    html.Label("Outlier Thresholds (μs):", style={'margin-bottom': '15px', 'display': 'block', 'font-weight': 'bold'}),
-                    html.P("Select mechanisms in the filter to set thresholds.", 
-                           style={'color': '#6b7280', 'font-size': '0.9rem', 'margin-bottom': '15px', 'font-style': 'italic'}),
-                ]
-            
-            threshold_controls = [
-                html.Label("Outlier Thresholds (μs):", style={'margin-bottom': '15px', 'display': 'block', 'font-weight': 'bold'}),
-                html.P("Set thresholds to highlight outliers in red (leave empty for no outlier detection).", 
-                       style={'color': '#6b7280', 'font-size': '0.9rem', 'margin-bottom': '15px', 'font-style': 'italic'}),
-            ]
-            
-            # Create threshold inputs for each selected mechanism using pattern-matching IDs
-            threshold_inputs = []
-            for mechanism in mechanisms:
-                threshold_inputs.append(html.Div([
-                    html.Label(f"{mechanism}:", style={'margin-bottom': '5px', 'display': 'block'}),
-                    dcc.Input(
-                        id={'type': 'threshold-input', 'mechanism': mechanism},
-                        type='number',
-                        placeholder='Enter threshold',
-                        value=None,
-                        min=0,
-                        style={'width': '100%', 'margin-bottom': '10px'}
-                    )
-                ], style={'width': f'{95//len(mechanisms)}%', 'display': 'inline-block', 'vertical-align': 'top', 'margin-right': '2%'}))
-            
-            threshold_controls.append(html.Div(threshold_inputs))
-            return threshold_controls
 
-        # Time series charts update callback (with pattern-matching for thresholds)
+
+        # Enhanced time series charts update callback with all new controls
         @self.app.callback(
             Output('ts-charts-container', 'children'),
             [Input('ts-moving-avg-slider', 'value'),
              Input('ts-display-options', 'value'),
-             Input('ts-dot-size-slider', 'value'),
-             Input('ts-line-width-slider', 'value'),
+             Input('ts-chart-layout', 'value'),
+             Input('ts-view-options', 'value'),
+             Input('ts-latency-types', 'value'),
+             Input('ts-statistical-overlays', 'value'),
+             Input('ts-y-axis-scale', 'value'),
+             Input('ts-y-axis-range', 'value'),
+             Input('ts-sampling-strategy', 'value'),
              Input("mechanism-filter", "value"),
-             Input("message-size-filter", "value"), 
-             Input({'type': 'threshold-input', 'mechanism': dash.dependencies.ALL}, 'value')],
-            prevent_initial_call=False
+             Input("message-size-filter", "value")],
+            prevent_initial_call=True
         )
-        def update_timeseries_charts(moving_avg_window, display_options, dot_size, line_width, mechanisms, message_sizes, threshold_values):
+        def update_timeseries_charts(moving_avg_window, display_options, 
+                                   chart_layout, view_options, latency_types, statistical_overlays,
+                                   y_axis_scale, y_axis_range, sampling_strategy,
+                                   mechanisms, message_sizes):
             from dash import ctx
             
-            # Handle None values for size controls
-            dot_size = dot_size if dot_size is not None else 3
-            line_width = line_width if line_width is not None else 2
+            # Handle None values for controls with defaults
+            chart_layout = chart_layout if chart_layout is not None else 'separate'
+            view_options = view_options if view_options is not None else ['sync_zoom']
+            latency_types = latency_types if latency_types is not None else ['one_way']
+            statistical_overlays = statistical_overlays if statistical_overlays is not None else ['percentile_bands']
+            y_axis_scale = y_axis_scale if y_axis_scale is not None else 'log'
+            y_axis_range = y_axis_range if y_axis_range is not None else 'auto'
+            sampling_strategy = sampling_strategy if sampling_strategy is not None else 'uniform'
             
-            # Extract threshold values and map them to mechanisms
-            thresholds = {}
-            if mechanisms and len(mechanisms) > 0:
-                try:
-                    # Get the IDs of the threshold inputs that triggered this callback
-                    # Pattern-matching inputs provide their IDs in ctx.inputs_list
-                    threshold_inputs_list = ctx.inputs_list[-1]  # Last input is the pattern-matching one
-                    
-                    # Create mapping from mechanism to threshold value
-                    for threshold_input in threshold_inputs_list:
-                        if threshold_input['id']['type'] == 'threshold-input':
-                            mechanism_name = threshold_input['id']['mechanism']
-                            threshold_value = threshold_input['value']
-                            thresholds[mechanism_name] = threshold_value
-                    
-                    # Ensure all selected mechanisms have threshold entries (even if None)
-                    for mech in mechanisms:
-                        if mech not in thresholds:
-                            thresholds[mech] = None
-                            
-                except Exception as e:
-                    # If there's any issue extracting from context, set all thresholds to None
-                    for mech in mechanisms if mechanisms else []:
-                        thresholds[mech] = None
+
             
-            return self.render_timeseries_charts(mechanisms, message_sizes, moving_avg_window, display_options, thresholds, dot_size, line_width)
+            return self.render_timeseries_charts(
+                mechanisms, message_sizes, moving_avg_window, display_options, 
+                chart_layout, view_options, latency_types, statistical_overlays, 
+                y_axis_scale, y_axis_range, sampling_strategy
+            )
+        
+
+
+        # Real-time statistics panel update callback
+        @self.app.callback(
+            Output('ts-stats-panel', 'children'),
+            [Input('ts-view-options', 'value'),
+             Input('ts-latency-types', 'value'),
+             Input("mechanism-filter", "value"),
+             Input("message-size-filter", "value")],
+            prevent_initial_call=False
+        )
+        def update_stats_panel(view_options, latency_types, mechanisms, message_sizes):
+            if not view_options or 'show_stats' not in view_options:
+                return html.Div()
+            
+            if not latency_types:
+                latency_types = ['one_way']  # Default to one-way if nothing selected
+            
+            # Generate statistics overview
+            streaming_df = self.filter_data(self.data_store['streaming_data'], mechanisms, message_sizes)
+            
+            if streaming_df.empty:
+                return html.Div()
+            
+            # Create separate tables for each mechanism
+            mechanism_tables = []
+            for mechanism in sorted(streaming_df['mechanism'].unique()):
+                mechanism_data = streaming_df[streaming_df['mechanism'] == mechanism]
+                
+                # Create stats for each latency type selected
+                for latency_type in latency_types:
+                    latency_col = 'one_way_latency_us' if latency_type == 'one_way' else 'round_trip_latency_us'
+                    type_label = 'One-way' if latency_type == 'one_way' else 'Round-trip'
+                    
+                    # Skip if column doesn't exist or has no data
+                    if latency_col not in mechanism_data.columns or mechanism_data[latency_col].isna().all():
+                        continue
+                    
+                    stats_data = []
+                    for msg_size in sorted(mechanism_data['message_size'].unique()):
+                        subset_data = mechanism_data[mechanism_data['message_size'] == msg_size]
+                        if len(subset_data) > 0 and not subset_data[latency_col].isna().all():
+                            stats_data.append({
+                                'Message Size (bytes)': f"{msg_size:,}",
+                                'Count': f"{len(subset_data):,}",
+                                'Mean (μs)': f"{subset_data[latency_col].mean():.2f}",
+                                'Std (μs)': f"{subset_data[latency_col].std():.2f}",
+                                'Min (μs)': f"{subset_data[latency_col].min():.2f}",
+                                'Max (μs)': f"{subset_data[latency_col].max():.2f}",
+                                'P95 (μs)': f"{subset_data[latency_col].quantile(0.95):.2f}",
+                                'P99 (μs)': f"{subset_data[latency_col].quantile(0.99):.2f}"
+                            })
+                    
+                    if stats_data:
+                        # Color scheme for each mechanism
+                        mechanism_colors = {
+                            'PosixMessageQueue': 'rgba(59, 130, 246, 0.1)',
+                            'SharedMemory': 'rgba(34, 197, 94, 0.1)', 
+                            'TcpSocket': 'rgba(251, 146, 60, 0.1)',
+                            'UnixDomainSocket': 'rgba(168, 85, 247, 0.1)'
+                        }
+                        
+                        table = html.Div([
+                            html.H5(f"{mechanism} - {type_label} Latency", 
+                                   style={'margin-bottom': '10px', 'color': '#1f2937', 'font-weight': 'bold'}),
+                            dash_table.DataTable(
+                                data=stats_data,
+                                columns=[{"name": col, "id": col} for col in stats_data[0].keys()],
+                                style_cell={'textAlign': 'left', 'padding': '8px', 'font-size': '0.8rem'},
+                                style_header={'backgroundColor': '#f8fafc', 'fontWeight': 'bold', 'border': '1px solid #e2e8f0'},
+                                style_data={'backgroundColor': mechanism_colors.get(mechanism, '#ffffff'), 'border': '1px solid #e2e8f0'},
+                                style_table={'border-radius': '8px', 'overflow': 'hidden'},
+                                style_cell_conditional=[
+                                    {'if': {'column_id': 'Message Size (bytes)'}, 'textAlign': 'right', 'font-weight': 'bold'},
+                                    {'if': {'column_id': 'Count'}, 'textAlign': 'right'},
+                                    {'if': {'column_id': 'Mean (μs)'}, 'textAlign': 'right'},
+                                    {'if': {'column_id': 'Std (μs)'}, 'textAlign': 'right'},
+                                    {'if': {'column_id': 'Min (μs)'}, 'textAlign': 'right'},
+                                    {'if': {'column_id': 'Max (μs)'}, 'textAlign': 'right'},
+                                    {'if': {'column_id': 'P95 (μs)'}, 'textAlign': 'right'},
+                                    {'if': {'column_id': 'P99 (μs)'}, 'textAlign': 'right'}
+                                ]
+                            )
+                        ], style={'margin-bottom': '20px'})
+                        mechanism_tables.append(table)
+            
+            if not mechanism_tables:
+                return html.Div()
+            
+            return html.Div([
+                html.H4("Statistics Overview", style={'margin-bottom': '20px', 'color': '#1f2937', 'font-size': '1.1rem'}),
+                html.Div(mechanism_tables)
+            ], style={'margin-bottom': '30px', 'padding': '20px', 'background': '#f8fafc', 'border-radius': '8px', 'border': '1px solid #e2e8f0'})
+        
+        # Preset configuration buttons callbacks
+        @self.app.callback(
+            [Output('ts-chart-layout', 'value'),
+             Output('ts-view-options', 'value'),
+             Output('ts-statistical-overlays', 'value'),
+             Output('ts-y-axis-scale', 'value'),
+             Output('ts-sampling-strategy', 'value'),
+             Output('ts-display-options', 'value')],
+            [Input('preset-performance', 'n_clicks'),
+             Input('preset-detailed', 'n_clicks'),
+             Input('preset-statistical', 'n_clicks'),
+             Input('preset-outliers', 'n_clicks'),
+             Input('preset-reset', 'n_clicks')],
+            [State('ts-view-options', 'value')],
+            prevent_initial_call=True
+        )
+        def handle_preset_buttons(perf_clicks, detailed_clicks, stat_clicks, outlier_clicks, reset_clicks, current_view_options):
+            import dash
+            from dash import ctx
+            
+            if not ctx.triggered:
+                raise PreventUpdate
+            
+            button_id = ctx.triggered[0]['prop_id'].split('.')[0]
+            
+            # Preserve the "show_stats" setting from current view options
+            current_view_options = current_view_options or []
+            preserve_stats = 'show_stats' in current_view_options
+            
+            def build_view_options(base_options):
+                """Helper to build view options while preserving stats panel setting"""
+                result = base_options.copy()
+                # Force disable show_stats for all presets
+                if 'show_stats' in result:
+                    result.remove('show_stats')
+                return result
+            
+            if button_id == 'preset-performance':
+                # Performance Analysis preset
+                return ('separate', build_view_options(['sync_zoom']), 
+                       ['percentile_bands', 'rolling_percentiles', 'spike_detection'], 
+                       'log', 'peak_preserving', ['raw_dots', 'moving_avg'])
+            
+            elif button_id == 'preset-detailed':
+                # Detailed Inspection preset
+                return ('separate', build_view_options(['sync_zoom']), 
+                       ['percentile_bands', 'spike_detection', 'distributions'], 
+                       'log', 'uniform', ['raw_dots', 'moving_avg'])
+            
+            elif button_id == 'preset-statistical':
+                # Statistical Overview preset
+                return ('faceted', build_view_options(['sync_zoom']), 
+                       ['percentile_bands', 'rolling_percentiles', 'distributions', 'spike_detection'], 
+                       'log', 'adaptive', ['moving_avg'])
+            
+            elif button_id == 'preset-outliers':
+                # Outlier Detection preset
+                return ('separate', build_view_options(['sync_zoom']), 
+                       ['spike_detection', 'anomaly_detection'], 
+                       'log', 'outlier_preserving', ['raw_dots'])
+            
+            elif button_id == 'preset-reset':
+                # Reset to defaults (but preserve statistics panel setting)
+                return ('separate', build_view_options(['sync_zoom']), 
+                       ['percentile_bands', 'spike_detection'], 
+                       'log', 'uniform', ['raw_dots', 'moving_avg'])
+            
+            raise PreventUpdate
         
         # Directory dropdown callback to show/hide custom input
         @self.app.callback(
@@ -609,7 +732,7 @@ class DashboardApp:
         def handle_data_reload(n_clicks, dropdown_value, custom_path):
             if n_clicks == 0:
                 # No callback needed for initial state
-                raise dash.exceptions.PreventUpdate
+                raise PreventUpdate
             
             # Determine the directory path to use
             if dropdown_value == 'custom':
@@ -642,13 +765,13 @@ class DashboardApp:
                     })
                 ])
                 
-                # Return updated filter options and clear selections
+                # Return updated filter options and select all by default
                 return (
                     status_div,
                     [{'label': m, 'value': m} for m in new_filter_options['mechanisms']],
-                    [],  # Clear mechanism filter selection
+                    new_filter_options['mechanisms'],  # Select all mechanisms by default
                     [{'label': str(s), 'value': s} for s in new_filter_options['message_sizes']],
-                    []   # Clear message size filter selection
+                    new_filter_options['message_sizes']   # Select all message sizes by default
                 )
             else:
                 # Create status message with error styling
@@ -664,20 +787,16 @@ class DashboardApp:
                     })
                 ])
                 
-                # Keep existing filter options on error
+                # Keep existing filter options on error and maintain all selections
                 current_filter_options = self.get_filter_options()
                 return (
                     status_div,
                     [{'label': m, 'value': m} for m in current_filter_options['mechanisms']],
-                    [],  # Clear mechanism filter selection
+                    current_filter_options['mechanisms'],  # Keep all mechanisms selected
                     [{'label': str(s), 'value': s} for s in current_filter_options['message_sizes']],
-                    []   # Clear message size filter selection
+                    current_filter_options['message_sizes']   # Keep all message sizes selected
                 )
-        
 
-        
-
-    
     def filter_data(self, df: pd.DataFrame, mechanisms: List, message_sizes: List) -> pd.DataFrame:
         """Apply filters to dataframe. Empty filter lists mean 'show all' for that dimension."""
         if df.empty:
@@ -710,7 +829,7 @@ class DashboardApp:
         }
         
         if percentile_df.empty:
-            insights['recommendations'].append("📈 **NO DATA**: Select mechanisms and message sizes to generate performance insights")
+            insights['recommendations'].append("**NO DATA**: Select mechanisms and message sizes to generate performance insights")
             return insights
         
         # Get one-way latency data for analysis
@@ -724,12 +843,12 @@ class DashboardApp:
         ]
         
         if one_way_p50.empty or max_latency_df is None or max_latency_df.empty:
-            insights['recommendations'].append("📊 **INSUFFICIENT DATA**: Need P50, P95, and max latency data for analysis")
+            insights['recommendations'].append("**INSUFFICIENT DATA**: Need P50, P95, and max latency data for analysis")
             return insights
         
         one_way_max = max_latency_df[max_latency_df['latency_type'] == 'One-way']
         if one_way_max.empty:
-            insights['recommendations'].append("📊 **INSUFFICIENT DATA**: Need max latency data for analysis")
+            insights['recommendations'].append("**INSUFFICIENT DATA**: Need max latency data for analysis")
             return insights
         
         # Calculate performance scores for each mechanism + message size combination
@@ -766,7 +885,7 @@ class DashboardApp:
                     })
         
         if not performance_scores:
-            insights['recommendations'].append("📊 **NO DATA**: Unable to calculate performance scores")
+            insights['recommendations'].append("**NO DATA**: Unable to calculate performance scores")
             return insights
         
         # Generate recommendations by message size
@@ -788,13 +907,13 @@ class DashboardApp:
                 # Simple comparison between two mechanisms
                 score_improvement = ((worst['score'] - best['score']) / worst['score']) * 100
                 insights['recommendations'].append(
-                    f"📊 **{message_size}B**: {best['mechanism']} excels with {best['jitter']:.1f}μs jitter + {best['max']:.1f}μs max latency ({score_improvement:.0f}% better than {worst['mechanism']})"
+                    f"**{message_size}B**: {best['mechanism']} excels with {best['jitter']:.1f}μs jitter + {best['max']:.1f}μs max latency ({score_improvement:.0f}% better than {worst['mechanism']})"
                 )
             else:
                 # Multiple mechanisms - show best and mention others
                 runner_up = size_scores[1]
                 insights['recommendations'].append(
-                    f"📊 **{message_size}B**: {best['mechanism']} leads with {best['jitter']:.1f}μs jitter + {best['max']:.1f}μs max latency (beats {runner_up['mechanism']} and {len(size_scores)-2} others)"
+                    f"**{message_size}B**: {best['mechanism']} leads with {best['jitter']:.1f}μs jitter + {best['max']:.1f}μs max latency (beats {runner_up['mechanism']} and {len(size_scores)-2} others)"
                 )
         
         # Overall analysis: find the mechanism that appears most often as winner
@@ -812,11 +931,11 @@ class DashboardApp:
             total_sizes = len(message_sizes)
             
             if win_count == total_sizes:
-                insights['recommendations'].insert(0, f"🏆 **CHAMPION**: {overall_winner} dominates across ALL {total_sizes} message sizes with optimal jitter + max latency")
+                insights['recommendations'].insert(0, f"**CHAMPION**: {overall_winner} dominates across ALL {total_sizes} message sizes with optimal jitter + max latency")
             elif win_count > total_sizes / 2:
-                insights['recommendations'].insert(0, f"🥇 **TOP PERFORMER**: {overall_winner} wins {win_count}/{total_sizes} message sizes with superior jitter + max latency control")
+                insights['recommendations'].insert(0, f"**TOP PERFORMER**: {overall_winner} wins {win_count}/{total_sizes} message sizes with superior jitter + max latency control")
             else:
-                insights['recommendations'].insert(0, f"🎯 **CONTEXT MATTERS**: No single winner - choose {overall_winner} for {win_count} sizes, others context-dependent")
+                insights['recommendations'].insert(0, f"**CONTEXT MATTERS**: No single winner - choose {overall_winner} for {win_count} sizes, others context-dependent")
         
         # Add warning for extreme outliers
         extreme_outliers = [s for s in performance_scores if s['max'] > s['p50'] * 20 and s['max'] > 100]
@@ -824,7 +943,7 @@ class DashboardApp:
             worst_outlier = max(extreme_outliers, key=lambda x: x['max'] / x['p50'])
             ratio = worst_outlier['max'] / worst_outlier['p50']
             insights['recommendations'].insert(0, 
-                f"⚠️ **WARNING**: {worst_outlier['mechanism']} at {worst_outlier['message_size']}B has extreme spikes ({worst_outlier['max']:.0f}μs max vs {worst_outlier['p50']:.1f}μs typical = {ratio:.0f}x worse)"
+                f"**WARNING**: {worst_outlier['mechanism']} at {worst_outlier['message_size']}B has extreme spikes ({worst_outlier['max']:.0f}μs max vs {worst_outlier['p50']:.1f}μs typical = {ratio:.0f}x worse)"
             )
         
         # Throughput analysis for summary stats
@@ -908,7 +1027,7 @@ class DashboardApp:
         # Best Mechanism Card
         best_mechanism_card = html.Div([
             html.Div([
-                html.H4("🏆 Best Overall", style={'margin': '0', 'color': '#059669', 'font-size': '0.9rem'}),
+                html.H4("Best Overall", style={'margin': '0', 'color': '#059669', 'font-size': '0.9rem'}),
                 html.H2(insights.get('best_mechanism', 'N/A'), style={'margin': '5px 0', 'color': '#065f46'}),
                 html.P(f"P50: {insights.get('best_latency', 0):.1f}μs", style={'margin': '0', 'color': '#6b7280', 'font-size': '0.9rem'})
             ], style={
@@ -943,7 +1062,7 @@ class DashboardApp:
         
         performance_card = html.Div([
             html.Div([
-                html.H4("📊 Performance Range", style={'margin': '0', 'color': '#1e40af', 'font-size': '0.9rem'}),
+                html.H4("Performance Range", style={'margin': '0', 'color': '#1e40af', 'font-size': '0.9rem'}),
                 html.H2(f"{min_latency:.1f} - {max_latency:.1f}μs", style={'margin': '5px 0', 'color': '#1e3a8a'}),
                 html.P(f"{best_mechanism} (P99: {p99_latency:.1f}μs)", style={'margin': '0', 'color': '#6b7280', 'font-size': '0.9rem'})
             ], style={
@@ -957,7 +1076,7 @@ class DashboardApp:
         throughput_info = insights.get('best_throughput', {})
         throughput_card = html.Div([
             html.Div([
-                html.H4("🚀 Peak Throughput", style={'margin': '0', 'color': '#7c2d12', 'font-size': '0.9rem'}),
+                html.H4("Peak Throughput", style={'margin': '0', 'color': '#7c2d12', 'font-size': '0.9rem'}),
                 html.H2(f"{throughput_info.get('msgs_per_sec', 0):,.0f}", style={'margin': '5px 0', 'color': '#92400e'}),
                 html.P(f"msgs/sec ({throughput_info.get('mechanism', 'N/A')})", style={'margin': '0', 'color': '#6b7280', 'font-size': '0.9rem'})
             ], style={
@@ -977,7 +1096,7 @@ class DashboardApp:
                 
                 max_latency_card = html.Div([
                     html.Div([
-                        html.H4("⚡ Best Max Latency", style={'margin': '0', 'color': '#dc2626', 'font-size': '0.9rem'}),
+                        html.H4("Best Max Latency", style={'margin': '0', 'color': '#dc2626', 'font-size': '0.9rem'}),
                         html.H2(f"{best_max_latency:.1f}μs", style={'margin': '5px 0', 'color': '#991b1b'}),
                         html.P(f"{best_max_mechanism}", style={'margin': '0', 'color': '#6b7280', 'font-size': '0.9rem'})
                     ], style={
@@ -1233,12 +1352,12 @@ class DashboardApp:
                             })
         
         throughput_df = pd.DataFrame(throughput_data) if throughput_data else pd.DataFrame()
-        
-        # Filter out invalid throughput data
+            
+            # Filter out invalid throughput data
         if not throughput_df.empty:
             throughput_df = throughput_df.dropna(subset=['msgs_per_sec', 'bytes_per_sec'])
             throughput_df = throughput_df[(throughput_df['msgs_per_sec'] > 0) & (throughput_df['bytes_per_sec'] > 0)]
-        
+            
         # Calculate max latency data for comparison
         max_latency_df = self.calculate_max_latencies(mechanisms, message_sizes)
         
@@ -1349,7 +1468,7 @@ class DashboardApp:
             )
             # Update facet labels to show only the message size value
             msgs_fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
-            
+                
             bytes_fig = px.bar(
                 throughput_df,
                 x='mechanism',
@@ -1427,7 +1546,7 @@ class DashboardApp:
             )
             
             percentile_table_div = html.Div([
-                html.H3("📊 Dynamic Percentile Statistics"),
+                html.H3("Dynamic Percentile Statistics"),
                 html.P(f"Percentiles calculated directly from {sum(display_percentiles['Sample Count'])//6:,} streaming data points. "
                        f"This provides accurate, real-time percentile calculations based on your selected filters.",
                        style={'color': '#6b7280', 'margin-bottom': '20px', 'fontSize': '0.95rem'}),
@@ -1469,7 +1588,7 @@ class DashboardApp:
             # Max Latency Tables (side by side)
             if not max_oneway_pivot.empty or not max_roundtrip_pivot.empty:
                 max_tables_row = html.Div([
-                    html.H4("📈 Maximum Latency (μs)", style={'color': '#dc2626', 'margin-bottom': '15px', 'text-align': 'center'}),
+                    html.H4("Maximum Latency (μs)", style={'color': '#dc2626', 'margin-bottom': '15px', 'text-align': 'center'}),
                     html.Div([
                         # One-way max latency table
                         html.Div([
@@ -1499,7 +1618,7 @@ class DashboardApp:
             # Average Latency Tables (side by side)
             if not avg_oneway_pivot.empty or not avg_roundtrip_pivot.empty:
                 avg_tables_row = html.Div([
-                    html.H4("📊 Average Latency (μs)", style={'color': '#059669', 'margin-bottom': '15px', 'text-align': 'center'}),
+                    html.H4("Average Latency (μs)", style={'color': '#059669', 'margin-bottom': '15px', 'text-align': 'center'}),
                     html.Div([
                         # One-way average latency table
                         html.Div([
@@ -1527,7 +1646,7 @@ class DashboardApp:
                 tables.append(avg_tables_row)
             
             latency_table_div = html.Div([
-                html.H3("📊 Latency Performance Data"),
+                html.H3("Latency Performance Data"),
                 html.P(f"Latency measurements organized by message size and mechanism. Lower values indicate better performance.",
                        style={'color': '#6b7280', 'margin-bottom': '20px', 'fontSize': '0.95rem'}),
                 *tables
@@ -1570,7 +1689,7 @@ class DashboardApp:
             # Messages/sec Tables (side by side)
             if not oneway_msgs_pivot.empty or not roundtrip_msgs_pivot.empty:
                 msgs_tables_row = html.Div([
-                    html.H4("📊 Message Throughput (messages/sec)", style={'color': '#0277bd', 'margin-bottom': '15px', 'text-align': 'center'}),
+                    html.H4("Message Throughput (messages/sec)", style={'color': '#0277bd', 'margin-bottom': '15px', 'text-align': 'center'}),
                     html.Div([
                         # One-way messages/sec table
                         html.Div([
@@ -1600,7 +1719,7 @@ class DashboardApp:
             # Bytes/sec Tables (side by side)
             if not oneway_bytes_pivot.empty or not roundtrip_bytes_pivot.empty:
                 bytes_tables_row = html.Div([
-                    html.H4("🚀 Data Throughput (MB/sec)", style={'color': '#0277bd', 'margin-bottom': '15px', 'text-align': 'center'}),
+                    html.H4("Data Throughput (MB/sec)", style={'color': '#0277bd', 'margin-bottom': '15px', 'text-align': 'center'}),
                     html.Div([
                         # One-way bytes/sec table
                         html.Div([
@@ -1628,7 +1747,7 @@ class DashboardApp:
                 throughput_tables.append(bytes_tables_row)
             
             throughput_table_div = html.Div([
-                html.H3("🚀 Throughput Performance Data"),
+                html.H3("Throughput Performance Data"),
                 html.P(f"Throughput measurements organized by message size and mechanism. Higher values indicate better performance.",
                        style={'color': '#6b7280', 'margin-bottom': '20px', 'fontSize': '0.95rem'}),
                 *throughput_tables
@@ -1670,7 +1789,7 @@ class DashboardApp:
                 )
                 
                 matrix_tables.append(html.Div([
-                    html.H4("📊 P50 Latency Comparison", style={'color': '#1565c0', 'margin-bottom': '10px'}),
+                    html.H4("P50 Latency Comparison", style={'color': '#1565c0', 'margin-bottom': '10px'}),
                     html.P("Relative P50 latency performance. Lower percentages = better typical performance.",
                            style={'color': '#6b7280', 'margin-bottom': '15px', 'fontSize': '0.9rem'}),
                     p50_table
@@ -1704,14 +1823,14 @@ class DashboardApp:
                 )
                 
                 matrix_tables.append(html.Div([
-                    html.H4("⚡ Max Latency Comparison", style={'color': '#b91c1c', 'margin-bottom': '10px'}),
+                    html.H4("Max Latency Comparison", style={'color': '#b91c1c', 'margin-bottom': '10px'}),
                     html.P("Relative maximum latency performance. Lower percentages = better worst-case performance.",
                            style={'color': '#6b7280', 'margin-bottom': '15px', 'fontSize': '0.9rem'}),
                     max_table
                 ], style={'margin-bottom': '20px'}))
             
             comparison_matrix_div = html.Div([
-                html.H3("🏁 Performance Comparison Matrix", style={'color': '#1565c0', 'margin-bottom': '15px'}),
+                html.H3("Performance Comparison Matrix", style={'color': '#1565c0', 'margin-bottom': '15px'}),
                 html.P("Comprehensive performance comparison across latency metrics. Lower percentages indicate better performance.",
                        style={'color': '#6b7280', 'margin-bottom': '25px', 'fontSize': '0.95rem'}),
                 html.Div(matrix_tables)
@@ -1720,23 +1839,33 @@ class DashboardApp:
         # Organize layout into logical sections
         return html.Div([
             # === OVERVIEW SECTION ===
-            html.Div([
-                html.H2("📈 Performance Overview", style={'color': '#1f2937', 'margin-bottom': '20px', 'font-size': '1.5rem'}),
-                summary_cards
-            ], style={'margin-bottom': '40px'}),
+            dcc.Loading(
+                id="performance-overview-loading",
+                type="circle",
+                children=html.Div([
+                    html.H2("Performance Overview", style={'color': '#1f2937', 'margin-bottom': '20px', 'font-size': '1.5rem'}),
+                    summary_cards
+                ], style={'margin-bottom': '40px'}),
+                style={'minHeight': '150px'}
+            ),
             
             # === PERFORMANCE COMPARISON SECTION ===
-            html.Div([
-                html.H2("🏁 Head-to-Head Comparison", style={'color': '#1f2937', 'margin-bottom': '20px', 'font-size': '1.5rem'}),
-                comparison_matrix_div
-            ], style={'margin-bottom': '40px'}),
+            dcc.Loading(
+                id="comparison-matrix-loading",
+                type="cube",
+                children=html.Div([
+                    html.H2("Head-to-Head Comparison", style={'color': '#1f2937', 'margin-bottom': '20px', 'font-size': '1.5rem'}),
+                    comparison_matrix_div
+                ], style={'margin-bottom': '40px'}),
+                style={'minHeight': '200px'}
+            ),
             
             # === INSIGHTS SECTION ===
             html.Div([
-                html.H2("💡 Performance Insights", style={'color': '#1f2937', 'margin-bottom': '20px', 'font-size': '1.5rem'}),
+                html.H2("Performance Insights", style={'color': '#1f2937', 'margin-bottom': '20px', 'font-size': '1.5rem'}),
                 html.Div([
                     html.Div([
-                        html.H4("🎯 Recommendations:", style={'color': '#059669', 'margin-bottom': '15px'}),
+                        html.H4("Recommendations:", style={'color': '#059669', 'margin-bottom': '15px'}),
                         html.Ul([
                             html.Li(rec, style={'margin-bottom': '8px', 'color': '#374151'}) 
                             for rec in insights.get('recommendations', ['Select data to see recommendations'])
@@ -1750,28 +1879,38 @@ class DashboardApp:
             ], style={'margin-bottom': '40px'}),
             
             # === LATENCY ANALYSIS SECTION ===
-            html.Div([
-                html.H2("📊 Latency Analysis", style={'color': '#1f2937', 'margin-bottom': '20px', 'font-size': '1.5rem'}),
-            html.Div([
-                dcc.Graph(id='avg-latency-chart', figure=avg_latency_fig)
+            dcc.Loading(
+                id="latency-analysis-loading",
+                type="default",
+                children=html.Div([
+                    html.H2("Latency Analysis", style={'color': '#1f2937', 'margin-bottom': '20px', 'font-size': '1.5rem'}),
+                html.Div([
+                    dcc.Graph(id='avg-latency-chart', figure=avg_latency_fig)
             ], className="chart-container"),
-            html.Div([
-                dcc.Graph(id='max-latency-chart', figure=max_latency_fig)
-            ], className="chart-container"),
-                latency_table_div if latency_data else html.Div()
-            ], style={'margin-bottom': '40px'}),
+                html.Div([
+                    dcc.Graph(id='max-latency-chart', figure=max_latency_fig)
+                ], className="chart-container"),
+                    latency_table_div if latency_data else html.Div()
+                ], style={'margin-bottom': '40px'}),
+                style={'minHeight': '300px'}
+            ),
             
             # === THROUGHPUT ANALYSIS SECTION ===
-            html.Div([
-                html.H2("🚀 Throughput Analysis", style={'color': '#1f2937', 'margin-bottom': '20px', 'font-size': '1.5rem'}),
+            dcc.Loading(
+                id="throughput-analysis-loading",
+                type="default",
+                children=html.Div([
+                    html.H2("Throughput Analysis", style={'color': '#1f2937', 'margin-bottom': '20px', 'font-size': '1.5rem'}),
             html.Div([
                 dcc.Graph(id='throughput-msgs-chart', figure=msgs_fig)
             ], className="chart-container"),
             html.Div([
                 dcc.Graph(id='throughput-bytes-chart', figure=bytes_fig)
             ], className="chart-container"),
-                throughput_table_div if throughput_data else html.Div()
-            ], style={'margin-bottom': '40px'})
+                    throughput_table_div if throughput_data else html.Div()
+                ], style={'margin-bottom': '40px'}),
+                style={'minHeight': '300px'}
+            )
         ])
     
     def render_timeseries_tab(self, mechanisms: List, message_sizes: List):
@@ -1790,6 +1929,100 @@ class DashboardApp:
         
         controls_section = html.Div([
             html.H3("Time Series Controls", style={'margin-bottom': '20px'}),
+            
+            # Quick Preset Configuration Buttons
+            html.Div([
+                html.Label("Quick Presets:", style={'margin-bottom': '10px', 'display': 'block', 'font-weight': 'bold'}),
+                html.Div([
+                    html.Button("Performance Analysis", id="preset-performance", n_clicks=0, 
+                              className="preset-btn", style={'margin-right': '10px', 'margin-bottom': '8px'},
+                              title="Separate charts with performance zones and percentile bands for overall performance analysis"),
+                    html.Button("Detailed Inspection", id="preset-detailed", n_clicks=0, 
+                              className="preset-btn", style={'margin-right': '10px', 'margin-bottom': '8px'},
+                              title="Separate charts with spike detection and distribution overlays for detailed mechanism analysis"),
+                    html.Button("Statistical Overview", id="preset-statistical", n_clicks=0, 
+                              className="preset-btn", style={'margin-right': '10px', 'margin-bottom': '8px'},
+                              title="Faceted view by message size with rolling percentiles and statistical overlays"),
+                    html.Button("Outlier Detection", id="preset-outliers", n_clicks=0, 
+                              className="preset-btn", style={'margin-right': '10px', 'margin-bottom': '8px'},
+                              title="Separate charts with spike and anomaly detection for identifying outliers"),
+                    html.Button("Reset to Default", id="preset-reset", n_clicks=0, 
+                              className="preset-btn-secondary", style={'margin-bottom': '8px'},
+                              title="Reset all controls to default settings (preserves statistics panel state)"),
+                ]),
+            ], style={'margin-bottom': '20px', 'padding': '15px', 'background': '#fef7cd', 'border-radius': '8px', 'border': '1px solid #f59e0b'}),
+            
+            # Chart Layout & Statistical Controls
+            html.Div([
+                html.Label("Chart Layout & Statistical Overlays:", style={'margin-bottom': '15px', 'display': 'block', 'font-weight': 'bold', 'font-size': '1.1em'}),
+                html.Div([
+                    # Chart Layout
+                    html.Div([
+                        html.Label("Chart Layout:", style={'margin-bottom': '10px', 'display': 'block', 'font-weight': 'bold'}),
+                        html.Div([
+                            dcc.RadioItems(
+                                id='ts-chart-layout',
+                                options=[
+                                    {'label': 'Separate Charts (by mechanism)', 'value': 'separate'},
+                                    {'label': 'Separate Charts (by message size)', 'value': 'faceted'}
+                                ],
+                                value='separate',
+                                className="chart-layout-radio",
+                                style={'margin-bottom': '15px'}
+                            ),
+                        ], title="Choose how to organize charts: separate charts for each mechanism, or separate charts for each message size"),
+                        
+                        # Statistical Overlays in same column
+                        html.Label("Statistical Overlays:", style={'margin-bottom': '10px', 'display': 'block', 'font-weight': 'bold'}),
+                        html.Div([
+                            dcc.Checklist(
+                                id='ts-statistical-overlays',
+                                options=[
+                                    {'label': 'Percentile Bands (P25-P75)', 'value': 'percentile_bands'},
+                                    {'label': 'Spike Detection', 'value': 'spike_detection'},
+                                    {'label': 'Anomaly Detection', 'value': 'anomaly_detection'},
+                                    {'label': 'Distribution Overlays', 'value': 'distributions'},
+                                    {'label': 'Rolling P95/P99', 'value': 'rolling_percentiles'}
+                                ],
+                                value=['percentile_bands'],
+                                className="filter-checklist"
+                            ),
+                        ], title="Statistical overlays: confidence bands, spike/anomaly detection, mini histogram overlays, rolling percentile calculations"),
+                    ], style={'width': '48%', 'display': 'inline-block', 'vertical-align': 'top'}),
+                    
+                    # View Options and Latency Type
+                    html.Div([
+                        html.Label("View Options:", style={'margin-bottom': '10px', 'display': 'block', 'font-weight': 'bold'}),
+                        html.Div([
+                            dcc.Checklist(
+                                id='ts-view-options',
+                                options=[
+                                    {'label': 'Sync Zoom/Pan', 'value': 'sync_zoom'},
+                                    {'label': 'Show Statistics Panel', 'value': 'show_stats'},
+                                    {'label': 'Enable Crossfilter', 'value': 'crossfilter'},
+                                    {'label': 'Performance Zones', 'value': 'perf_zones'}
+                                ],
+                                value=['sync_zoom'],
+                                className="filter-checklist"
+                            ),
+                        ], title="View options: sync zoom/pan across charts, show detailed statistics, enable interactive filtering, highlight performance zones"),
+                        
+                        html.Br(),
+                        html.Label("Latency Type:", style={'margin-bottom': '10px', 'display': 'block', 'font-weight': 'bold'}),
+                        html.Div([
+                            dcc.Checklist(
+                                id='ts-latency-types',
+                                options=[
+                                    {'label': 'One-way Latency', 'value': 'one_way'},
+                                    {'label': 'Round-trip Latency', 'value': 'round_trip'}
+                                ],
+                                value=['one_way'],
+                                className="filter-checklist"
+                            ),
+                        ], title="Select which latency types to display in charts and statistics: one-way (send only) or round-trip (send + receive)"),
+                    ], style={'width': '48%', 'display': 'inline-block', 'vertical-align': 'top', 'margin-left': '4%'}),
+                ])
+            ], style={'margin-bottom': '30px', 'padding': '15px', 'background': '#f8fafc', 'border-radius': '8px', 'border': '1px solid #e2e8f0'}),
             
             html.Div([
                 html.Div([
@@ -1816,54 +2049,92 @@ class DashboardApp:
                         value=['raw_dots', 'moving_avg'],
                         className="filter-checklist"
                     ),
-                ], style={'width': '30%', 'display': 'inline-block', 'vertical-align': 'top', 'margin-left': '3%'}),
-            
-            html.Div([
-                    html.Label("Line & Dot Sizes:", style={'margin-bottom': '10px', 'display': 'block'}),
+                ], style={'width': '25%', 'display': 'inline-block', 'vertical-align': 'top', 'margin-left': '3%'}),
+                
                 html.Div([
-                        html.Label("Dot Size:", style={'margin-bottom': '5px', 'display': 'block', 'font-size': '0.85rem'}),
-                        dcc.Slider(
-                            id='ts-dot-size-slider',
-                            min=1,
-                            max=10,
-                            step=1,
-                            value=3,
-                            marks={i: str(i) for i in [1, 3, 5, 10]},
-                            tooltip={"placement": "bottom", "always_visible": True}
-                        ),
-                    ], style={'margin-bottom': '15px'}),
+                    html.Label("Y-Axis Options:", style={'margin-bottom': '10px', 'display': 'block', 'font-weight': 'bold'}),
                     html.Div([
-                        html.Label("Line Width:", style={'margin-bottom': '5px', 'display': 'block', 'font-size': '0.85rem'}),
-                        dcc.Slider(
-                            id='ts-line-width-slider',
-                            min=1,
-                            max=8,
-                            step=1,
-                            value=2,
-                            marks={i: str(i) for i in [1, 2, 4, 8]},
-                            tooltip={"placement": "bottom", "always_visible": True}
+                        dcc.RadioItems(
+                            id='ts-y-axis-scale',
+                            options=[
+                                {'label': 'Linear Scale', 'value': 'linear'},
+                                {'label': 'Log Scale', 'value': 'log'}
+                            ],
+                            value='log',
+                            className="axis-scale-radio"
                         ),
-                    ]),
+                    ], title="Y-axis scaling: linear for normal data, logarithmic for wide value ranges or highlighting multiplicative differences"),
+                    html.Br(),
+                    html.Label("Range:", style={'margin-bottom': '5px', 'display': 'block', 'font-size': '0.9rem'}),
+                    dcc.RadioItems(
+                        id='ts-y-axis-range',
+                        options=[
+                            {'label': 'Auto', 'value': 'auto'},
+                            {'label': 'Fixed', 'value': 'fixed'}
+                        ],
+                        value='auto',
+                        className="axis-range-radio"
+                    ),
                 ], style={'width': '30%', 'display': 'inline-block', 'vertical-align': 'top', 'margin-left': '3%'}),
+            
             ], style={'margin-bottom': '30px'}),
             
-            # Threshold controls for each mechanism (dynamically generated)
-            html.Div(id='threshold-controls-container', children=[
-                html.Label("Outlier Thresholds (μs):", style={'margin-bottom': '15px', 'display': 'block', 'font-weight': 'bold'}),
-                html.P("Thresholds will appear here based on your filter selections.", 
-                       style={'color': '#6b7280', 'font-size': '0.9rem', 'margin-bottom': '15px', 'font-style': 'italic'}),
+            # Sampling Controls
+            html.Div([
+                
+                html.Div([
+                    html.Label("Sampling Strategy:", style={'margin-bottom': '10px', 'display': 'block', 'font-weight': 'bold'}),
+                    html.Div([
+                        dcc.Dropdown(
+                            id='ts-sampling-strategy',
+                            options=[
+                                {'label': 'Uniform Sampling', 'value': 'uniform'},
+                                {'label': 'Peak-Preserving', 'value': 'peak_preserving'},
+                                {'label': 'Outlier-Preserving', 'value': 'outlier_preserving'},
+                                {'label': 'Adaptive Sampling', 'value': 'adaptive'}
+                            ],
+                            value='uniform',
+                            className="sampling-dropdown"
+                        ),
+                    ], title="Data sampling for large datasets: uniform (even spacing), peak-preserving (maintains peaks), outlier-preserving (keeps extreme values), adaptive (smart density-based)"),
+                ], style={'width': '30%', 'display': 'inline-block', 'vertical-align': 'top', 'margin-left': '3%'}),
+                
+
             ], style={'margin-bottom': '30px'}),
+            
+
             
             # Charts container that will be updated
-            html.Div(id='ts-charts-container')
+            dcc.Loading(
+                id="ts-charts-loading",
+                type="default",
+                children=html.Div(id='ts-charts-container'),
+                style={'minHeight': '400px'}
+            ),
+            
+            # Real-time Statistics Panel (conditional)
+            dcc.Loading(
+                id="ts-stats-loading",
+                type="dot",
+                children=html.Div(id='ts-stats-panel', style={'margin-bottom': '20px'}),
+                style={'minHeight': '50px'}
+            )
         ], className="filter-section", style={'margin-bottom': '30px'})
         
         return controls_section
     
     def render_timeseries_charts(self, mechanisms: List, message_sizes: List, 
-                                moving_avg_window: int, display_options: List, thresholds: dict = None, 
-                                dot_size: int = 3, line_width: int = 2):
-        """Render the actual time series charts with outlier detection."""
+                                moving_avg_window: int, display_options: List,
+                                chart_layout: str = 'separate',
+                                view_options: List = None, latency_types: List = None, statistical_overlays: List = None, 
+                                y_axis_scale: str = 'log', 
+                                y_axis_range: str = 'auto', sampling_strategy: str = 'uniform'):
+        """Render the actual time series charts with advanced features and multiple layout options."""
+        # Initialize default parameters
+        view_options = view_options or ['sync_zoom']
+        latency_types = latency_types or ['one_way']
+        statistical_overlays = statistical_overlays or ['percentile_bands']
+        
         streaming_df = self.filter_data(self.data_store['streaming_data'], mechanisms, message_sizes)
         
         if streaming_df.empty:
@@ -1872,193 +2143,656 @@ class DashboardApp:
                        style={'textAlign': 'center', 'color': '#6b7280', 'fontSize': '1.1rem', 'padding': '40px'})
             ])
 
-        # Performance note for downsampling
+        # Advanced sampling strategies
         MAX_POINTS_PER_RUN = 10000
         total_original_points = len(streaming_df)
         performance_note = html.Div()
+        
+        def apply_sampling_strategy(df, strategy, max_points):
+            """Apply different sampling strategies to the dataframe."""
+            if len(df) <= max_points:
+                return df
+                
+            if strategy == 'uniform':
+                # Standard uniform sampling
+                step_size = len(df) // max_points
+                return df.iloc[::step_size].copy()
+            
+            elif strategy == 'peak_preserving':
+                # Preserve peaks and valleys in the data
+                uniform_sample = df.iloc[::len(df)//max_points].copy()
+                # Add peaks (highest values)
+                peaks = df.nlargest(max_points//4, 'one_way_latency_us')
+                # Add valleys (lowest values)  
+                valleys = df.nsmallest(max_points//4, 'one_way_latency_us')
+                combined = pd.concat([uniform_sample, peaks, valleys]).drop_duplicates().sort_index()
+                return combined.iloc[:max_points] if len(combined) > max_points else combined
+            
+            elif strategy == 'outlier_preserving':
+                # Focus on preserving outliers and anomalies
+                q75 = df['one_way_latency_us'].quantile(0.75)
+                q25 = df['one_way_latency_us'].quantile(0.25)
+                iqr = q75 - q25
+                outlier_threshold = q75 + 1.5 * iqr
+                
+                # Get all outliers
+                outliers = df[df['one_way_latency_us'] > outlier_threshold]
+                # Get uniform sample of non-outliers
+                non_outliers = df[df['one_way_latency_us'] <= outlier_threshold]
+                if len(non_outliers) > 0:
+                    step_size = max(1, len(non_outliers) // (max_points - len(outliers)))
+                    sampled_normal = non_outliers.iloc[::step_size]
+                else:
+                    sampled_normal = pd.DataFrame()
+                
+                combined = pd.concat([sampled_normal, outliers]).drop_duplicates().sort_index()
+                return combined.iloc[:max_points] if len(combined) > max_points else combined
+            
+            elif strategy == 'adaptive':
+                # Adaptive sampling based on variance
+                # More samples in high-variance regions
+                df_copy = df.copy().reset_index(drop=True)
+                df_copy['variance_window'] = df_copy['one_way_latency_us'].rolling(window=100, min_periods=1).var()
+                
+                # Sample more from high-variance regions
+                high_variance = df_copy[df_copy['variance_window'] > df_copy['variance_window'].median()]
+                low_variance = df_copy[df_copy['variance_window'] <= df_copy['variance_window'].median()]
+                
+                high_var_samples = min(len(high_variance), max_points * 2 // 3)
+                low_var_samples = max_points - high_var_samples
+                
+                if len(high_variance) > 0 and high_var_samples > 0:
+                    high_step = max(1, len(high_variance) // high_var_samples)
+                    sampled_high = high_variance.iloc[::high_step]
+                else:
+                    sampled_high = pd.DataFrame()
+                
+                if len(low_variance) > 0 and low_var_samples > 0:
+                    low_step = max(1, len(low_variance) // low_var_samples)
+                    sampled_low = low_variance.iloc[::low_step]
+                else:
+                    sampled_low = pd.DataFrame()
+                
+                combined = pd.concat([sampled_high, sampled_low]).drop_duplicates().sort_index()
+                return combined.iloc[:max_points] if len(combined) > max_points else combined
+            
+            else:
+                # Fallback to uniform
+                step_size = len(df) // max_points
+                return df.iloc[::step_size].copy()
+        
         if total_original_points > MAX_POINTS_PER_RUN:
+            strategy_info = {
+                'uniform': {
+                    'name': 'Uniform Sampling',
+                    'definition': 'Takes every Nth data point at regular intervals, like picking every 10th sample.',
+                    'pros': 'Fast and consistent; gives balanced view across time',
+                    'cons': 'May miss important spikes or rare events between samples'
+                },
+                'peak_preserving': {
+                    'name': 'Peak-Preserving Sampling', 
+                    'definition': 'Combines regular sampling with the highest and lowest values to keep important extremes.',
+                    'pros': 'Captures performance spikes and dips; good for identifying bottlenecks',
+                    'cons': 'Slightly slower; may over-emphasize outliers in analysis'
+                },
+                'outlier_preserving': {
+                    'name': 'Outlier-Preserving Sampling',
+                    'definition': 'Focuses on keeping unusual values (outliers) while sampling normally elsewhere.',
+                    'pros': 'Excellent for anomaly detection and debugging unusual behavior',
+                    'cons': 'May skew statistical analysis; less representative of typical performance'
+                },
+                'adaptive': {
+                    'name': 'Adaptive Variance-Based Sampling',
+                    'definition': 'Smart sampling that keeps more data points where values change rapidly.',
+                    'pros': 'Best balance of performance and detail; adapts to data complexity',
+                    'cons': 'Most computationally expensive; may be overkill for simple datasets'
+                }
+            }
+            
+            current_strategy = strategy_info.get(sampling_strategy, strategy_info['uniform'])
+            
             performance_note = html.Div([
-                html.P(f"Performance Note: Displaying sampled data for better interactivity. "
-                       f"Original dataset: {total_original_points:,} points, "
-                       f"Displaying: ~{min(MAX_POINTS_PER_RUN, total_original_points):,} points per run.")
+                html.P(f"Performance Note: Using {current_strategy['name']} for better interactivity. "
+                       f"Original: {total_original_points:,} points, "
+                       f"Displaying: ~{MAX_POINTS_PER_RUN:,} points.", 
+                       style={'margin-bottom': '8px'}),
+                html.P([
+                    html.Strong("What it does: "), 
+                    current_strategy['definition']
+                ], style={'font-size': '0.85rem', 'margin-bottom': '5px'}),
+                html.P([
+                    html.Strong("Pros: ", style={'color': '#059669'}), 
+                    current_strategy['pros']
+                ], style={'font-size': '0.85rem', 'margin-bottom': '3px'}),
+                html.P([
+                    html.Strong("Cons: ", style={'color': '#dc2626'}), 
+                    current_strategy['cons']
+                ], style={'font-size': '0.85rem', 'color': '#6b7280'})
             ], className="performance-note")
 
-        # Create separate graph for each mechanism
-        mechanism_graphs = []
-        
-        # Color scheme: consistent colors for latency types
-        ONEWAY_COLOR = '#3b82f6'      # Blue for one-way latency
-        ROUNDTRIP_COLOR = '#f59e0b'   # Orange for round-trip latency
-        OUTLIER_COLOR = '#ef4444'     # Red for outliers
+        # Advanced Chart Generation with Multiple Layout Options
+        # Mechanism-specific color scheme with latency type variations
+        def get_mechanism_colors(mechanism, latency_type):
+            """Generate mechanism-specific colors with latency type variations."""
+            # Base colors for mechanisms (more distinct colors)
+            base_colors = {
+                'SharedMemory': '#3b82f6',      # Blue family
+                'TcpSocket': '#10b981',         # Green family  
+                'UnixDomainSocket': '#8b5cf6',  # Purple family
+                'PosixMessageQueue': '#f59e0b', # Orange family
+                'NamedPipe': '#ef4444',         # Red family
+                'FileIO': '#06b6d4',            # Cyan family
+            }
+            
+            # Get base color or use a default if mechanism not in mapping
+            available_mechanisms = list(streaming_df['mechanism'].unique()) if len(streaming_df) > 0 else []
+            if mechanism not in base_colors:
+                # Assign colors cyclically for unknown mechanisms
+                fallback_colors = ['#6b7280', '#84cc16', '#e11d48', '#14b8a6', '#f97316']
+                idx = available_mechanisms.index(mechanism) % len(fallback_colors) if mechanism in available_mechanisms else 0
+                base_color = fallback_colors[idx]
+            else:
+                base_color = base_colors[mechanism]
+            
+            # Create variations for latency types
+            if latency_type == 'one_way':
+                return base_color  # Use base color for one-way
+            else:  # round_trip
+                # Create a darker/more saturated version for round-trip
+                # Convert hex to RGB, darken it, convert back
+                hex_color = base_color.lstrip('#')
+                rgb = tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+                # Darken by reducing values by 20%
+                darkened_rgb = tuple(max(0, int(c * 0.75)) for c in rgb)
+                return f"#{darkened_rgb[0]:02x}{darkened_rgb[1]:02x}{darkened_rgb[2]:02x}"
         
         # Symbol scheme: different symbols for each mechanism
         symbols = ['circle', 'square', 'diamond', 'cross', 'x', 'triangle-up', 'triangle-down', 'star']
+        mechanism_colors = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#f97316', '#06b6d4', '#84cc16']
         
-        for i, mechanism in enumerate(streaming_df['mechanism'].unique()):
-            symbol = symbols[i % len(symbols)]
-            fig = go.Figure()
+        charts = []
+        stats_panel = html.Div()
+        
+        # Generate statistics panel if requested
+        if 'show_stats' in view_options:
+            stats_data = []
+            for mechanism in streaming_df['mechanism'].unique():
+                mech_data = streaming_df[streaming_df['mechanism'] == mechanism]
+                if len(mech_data) > 0:
+                    stats_data.append({
+                        'Mechanism': mechanism,
+                        'Count': f"{len(mech_data):,}",
+                        'Mean (μs)': f"{mech_data['one_way_latency_us'].mean():.2f}",
+                        'Std (μs)': f"{mech_data['one_way_latency_us'].std():.2f}",
+                        'Min (μs)': f"{mech_data['one_way_latency_us'].min():.2f}",
+                        'Max (μs)': f"{mech_data['one_way_latency_us'].max():.2f}",
+                        'P95 (μs)': f"{mech_data['one_way_latency_us'].quantile(0.95):.2f}",
+                        'P99 (μs)': f"{mech_data['one_way_latency_us'].quantile(0.99):.2f}"
+                    })
             
-            # Filter data for this mechanism
-            mechanism_df = streaming_df[streaming_df['mechanism'] == mechanism]
+            if stats_data:
+                stats_panel = html.Div([
+                    html.H4("Real-time Statistics", style={'margin-bottom': '15px', 'color': '#1f2937'}),
+                    dash_table.DataTable(
+                        data=stats_data,
+                        columns=[{"name": col, "id": col} for col in stats_data[0].keys()],
+                        style_cell={'textAlign': 'left', 'padding': '10px', 'font-size': '0.85rem'},
+                        style_header={'backgroundColor': '#f8fafc', 'fontWeight': 'bold', 'border': '1px solid #e2e8f0'},
+                        style_data={'backgroundColor': '#ffffff', 'border': '1px solid #e2e8f0'},
+                        style_table={'border-radius': '8px', 'overflow': 'hidden'},
+                    )
+                ], style={'margin-bottom': '30px', 'padding': '20px', 'background': '#f8fafc', 'border-radius': '8px', 'border': '1px solid #e2e8f0'})
+        
+        # Helper function to add statistical overlays
+        def add_statistical_overlays(fig, data, mechanism, color, latency_type='one_way'):
+            """Add percentile bands and other statistical overlays."""
+            latency_col = 'one_way_latency_us' if latency_type == 'one_way' else 'round_trip_latency_us'
+            type_label = 'One-way' if latency_type == 'one_way' else 'Round-trip'
             
-            if len(mechanism_df) > 0:
-                # Process all data for this mechanism
-                run_data = mechanism_df.copy()
+            # Skip if column doesn't exist in data
+            if latency_col not in data.columns or data[latency_col].isna().all():
+                return
                 
-                # Downsample if necessary
-                if len(run_data) > MAX_POINTS_PER_RUN:
-                    step_size = len(run_data) // MAX_POINTS_PER_RUN
-                    logging.info(f"Downsampled {mechanism} from {len(run_data)} to {len(run_data.iloc[::step_size])} points")
-                    run_data = run_data.iloc[::step_size].copy()
+            # Add visual overlays for spikes and anomalies
+            if ('spike_detection' in statistical_overlays or 'anomaly_detection' in statistical_overlays) and len(data) > 20:
+                anomalies = detect_anomalies(data, mechanism, latency_type)
                 
-                # Reset index to create sequential index for x-axis
-                run_data = run_data.reset_index(drop=True)
-                    
-                # Get threshold for this mechanism
-                threshold = thresholds.get(mechanism) if thresholds else None
+                for anomaly in anomalies:
+                    anomaly_data = anomaly['data']
+                    if len(anomaly_data) > 0:
+                        if anomaly['type'] == 'spikes':
+                            # Add spike markers (using magenta to avoid conflicts with red mechanism colors)
+                            fig.add_trace(go.Scatter(
+                                x=anomaly_data.index,
+                                y=anomaly_data[latency_col],
+                                mode='markers',
+                                name=f'Spikes ({mechanism} {type_label})',
+                                marker=dict(
+                                    color='#ec4899',  # Magenta - distinct from all mechanism colors
+                                    size=8,
+                                    symbol='triangle-up',
+                                    line=dict(width=2, color='#be185d')  # Dark magenta border
+                                ),
+                                showlegend=True,
+                                hovertemplate=f'<b>Spike Detected</b><br>%{{x}}<br>%{{y:.2f}} μs<extra></extra>'
+                            ))
+                        else:  # anomalies or statistical_anomalies
+                            # Add anomaly markers (using brown to avoid conflicts with all mechanism colors)
+                            fig.add_trace(go.Scatter(
+                                x=anomaly_data.index,
+                                y=anomaly_data[latency_col],
+                                mode='markers',
+                                name=f'Anomalies ({mechanism} {type_label})',
+                                marker=dict(
+                                    color='#a16207',  # Brown - distinct from all mechanism colors
+                                    size=6,
+                                    symbol='diamond',
+                                    line=dict(width=1, color='#713f12')  # Dark brown border
+                                ),
+                                showlegend=True,
+                                hovertemplate=f'<b>Anomaly Detected</b><br>%{{x}}<br>%{{y:.2f}} μs<extra></extra>'
+                            ))
                 
-                if 'raw_dots' in display_options:
-                    # ONE-WAY LATENCY POINTS
-                    if threshold is not None and threshold > 0:
-                        normal_data = run_data[run_data['one_way_latency_us'] <= threshold]
-                        outlier_data = run_data[run_data['one_way_latency_us'] > threshold]
-                        
-                        # Add normal one-way points (BLUE)
-                        if len(normal_data) > 0:
-                            fig.add_trace(go.Scatter(
-                                x=normal_data.index,
-                                y=normal_data['one_way_latency_us'],
-                                mode='markers',
-                                name=f'One-way ({mechanism})',
-                                marker=dict(color=ONEWAY_COLOR, size=dot_size, opacity=0.7, symbol=symbol),
-                                legendgroup='oneway',
-                                showlegend=True
-                            ))
-                        
-                        # Add one-way outlier points (RED)
-                        if len(outlier_data) > 0:
-                            fig.add_trace(go.Scatter(
-                                x=outlier_data.index,
-                                y=outlier_data['one_way_latency_us'],
-                                mode='markers',
-                                name=f'One-way Outliers ({mechanism}, >{threshold}μs)',
-                                marker=dict(color=OUTLIER_COLOR, size=dot_size + 2, opacity=0.9, symbol='x', 
-                                          line=dict(width=line_width, color='darkred')),
-                                legendgroup='oneway-outlier',
-                                showlegend=True
-                            ))
-                    else:
-                        # No threshold set, show all one-way points normally (BLUE)
-                        fig.add_trace(go.Scatter(
-                            x=run_data.index,
-                            y=run_data['one_way_latency_us'],
-                            mode='markers',
-                            name=f'One-way ({mechanism})',
-                            marker=dict(color=ONEWAY_COLOR, size=dot_size, opacity=0.7, symbol=symbol),
-                            legendgroup='oneway',
-                            showlegend=True
-                        ))
-                        
-                    # ROUND-TRIP LATENCY POINTS
-                    if 'round_trip_latency_us' in run_data.columns:
-                        if threshold is not None and threshold > 0:
-                            normal_rt = run_data[run_data['round_trip_latency_us'] <= threshold]
-                            outlier_rt = run_data[run_data['round_trip_latency_us'] > threshold]
-                            
-                            # Normal round-trip points (ORANGE)
-                            if len(normal_rt) > 0:
-                                fig.add_trace(go.Scatter(
-                                    x=normal_rt.index,
-                                    y=normal_rt['round_trip_latency_us'],
-                                    mode='markers',
-                                    name=f'Round-trip ({mechanism})',
-                                    marker=dict(color=ROUNDTRIP_COLOR, size=dot_size, opacity=0.7, symbol=symbol),
-                                    legendgroup='roundtrip',
-                                    showlegend=True
-                                ))
-                            
-                            # Round-trip outlier points (RED)
-                            if len(outlier_rt) > 0:
-                                fig.add_trace(go.Scatter(
-                                    x=outlier_rt.index,
-                                    y=outlier_rt['round_trip_latency_us'],
-                                    mode='markers',
-                                    name=f'Round-trip Outliers ({mechanism}, >{threshold}μs)',
-                                    marker=dict(color=OUTLIER_COLOR, size=dot_size + 2, opacity=0.9, symbol='x',
-                                              line=dict(width=line_width, color='darkred')),
-                                    legendgroup='roundtrip-outlier',
-                                    showlegend=True
-                                ))
-                        else:
-                            # No threshold, show all round-trip points normally (ORANGE)
-                            fig.add_trace(go.Scatter(
-                                x=run_data.index,
-                                y=run_data['round_trip_latency_us'],
-                                mode='markers',
-                                name=f'Round-trip ({mechanism})',
-                                marker=dict(color=ROUNDTRIP_COLOR, size=dot_size, opacity=0.7, symbol=symbol),
-                                legendgroup='roundtrip',
-                                showlegend=True
-                            ))
+            if 'percentile_bands' in statistical_overlays and len(data) > 50:
+                # Add P25-P75 confidence bands
+                data_sorted = data.sort_index()
+                window_size = min(100, len(data) // 10)
+                
+                if window_size > 1:
+                    p25_rolling = data_sorted[latency_col].rolling(window=window_size, min_periods=1).quantile(0.25)
+                    p75_rolling = data_sorted[latency_col].rolling(window=window_size, min_periods=1).quantile(0.75)
                     
-                if 'moving_avg' in display_options and len(run_data) > moving_avg_window:
-                    # Calculate moving average (data is already sorted by index)
-                    run_data['one_way_ma'] = run_data['one_way_latency_us'].rolling(window=moving_avg_window, min_periods=1).mean()
-                    if 'round_trip_latency_us' in run_data.columns:
-                        run_data['round_trip_ma'] = run_data['round_trip_latency_us'].rolling(window=moving_avg_window, min_periods=1).mean()
-                    
-                    # Add moving average traces with consistent color coding
+                    # Add percentile band
                     fig.add_trace(go.Scatter(
-                        x=run_data.index,
-                        y=run_data['one_way_ma'],
+                        x=data_sorted.index,
+                        y=p75_rolling,
                         mode='lines',
-                        name=f'One-way MA ({mechanism})',
-                        line=dict(color=ONEWAY_COLOR, width=line_width, dash='solid'),
-                        opacity=0.9,
-                        legendgroup='oneway-ma',
-                        showlegend=True
+                        name=f'P75 ({mechanism} {type_label})',
+                        line=dict(color=color, width=1, dash='dot'),
+                        opacity=0.4,
+                        showlegend=False,
+                        hoverinfo='skip'
                     ))
                     
-                    if 'round_trip_latency_us' in run_data.columns:
-                        fig.add_trace(go.Scatter(
-                            x=run_data.index,
-                            y=run_data['round_trip_ma'],
-                            mode='lines',
-                            name=f'Round-trip MA ({mechanism})',
-                            line=dict(color=ROUNDTRIP_COLOR, width=line_width, dash='solid'),
-                            opacity=0.9,
-                            legendgroup='roundtrip-ma',
-                            showlegend=True
-                        ))
+                    # Convert color to rgba for fill
+                    try:
+                        import matplotlib.colors as mcolors
+                        rgb = mcolors.to_rgb(color)
+                        fillcolor = f'rgba({int(rgb[0]*255)}, {int(rgb[1]*255)}, {int(rgb[2]*255)}, 0.15)'
+                    except:
+                        fillcolor = 'rgba(59, 130, 246, 0.15)'  # fallback blue
+                    
+                    fig.add_trace(go.Scatter(
+                        x=data_sorted.index,
+                        y=p25_rolling,
+                        mode='lines',
+                        name=f'P25-P75 Band ({mechanism} {type_label})',
+                        line=dict(color=color, width=1, dash='dot'),
+                        fill='tonexty',
+                        fillcolor=fillcolor,
+                        opacity=0.4,
+                        showlegend=True,
+                        hoverinfo='skip',
+                        hovertemplate=f'<b>Percentile Band</b><br>P25: %{{y:.2f}} μs<br>Index: %{{x}}<extra></extra>'
+                    ))
             
-            fig.update_layout(
-                title=f"Latency Time Series - {mechanism}",
-                xaxis_title="Sample Index", 
-                yaxis_title="Latency (μs)",
-                showlegend=True,
-                font=dict(size=12),
-                height=550,
-                template='plotly_white',
-                legend=dict(
-                    orientation="h",
-                    yanchor="top",
-                    y=-0.15,
-                    xanchor="center",
-                    x=0.5,
-                    bgcolor="rgba(255,255,255,0.9)",
-                    bordercolor="rgba(0,0,0,0.2)",
-                    borderwidth=1
-                ),
-                margin=dict(b=100)
-            )
+            if 'rolling_percentiles' in statistical_overlays and len(data) > 100:
+                # Add rolling P95 and P99 percentiles
+                data_sorted = data.sort_index()
+                window_size = min(200, len(data) // 5)
+                
+                if window_size > 10:
+                    p95_rolling = data_sorted[latency_col].rolling(window=window_size, min_periods=10).quantile(0.95)
+                    p99_rolling = data_sorted[latency_col].rolling(window=window_size, min_periods=10).quantile(0.99)
+                    
+                    # Add P95 line
+                    fig.add_trace(go.Scatter(
+                        x=data_sorted.index,
+                        y=p95_rolling,
+                        mode='lines',
+                        name=f'P95 Rolling ({mechanism} {type_label})',
+                        line=dict(color=color, width=2, dash='dashdot'),
+                        opacity=0.8,
+                        showlegend=True,
+                        hovertemplate=f'<b>P95 Rolling</b><br>Value: %{{y:.2f}} μs<br>Index: %{{x}}<extra></extra>'
+                    ))
+                    
+                    # Add P99 line
+                    fig.add_trace(go.Scatter(
+                        x=data_sorted.index,
+                        y=p99_rolling,
+                        mode='lines',
+                        name=f'P99 Rolling ({mechanism} {type_label})',
+                        line=dict(color=color, width=2, dash='longdash'),
+                        opacity=0.8,
+                        showlegend=True,
+                        hovertemplate=f'<b>P99 Rolling</b><br>Value: %{{y:.2f}} μs<br>Index: %{{x}}<extra></extra>'
+                    ))
             
-            mechanism_graphs.append(html.Div([dcc.Graph(figure=fig)], className="chart-container"))
+            if 'distributions' in statistical_overlays and len(data) > 50:
+                # Add distribution overlay as a small histogram in upper right corner
+                latency_values = data[latency_col].dropna()
+                
+                if len(latency_values) > 20:
+                    # Calculate histogram
+                    hist_counts, hist_bins = np.histogram(latency_values, bins=20)
+                    hist_centers = (hist_bins[:-1] + hist_bins[1:]) / 2
+                    
+                    # Normalize counts to fit in a small area (scale to 10% of y-range)
+                    y_range = fig.layout.yaxis.range if fig.layout.yaxis.range else [latency_values.min(), latency_values.max()]
+                    if not y_range or y_range[0] == y_range[1]:
+                        y_range = [latency_values.min(), latency_values.max()]
+                    
+                    y_span = y_range[1] - y_range[0]
+                    normalized_counts = (hist_counts / hist_counts.max()) * (y_span * 0.1) + y_range[1] * 0.85
+                    
+                    # Add histogram bars as scatter plot
+                    fig.add_trace(go.Scatter(
+                        x=normalized_counts,
+                        y=hist_centers,
+                        mode='lines',
+                        name=f'Distribution ({mechanism} {type_label})',
+                        line=dict(color=color, width=2),
+                        opacity=0.6,
+                        showlegend=True,
+                        hovertemplate=f'<b>Distribution</b><br>Latency: %{{y:.2f}} μs<br>Frequency: %{{x:.0f}}<extra></extra>',
+                        xaxis='x2',
+                        yaxis='y'
+                    ))
+
         
+        # Helper function to detect spikes and anomalies
+        def detect_anomalies(data, mechanism, latency_type='one_way'):
+            """Detect spikes and anomalies in the data."""
+            latency_col = 'one_way_latency_us' if latency_type == 'one_way' else 'round_trip_latency_us'
+            type_label = 'One-way' if latency_type == 'one_way' else 'Round-trip'
+            anomalies = []
+            
+            # Skip if column doesn't exist in data
+            if latency_col not in data.columns or data[latency_col].isna().all():
+                return anomalies
+            
+            if 'spike_detection' in statistical_overlays and len(data) > 20:
+                # Simple spike detection using z-score
+                try:
+                    from scipy.stats import zscore
+                    z_scores = np.abs(zscore(data[latency_col]))
+                    spike_threshold = 3.0
+                    spikes = data[z_scores > spike_threshold]
+                    
+                    if len(spikes) > 0:
+                        anomalies.append({
+                            'type': 'spikes',
+                            'data': spikes,
+                            'description': f"{len(spikes)} latency spikes detected in {mechanism} ({type_label})"
+                        })
+                except ImportError:
+                    pass  # Skip spike detection if scipy not available
+            
+            if 'anomaly_detection' in statistical_overlays and len(data) > 100:
+                # Advanced anomaly detection using isolation forest
+                if SKLEARN_AVAILABLE:
+                    try:
+                        clf = IsolationForest(contamination=0.1, random_state=42)
+                        anomaly_labels = clf.fit_predict(data[[latency_col]].values)
+                        anomaly_data = data[anomaly_labels == -1]
+                        
+                        if len(anomaly_data) > 0:
+                            anomalies.append({
+                                'type': 'anomalies',
+                                'data': anomaly_data,
+                                'description': f"{len(anomaly_data)} ML anomalies detected in {mechanism} ({type_label})"
+                            })
+                    except Exception:
+                        # Fallback to simple statistical anomaly detection
+                        q75 = data[latency_col].quantile(0.75)
+                        q25 = data[latency_col].quantile(0.25)
+                        iqr = q75 - q25
+                        anomaly_threshold = q75 + 2.0 * iqr
+                        anomaly_data = data[data[latency_col] > anomaly_threshold]
+                        
+                        if len(anomaly_data) > 0:
+                            anomalies.append({
+                                'type': 'statistical_anomalies',
+                                'data': anomaly_data,
+                                'description': f"{len(anomaly_data)} statistical anomalies in {mechanism} ({type_label})"
+                            })
+
+            
+            return anomalies
+        
+        # Main chart generation logic based on layout type
+        if chart_layout == 'faceted':
+            # FACETED VIEW: Organize by message size
+            message_sizes_available = sorted(streaming_df['message_size'].unique())
+            
+            for msg_size in message_sizes_available:
+                size_data = streaming_df[streaming_df['message_size'] == msg_size]
+                
+                if len(size_data) > 0:
+                    fig = go.Figure()
+                    
+                    for i, mechanism in enumerate(size_data['mechanism'].unique()):
+                        symbol = symbols[i % len(symbols)]
+                        color = mechanism_colors[i % len(mechanism_colors)]
+                        
+                        mechanism_df = size_data[size_data['mechanism'] == mechanism]
+                        run_data = apply_sampling_strategy(mechanism_df, sampling_strategy, MAX_POINTS_PER_RUN)
+                        run_data = run_data.reset_index(drop=True)
+                        
+                        # Add statistical overlays for each selected latency type
+                        for latency_type in latency_types:
+                            latency_col = 'one_way_latency_us' if latency_type == 'one_way' else 'round_trip_latency_us'
+                            if latency_col in run_data.columns and not run_data[latency_col].isna().all():
+                                overlay_color = get_mechanism_colors(mechanism, latency_type)
+                                add_statistical_overlays(fig, run_data, mechanism, overlay_color, latency_type)
+                        
+
+                        
+                        # Generate traces for each selected latency type
+                        for latency_type in latency_types:
+                            latency_col = 'one_way_latency_us' if latency_type == 'one_way' else 'round_trip_latency_us'
+                            type_label = 'One-way' if latency_type == 'one_way' else 'Round-trip'
+                            trace_color = get_mechanism_colors(mechanism, latency_type)
+                            
+                            # Skip if column doesn't exist in data
+                            if latency_col not in run_data.columns or run_data[latency_col].isna().all():
+                                continue
+                                
+                            if 'raw_dots' in display_options:
+                                fig.add_trace(go.Scatter(
+                                    x=run_data.index,
+                                    y=run_data[latency_col],
+                                    mode='markers',
+                                    name=f'{mechanism} ({type_label})',
+                                    marker=dict(color=trace_color, size=3, opacity=0.7, symbol=symbol),
+                                    showlegend=True
+                                ))
+                            
+                            if 'moving_avg' in display_options and len(run_data) > moving_avg_window:
+                                ma_col = f'{latency_type}_ma'
+                                run_data[ma_col] = run_data[latency_col].rolling(window=moving_avg_window, min_periods=1).mean()
+                                
+                                fig.add_trace(go.Scatter(
+                                    x=run_data.index,
+                                    y=run_data[ma_col],
+                                    mode='lines',
+                                    name=f'{mechanism} ({type_label}) MA',
+                                    line=dict(color=trace_color, width=2, dash='solid'),
+                                    opacity=0.9,
+                                    showlegend=True
+                                ))
+                    
+                    # Add performance zones if enabled
+                    if 'perf_zones' in view_options and len(size_data) > 0:
+                        # Add performance zones for each selected latency type
+                        for latency_type in latency_types:
+                            latency_col = 'one_way_latency_us' if latency_type == 'one_way' else 'round_trip_latency_us'
+                            type_label = 'One-way' if latency_type == 'one_way' else 'Round-trip'
+                            
+                            if latency_col in size_data.columns and not size_data[latency_col].isna().all():
+                                overall_p50 = size_data[latency_col].quantile(0.5)
+                                overall_p95 = size_data[latency_col].quantile(0.95)
+                                
+                                # Use distinct colors for performance zones of different latency types
+                                zone_color_p50 = '#10b981' if latency_type == 'one_way' else '#059669'  # Green family
+                                zone_color_p95 = '#f59e0b' if latency_type == 'one_way' else '#d97706'  # Orange family
+                                
+                                fig.add_hline(y=overall_p50, line_dash="dash", line_color=zone_color_p50, 
+                                             annotation_text=f"Good P50 ({type_label})", annotation_position="bottom right")
+                                fig.add_hline(y=overall_p95, line_dash="dash", line_color=zone_color_p95, 
+                                             annotation_text=f"Warning P95 ({type_label})", annotation_position="bottom right")
+                    
+                    # Update chart layout for this message size (moved inside chart creation block)
+                    fig.update_layout(
+                        title=f"Message Size: {msg_size} bytes",
+                        xaxis_title="Sample Index", 
+                        yaxis_title="Latency (μs)",
+                        yaxis_type=y_axis_scale,
+                        showlegend=True,
+                        font=dict(size=12),
+                        height=500,
+                        template='plotly_white',
+                        legend=dict(
+                            orientation="h",
+                            yanchor="top",
+                            y=-0.15,
+                            xanchor="center",
+                            x=0.5,
+                            bgcolor="rgba(255,255,255,0.9)",
+                            bordercolor="rgba(0,0,0,0.2)",
+                            borderwidth=1
+                        ),
+                        margin=dict(b=100)
+                    )
+                    
+                    charts.append(html.Div([
+                        dcc.Graph(figure=fig, id=f'faceted-chart-{msg_size}')
+                    ], className="chart-container", style={'width': '100%', 'margin-bottom': '20px'}))
+        
+        else:
+            # SEPARATE VIEW: Original behavior with enhancements
+            for i, mechanism in enumerate(streaming_df['mechanism'].unique()):
+                symbol = symbols[i % len(symbols)]
+                color = mechanism_colors[i % len(mechanism_colors)]
+                fig = go.Figure()
+                
+                # Filter data for this mechanism
+                mechanism_df = streaming_df[streaming_df['mechanism'] == mechanism]
+                
+                if len(mechanism_df) > 0:
+                    run_data = apply_sampling_strategy(mechanism_df, sampling_strategy, MAX_POINTS_PER_RUN)
+                    run_data = run_data.reset_index(drop=True)
+                    
+                    # Add statistical overlays for each selected latency type
+                    for latency_type in latency_types:
+                        latency_col = 'one_way_latency_us' if latency_type == 'one_way' else 'round_trip_latency_us'
+                        if latency_col in run_data.columns and not run_data[latency_col].isna().all():
+                            overlay_color = get_mechanism_colors(mechanism, latency_type)
+                            add_statistical_overlays(fig, run_data, mechanism, overlay_color, latency_type)
+                    
+                    # Detect anomalies for each selected latency type
+                    anomalies = []
+                    for latency_type in latency_types:
+                        latency_col = 'one_way_latency_us' if latency_type == 'one_way' else 'round_trip_latency_us'
+                        if latency_col in run_data.columns and not run_data[latency_col].isna().all():
+                            type_anomalies = detect_anomalies(run_data, mechanism, latency_type)
+                            anomalies.extend(type_anomalies)
+                    anomaly_info = ""
+                    if anomalies:
+                        anomaly_info = f" ({len(anomalies)} anomalies)"
+                    
+
+                    
+                    # Generate traces for each selected latency type
+                    for latency_type in latency_types:
+                        latency_col = 'one_way_latency_us' if latency_type == 'one_way' else 'round_trip_latency_us'
+                        type_label = 'One-way' if latency_type == 'one_way' else 'Round-trip'
+                        trace_color = get_mechanism_colors(mechanism, latency_type)
+                        
+                        # Skip if column doesn't exist in data
+                        if latency_col not in run_data.columns or run_data[latency_col].isna().all():
+                            continue
+                            
+                        if 'raw_dots' in display_options:
+                            fig.add_trace(go.Scatter(
+                                x=run_data.index,
+                                y=run_data[latency_col],
+                                mode='markers',
+                                name=f'{type_label}',
+                                marker=dict(color=trace_color, size=3, opacity=0.7, symbol=symbol),
+                                showlegend=True
+                            ))
+                        
+                        if 'moving_avg' in display_options and len(run_data) > moving_avg_window:
+                            ma_col = f'{latency_type}_ma'
+                            run_data[ma_col] = run_data[latency_col].rolling(window=moving_avg_window, min_periods=1).mean()
+                            
+                            fig.add_trace(go.Scatter(
+                                x=run_data.index,
+                                y=run_data[ma_col],
+                                mode='lines',
+                                name=f'{type_label} MA',
+                                line=dict(color=trace_color, width=2, dash='solid'),
+                                opacity=0.9,
+                                showlegend=True
+                            ))
+                
+                # Add performance zones if enabled
+                if 'perf_zones' in view_options and len(mechanism_df) > 0:
+                    # Add performance zones for each selected latency type
+                    for latency_type in latency_types:
+                        latency_col = 'one_way_latency_us' if latency_type == 'one_way' else 'round_trip_latency_us'
+                        type_label = 'One-way' if latency_type == 'one_way' else 'Round-trip'
+                        
+                        if latency_col in mechanism_df.columns and not mechanism_df[latency_col].isna().all():
+                            overall_p50 = mechanism_df[latency_col].quantile(0.5)
+                            overall_p95 = mechanism_df[latency_col].quantile(0.95)
+                            
+                            # Use distinct colors for performance zones of different latency types
+                            zone_color_p50 = '#10b981' if latency_type == 'one_way' else '#059669'  # Green family
+                            zone_color_p95 = '#f59e0b' if latency_type == 'one_way' else '#d97706'  # Orange family
+                            
+                            fig.add_hline(y=overall_p50, line_dash="dash", line_color=zone_color_p50, 
+                                         annotation_text=f"Good P50 ({type_label})", annotation_position="bottom right")
+                            fig.add_hline(y=overall_p95, line_dash="dash", line_color=zone_color_p95, 
+                                         annotation_text=f"Warning P95 ({type_label})", annotation_position="bottom right")
+                
+                # Update chart layout for this mechanism (moved outside performance zones block)
+                fig.update_layout(
+                    title=f"{mechanism}{anomaly_info}",
+                    xaxis_title="Sample Index",
+                    yaxis_title="Latency (μs)",
+                    yaxis_type=y_axis_scale,
+                    showlegend=True,
+                    font=dict(size=12),
+                    height=550,
+                    template='plotly_white',
+                    legend=dict(
+                        orientation="h",
+                        yanchor="top",
+                        y=-0.15,
+                        xanchor="center",
+                        x=0.5,
+                        bgcolor="rgba(255,255,255,0.9)",
+                        bordercolor="rgba(0,0,0,0.2)",
+                        borderwidth=1
+                    ),
+                    margin=dict(b=100)
+                )
+                
+                charts.append(html.Div([
+                    dcc.Graph(figure=fig, id=f'separate-chart-{mechanism}')
+                ], className="chart-container"))
+        
+        # Combine all elements
         return html.Div([
             performance_note,
-            *mechanism_graphs
+            *charts,
+            stats_panel
         ])
     
+
     def render_throughput_tab(self, mechanisms: List, message_sizes: List,
                              moving_avg_window: int, display_options: List):
         """Render throughput trends tab."""
@@ -2181,7 +2915,7 @@ class DashboardApp:
             )
             
             agg_table_div = html.Div([
-                html.H3("📈 Performance Statistics by Configuration"),
+                html.H3("Performance Statistics by Configuration"),
                 html.P("Statistical summary grouped by mechanism and message size including count, mean, median, standard deviation, min, and max values. "
                        "Use this data to understand throughput capabilities and latency distributions.",
                        style={'color': '#6b7280', 'margin-bottom': '20px', 'fontSize': '0.95rem'}),
@@ -2504,6 +3238,156 @@ input[type="checkbox"] {
     .main-content {
         padding: 20px;
     }
+}
+
+/* New Time Series Tab Styles */
+.preset-btn {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    min-width: 140px;
+    box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+}
+
+.preset-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+}
+
+.preset-btn-secondary {
+    background: #6b7280;
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    min-width: 140px;
+    box-shadow: 0 2px 8px rgba(107, 114, 128, 0.3);
+}
+
+.preset-btn-secondary:hover {
+    background: #4b5563;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(107, 114, 128, 0.4);
+}
+
+.chart-layout-radio .form-check-input {
+    margin-right: 8px;
+}
+
+.chart-layout-radio .form-check-label {
+    font-size: 0.9rem;
+    color: #374151;
+    font-weight: 500;
+}
+
+.axis-scale-radio .form-check-input,
+.axis-range-radio .form-check-input {
+    margin-right: 6px;
+}
+
+.axis-scale-radio .form-check-label,
+.axis-range-radio .form-check-label {
+    font-size: 0.85rem;
+    color: #6b7280;
+}
+
+.sampling-dropdown .Select-control {
+    border-radius: 8px;
+    border: 1px solid #d1d5db;
+    font-size: 0.9rem;
+}
+
+.sampling-dropdown .Select-menu-outer {
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+}
+
+/* Performance note styling */
+.performance-note {
+    background: #fef3c7;
+    border: 1px solid #f59e0b;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 20px;
+    font-size: 0.9rem;
+    color: #92400e;
+}
+
+/* Enhanced chart container */
+.chart-container {
+    background: white;
+    border-radius: 12px;
+    padding: 15px;
+    margin-bottom: 20px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+    border: 1px solid #e5e7eb;
+}
+
+/* Statistical overlays section styling */
+.statistical-controls {
+    background: #f1f5f9;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    padding: 15px;
+    margin-bottom: 20px;
+}
+
+.preset-controls {
+    background: #fef7cd;
+    border: 1px solid #f59e0b;
+    border-radius: 8px;
+    padding: 15px;
+    margin-bottom: 20px;
+}
+
+/* Real-time stats table enhancements */
+.stats-panel {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 30px;
+}
+
+.stats-panel h4 {
+    color: #1f2937;
+    margin-bottom: 15px;
+    font-weight: 600;
+}
+
+/* Anomaly alert styling */
+.anomaly-alert {
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    border-radius: 8px;
+    padding: 15px;
+    margin-bottom: 20px;
+}
+
+.anomaly-alert h5 {
+    color: #dc2626;
+    margin-bottom: 10px;
+    font-weight: 600;
+}
+
+.anomaly-alert ul {
+    margin-bottom: 0;
+    padding-left: 20px;
+}
+
+.anomaly-alert li {
+    color: #374151;
+    margin-bottom: 5px;
 }
 """
 
