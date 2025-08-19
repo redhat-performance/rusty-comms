@@ -2363,10 +2363,10 @@ class DashboardApp:
                     if len(anomaly_data) > 0:
                         if anomaly['type'] == 'spikes':
                             # Add spike markers (using magenta to avoid conflicts with red mechanism colors)
-                                fig.add_trace(go.Scatter(
+                            fig.add_trace(go.Scatter(
                                 x=anomaly_data.index,
                                 y=anomaly_data[latency_col],
-                                    mode='markers',
+                                mode='markers',
                                 name=f'Spikes ({mechanism} {type_label})',
                                 marker=dict(
                                     color='#ec4899',  # Magenta - distinct from all mechanism colors
@@ -2379,10 +2379,10 @@ class DashboardApp:
                             ))
                         else:  # anomalies or statistical_anomalies
                             # Add anomaly markers (using brown to avoid conflicts with all mechanism colors)
-                                fig.add_trace(go.Scatter(
+                            fig.add_trace(go.Scatter(
                                 x=anomaly_data.index,
                                 y=anomaly_data[latency_col],
-                                    mode='markers',
+                                mode='markers',
                                 name=f'Anomalies ({mechanism} {type_label})',
                                 marker=dict(
                                     color='#a16207',  # Brown - distinct from all mechanism colors
@@ -2650,6 +2650,7 @@ class DashboardApp:
                         xaxis_title="Sample Index", 
                         yaxis_title="Latency (μs)",
                         yaxis_type=y_axis_scale,
+                        yaxis_autorange=True if y_axis_range == 'auto' else False,
                         showlegend=True,
                         font=dict(size=12),
                         height=500,
@@ -2723,25 +2724,25 @@ class DashboardApp:
                             # Create trace name with both message size and latency type
                             trace_name = f'{msg_size}B - {type_label}'
                             
-                    if 'raw_dots' in display_options:
-                        fig.add_trace(go.Scatter(
-                            x=run_data.index,
-                            y=run_data[latency_col],
-                            mode='markers',
-                            name=trace_name,
-                            marker=dict(color=size_color, size=3, opacity=0.7, symbol=symbol),
-                            showlegend=True
-                        ))
-                            
-                    if 'moving_avg' in display_options and len(run_data) > moving_avg_window:
-                        ma_col = f'{latency_type}_ma'
-                        run_data[ma_col] = run_data[latency_col].rolling(window=moving_avg_window, min_periods=1).mean()
+                            if 'raw_dots' in display_options:
+                                fig.add_trace(go.Scatter(
+                                    x=run_data.index,
+                                    y=run_data[latency_col],
+                                    mode='markers',
+                                    name=trace_name,
+                                    marker=dict(color=size_color, size=3, opacity=0.7, symbol=symbol),
+                                    showlegend=True
+                                ))
                                 
-                        fig.add_trace(go.Scatter(
-                            x=run_data.index,
-                            y=run_data[ma_col],
-                            mode='lines',
-                            name=f'{trace_name} MA',
+                            if 'moving_avg' in display_options and len(run_data) > moving_avg_window:
+                                ma_col = f'{latency_type}_ma'
+                                run_data[ma_col] = run_data[latency_col].rolling(window=moving_avg_window, min_periods=1).mean()
+                                        
+                                fig.add_trace(go.Scatter(
+                                    x=run_data.index,
+                                    y=run_data[ma_col],
+                                    mode='lines',
+                                    name=f'{trace_name} MA',
                                     line=dict(color=size_color, width=2, dash='solid'),
                                     opacity=0.9,
                                     showlegend=True
@@ -2789,28 +2790,29 @@ class DashboardApp:
                             fig.add_hline(y=overall_p95, line_dash="dash", line_color=zone_color_p95, 
                                          annotation_text=f"Overall P95 ({type_label})", annotation_position="bottom right")
                 
-                    # Update chart layout for this mechanism (moved outside performance zones block)
-                    fig.update_layout(
-                        title=f"{mechanism}{anomaly_info}",
-                        xaxis_title="Sample Index",
-                        yaxis_title="Latency (μs)",
-                        yaxis_type=y_axis_scale,
-                        showlegend=True,
-                        font=dict(size=12),
-                        height=550,
-                        template='plotly_white',
-                        legend=dict(
-                            orientation="h",
-                            yanchor="top",
-                            y=-0.15,
-                            xanchor="center",
-                            x=0.5,
-                            bgcolor="rgba(255,255,255,0.9)",
-                            bordercolor="rgba(0,0,0,0.2)",
-                            borderwidth=1
-                        ),
-                        margin=dict(b=100)
-                    )
+                # Update chart layout for this mechanism (moved outside performance zones block)
+                fig.update_layout(
+                    title=f"{mechanism}{anomaly_info}",
+                    xaxis_title="Sample Index",
+                    yaxis_title="Latency (μs)",
+                    yaxis_type=y_axis_scale,
+                    yaxis_autorange=True if y_axis_range == 'auto' else False,
+                    showlegend=True,
+                    font=dict(size=12),
+                    height=550,
+                    template='plotly_white',
+                    legend=dict(
+                        orientation="h",
+                        yanchor="top",
+                        y=-0.15,
+                        xanchor="center",
+                        x=0.5,
+                        bgcolor="rgba(255,255,255,0.9)",
+                        bordercolor="rgba(0,0,0,0.2)",
+                        borderwidth=1
+                    ),
+                    margin=dict(b=100)
+                )
                 
                 charts.append(html.Div([
                     dcc.Graph(figure=fig, id=f'separate-chart-{mechanism}')
