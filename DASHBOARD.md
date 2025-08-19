@@ -7,6 +7,8 @@ A comprehensive interactive web dashboard for analyzing and comparing Inter-Proc
 ### 📊 **Summary Tab**
 Comprehensive performance overview with statistical analysis and insights:
 
+<img width="1519" height="937" alt="Screenshot 2025-08-15 at 10 44 54 AM" src="https://github.com/user-attachments/assets/415e4ef2-bfec-464f-890a-16a27f41dea6" />
+
 - **Performance Overview Cards**: Single-row display of key metrics
   - Best Overall Mechanism (lowest P50 latency)
   - Performance Range (min-max latency with average)
@@ -40,6 +42,11 @@ Comprehensive performance overview with statistical analysis and insights:
 
 ### 📈 **Time Series Tab**
 Interactive time-series analysis with advanced visualization controls:
+
+<img width="1878" height="929" alt="Screenshot 2025-08-18 at 10 30 00 PM" src="https://github.com/user-attachments/assets/27a10652-aa64-40c7-a793-508b17468fc8" />
+
+<img width="1878" height="929" alt="Screenshot 2025-08-18 at 10 36 19 PM" src="https://github.com/user-attachments/assets/f70734f5-fb58-4251-b288-328f859b135a" />
+
 
 - **Real-time Data Visualization**: Interactive scatter plots with streaming data
 - **Moving Averages**: Configurable rolling averages (1-100 point window)
