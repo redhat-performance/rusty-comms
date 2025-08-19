@@ -41,7 +41,7 @@ use crate::{
     metrics::{LatencyType, MetricsCollector, PerformanceMetrics},
     results::BenchmarkResults,
 };
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Barrier;
@@ -260,7 +260,7 @@ impl BenchmarkRunner {
             self.mechanism,
             self.config.message_size,
             self.config.concurrency,
-            self.config.iterations,
+            self.config.msg_count,
             self.config.duration,
         );
 

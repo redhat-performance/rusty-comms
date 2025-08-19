@@ -1113,7 +1113,6 @@ mod tests {
         assert!(validate_port(8080).is_ok());
         assert!(validate_port(65535).is_ok());
         assert!(validate_port(1023).is_err());
-        assert!(validate_port(65536).is_err());
     }
 
     /// Test buffer size validation rules

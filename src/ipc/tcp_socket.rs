@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex};
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 /// TCP Socket transport implementation with multi-client support
 pub struct TcpSocketTransport {
@@ -75,7 +75,7 @@ impl TcpSocketTransport {
     /// Handle a single client connection in multi-server mode
     async fn handle_connection(
         connection_id: ConnectionId,
-        mut stream: TcpStream,
+        stream: TcpStream,
         message_sender: mpsc::Sender<(ConnectionId, Message)>,
         connections: Arc<Mutex<HashMap<ConnectionId, TcpStream>>>,
     ) {
@@ -343,13 +343,10 @@ impl IpcTransport for TcpSocketTransport {
 
                         // Configure socket options
                         if let Ok(std_stream) = stream.into_std() {
-                            if let Ok(socket) =
-                                socket2::Socket::try_from(std_stream.try_clone().unwrap())
-                            {
-                                let _ = socket.set_nodelay(true);
-                                let _ = socket.set_recv_buffer_size(buffer_size);
-                                let _ = socket.set_send_buffer_size(buffer_size);
-                            }
+                            let socket = socket2::Socket::try_from(std_stream.try_clone().unwrap()).unwrap();
+                            let _ = socket.set_nodelay(true);
+                            let _ = socket.set_recv_buffer_size(buffer_size);
+                            let _ = socket.set_send_buffer_size(buffer_size);
 
                             if let Ok(tokio_stream) = TcpStream::from_std(std_stream) {
                                 // Spawn handler for this connection
@@ -499,10 +496,10 @@ mod tests {
         // Receive messages from multiple clients
         let mut received_count = 0;
         while received_count < 3 {
-            if let Ok((connection_id, message)) =
+            if let Ok(maybe_message) =
                 tokio::time::timeout(Duration::from_millis(1000), receiver.recv()).await
             {
-                if let Some((_conn_id, msg)) = message {
+                if let Some((connection_id, msg)) = maybe_message {
                     debug!(
                         "Received message {} from connection {}",
                         msg.id, connection_id
