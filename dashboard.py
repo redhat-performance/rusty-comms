@@ -643,7 +643,8 @@ class DashboardApp:
              Output('ts-statistical-overlays', 'value'),
              Output('ts-y-axis-scale', 'value'),
              Output('ts-sampling-strategy', 'value'),
-             Output('ts-display-options', 'value')],
+             Output('ts-display-options', 'value'),
+             Output('ts-latency-types', 'value')],
             [Input('preset-performance', 'n_clicks'),
              Input('preset-detailed', 'n_clicks'),
              Input('preset-statistical', 'n_clicks'),
@@ -676,32 +677,32 @@ class DashboardApp:
             if button_id == 'preset-performance':
                 # Performance Analysis preset
                 return ('separate', build_view_options(['sync_zoom']), 
-                       ['percentile_bands', 'rolling_percentiles', 'spike_detection'], 
-                       'log', 'peak_preserving', ['raw_dots', 'moving_avg'])
+                       ['spike_detection'], 
+                       'log', 'uniform', ['moving_avg'], ['round_trip'])
             
             elif button_id == 'preset-detailed':
                 # Detailed Inspection preset
-                return ('separate', build_view_options(['sync_zoom']), 
-                       ['percentile_bands', 'spike_detection', 'distributions'], 
-                       'log', 'uniform', ['raw_dots', 'moving_avg'])
+                return ('faceted', build_view_options(['sync_zoom']), 
+                       [], 
+                       'log', 'uniform', ['moving_avg'], ['round_trip'])
             
             elif button_id == 'preset-statistical':
                 # Statistical Overview preset
                 return ('faceted', build_view_options(['sync_zoom']), 
-                       ['percentile_bands', 'rolling_percentiles', 'distributions', 'spike_detection'], 
-                       'log', 'adaptive', ['moving_avg'])
+                       ['percentile_bands', 'spike_detection'], 
+                       'log', 'peak_preserving', ['moving_avg'], ['one_way', 'round_trip'])
             
             elif button_id == 'preset-outliers':
                 # Outlier Detection preset
                 return ('separate', build_view_options(['sync_zoom']), 
-                       ['spike_detection', 'anomaly_detection'], 
-                       'log', 'outlier_preserving', ['raw_dots'])
+                       ['percentile_bands', 'spike_detection', 'anomaly_detection'], 
+                       'log', 'outlier_preserving', ['moving_avg'], ['round_trip'])
             
             elif button_id == 'preset-reset':
                 # Reset to defaults (but preserve statistics panel setting)
                 return ('separate', build_view_options(['sync_zoom']), 
                        ['percentile_bands', 'spike_detection'], 
-                       'log', 'uniform', ['raw_dots', 'moving_avg'])
+                       'log', 'uniform', ['raw_dots', 'moving_avg'], ['one_way'])
             
             raise PreventUpdate
         
@@ -1979,8 +1980,8 @@ class DashboardApp:
                                 id='ts-statistical-overlays',
                                 options=[
                                     {'label': 'Percentile Bands (P25-P75)', 'value': 'percentile_bands'},
-                                    {'label': 'Spike Detection', 'value': 'spike_detection'},
-                                    {'label': 'Anomaly Detection', 'value': 'anomaly_detection'},
+                                    {'label': 'Spike Detection (Z-score outliers)', 'value': 'spike_detection'},
+                                    {'label': 'Anomaly Detection (ML pattern analysis)', 'value': 'anomaly_detection'},
                                     {'label': 'Distribution Overlays', 'value': 'distributions'},
                                     {'label': 'Rolling P95/P99', 'value': 'rolling_percentiles'}
                                 ],
@@ -2261,13 +2262,13 @@ class DashboardApp:
                     current_strategy['definition']
                 ], style={'font-size': '0.85rem', 'margin-bottom': '5px'}),
                 html.P([
-                    html.Strong("Pros: ", style={'color': '#059669'}), 
+                    html.Strong("Pros: ", style={'color': 'black'}), 
                     current_strategy['pros']
                 ], style={'font-size': '0.85rem', 'margin-bottom': '3px'}),
                 html.P([
-                    html.Strong("Cons: ", style={'color': '#dc2626'}), 
+                    html.Strong("Cons: ", style={'color': 'black'}), 
                     current_strategy['cons']
-                ], style={'font-size': '0.85rem', 'color': '#6b7280'})
+                ], style={'font-size': '0.85rem', 'color': 'black'})
             ], className="performance-note")
 
         # Advanced Chart Generation with Multiple Layout Options
@@ -2362,10 +2363,10 @@ class DashboardApp:
                     if len(anomaly_data) > 0:
                         if anomaly['type'] == 'spikes':
                             # Add spike markers (using magenta to avoid conflicts with red mechanism colors)
-                            fig.add_trace(go.Scatter(
+                                fig.add_trace(go.Scatter(
                                 x=anomaly_data.index,
                                 y=anomaly_data[latency_col],
-                                mode='markers',
+                                    mode='markers',
                                 name=f'Spikes ({mechanism} {type_label})',
                                 marker=dict(
                                     color='#ec4899',  # Magenta - distinct from all mechanism colors
@@ -2378,10 +2379,10 @@ class DashboardApp:
                             ))
                         else:  # anomalies or statistical_anomalies
                             # Add anomaly markers (using brown to avoid conflicts with all mechanism colors)
-                            fig.add_trace(go.Scatter(
+                                fig.add_trace(go.Scatter(
                                 x=anomaly_data.index,
                                 y=anomaly_data[latency_col],
-                                mode='markers',
+                                    mode='markers',
                                 name=f'Anomalies ({mechanism} {type_label})',
                                 marker=dict(
                                     color='#a16207',  # Brown - distinct from all mechanism colors
@@ -2490,7 +2491,7 @@ class DashboardApp:
                     fig.add_trace(go.Scatter(
                         x=normalized_counts,
                         y=hist_centers,
-                        mode='lines',
+                            mode='lines',
                         name=f'Distribution ({mechanism} {type_label})',
                         line=dict(color=color, width=2),
                         opacity=0.6,
@@ -2606,23 +2607,23 @@ class DashboardApp:
                                     mode='markers',
                                     name=f'{mechanism} ({type_label})',
                                     marker=dict(color=trace_color, size=3, opacity=0.7, symbol=symbol),
-                                    showlegend=True
-                                ))
-                            
+                            showlegend=True
+                        ))
+                        
                             if 'moving_avg' in display_options and len(run_data) > moving_avg_window:
                                 ma_col = f'{latency_type}_ma'
                                 run_data[ma_col] = run_data[latency_col].rolling(window=moving_avg_window, min_periods=1).mean()
                                 
-                                fig.add_trace(go.Scatter(
-                                    x=run_data.index,
+                            fig.add_trace(go.Scatter(
+                                x=run_data.index,
                                     y=run_data[ma_col],
-                                    mode='lines',
+                                mode='lines',
                                     name=f'{mechanism} ({type_label}) MA',
                                     line=dict(color=trace_color, width=2, dash='solid'),
-                                    opacity=0.9,
-                                    showlegend=True
-                                ))
-                    
+                                opacity=0.9,
+                                showlegend=True
+                            ))
+            
                     # Add performance zones if enabled
                     if 'perf_zones' in view_options and len(size_data) > 0:
                         # Add performance zones for each selected latency type
@@ -2665,7 +2666,7 @@ class DashboardApp:
                         ),
                         margin=dict(b=100)
                     )
-                    
+            
                     charts.append(html.Div([
                         dcc.Graph(figure=fig, id=f'faceted-chart-{msg_size}')
                     ], className="chart-container", style={'width': '100%', 'margin-bottom': '20px'}))
@@ -2681,66 +2682,96 @@ class DashboardApp:
                 mechanism_df = streaming_df[streaming_df['mechanism'] == mechanism]
                 
                 if len(mechanism_df) > 0:
-                    run_data = apply_sampling_strategy(mechanism_df, sampling_strategy, MAX_POINTS_PER_RUN)
-                    run_data = run_data.reset_index(drop=True)
+                    # Get unique message sizes for this mechanism to create separate traces
+                    mechanism_message_sizes = sorted(mechanism_df['message_size'].unique())
                     
-                    # Add statistical overlays for each selected latency type
-                    for latency_type in latency_types:
-                        latency_col = 'one_way_latency_us' if latency_type == 'one_way' else 'round_trip_latency_us'
-                        if latency_col in run_data.columns and not run_data[latency_col].isna().all():
-                            overlay_color = get_mechanism_colors(mechanism, latency_type)
-                            add_statistical_overlays(fig, run_data, mechanism, overlay_color, latency_type)
+                    # Color palette for message sizes (distinct colors)
+                    size_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
                     
-                    # Detect anomalies for each selected latency type
                     anomalies = []
-                    for latency_type in latency_types:
-                        latency_col = 'one_way_latency_us' if latency_type == 'one_way' else 'round_trip_latency_us'
-                        if latency_col in run_data.columns and not run_data[latency_col].isna().all():
-                            type_anomalies = detect_anomalies(run_data, mechanism, latency_type)
-                            anomalies.extend(type_anomalies)
+                    
+                    # Create traces for each message size within this mechanism
+                    for size_idx, msg_size in enumerate(mechanism_message_sizes):
+                        # Filter data for this specific message size
+                        size_df = mechanism_df[mechanism_df['message_size'] == msg_size]
+                        
+                        if len(size_df) == 0:
+                            continue
+                            
+                        run_data = apply_sampling_strategy(size_df, sampling_strategy, MAX_POINTS_PER_RUN // len(mechanism_message_sizes))
+                        run_data = run_data.reset_index(drop=True)
+                        
+                        # Use different colors for each message size
+                        size_color = size_colors[size_idx % len(size_colors)]
+                        
+                        # Detect anomalies for each selected latency type for this message size
+                        for latency_type in latency_types:
+                            latency_col = 'one_way_latency_us' if latency_type == 'one_way' else 'round_trip_latency_us'
+                            if latency_col in run_data.columns and not run_data[latency_col].isna().all():
+                                type_anomalies = detect_anomalies(run_data, mechanism, latency_type)
+                                anomalies.extend(type_anomalies)
+                        
+                        # Generate traces for each selected latency type and message size combination
+                        for latency_type in latency_types:
+                            latency_col = 'one_way_latency_us' if latency_type == 'one_way' else 'round_trip_latency_us'
+                            type_label = 'One-way' if latency_type == 'one_way' else 'Round-trip'
+                            
+                            # Skip if column doesn't exist in data
+                            if latency_col not in run_data.columns or run_data[latency_col].isna().all():
+                                continue
+                            
+                            # Create trace name with both message size and latency type
+                            trace_name = f'{msg_size}B - {type_label}'
+                            
+                    if 'raw_dots' in display_options:
+                        fig.add_trace(go.Scatter(
+                            x=run_data.index,
+                            y=run_data[latency_col],
+                            mode='markers',
+                            name=trace_name,
+                            marker=dict(color=size_color, size=3, opacity=0.7, symbol=symbol),
+                            showlegend=True
+                        ))
+                            
+                    if 'moving_avg' in display_options and len(run_data) > moving_avg_window:
+                        ma_col = f'{latency_type}_ma'
+                        run_data[ma_col] = run_data[latency_col].rolling(window=moving_avg_window, min_periods=1).mean()
+                                
+                        fig.add_trace(go.Scatter(
+                            x=run_data.index,
+                            y=run_data[ma_col],
+                            mode='lines',
+                            name=f'{trace_name} MA',
+                                    line=dict(color=size_color, width=2, dash='solid'),
+                                    opacity=0.9,
+                                    showlegend=True
+                                ))
+                    
+                    # Add statistical overlays per message size for better granularity
+                    for size_idx, msg_size in enumerate(mechanism_message_sizes):
+                        size_df = mechanism_df[mechanism_df['message_size'] == msg_size]
+                        if len(size_df) == 0:
+                            continue
+                            
+                        run_data_overlay = apply_sampling_strategy(size_df, sampling_strategy, MAX_POINTS_PER_RUN // len(mechanism_message_sizes))
+                        run_data_overlay = run_data_overlay.reset_index(drop=True)
+                        
+                        # Use the same color as the corresponding trace
+                        size_color = size_colors[size_idx % len(size_colors)]
+                        
+                        for latency_type in latency_types:
+                            latency_col = 'one_way_latency_us' if latency_type == 'one_way' else 'round_trip_latency_us'
+                            if latency_col in run_data_overlay.columns and not run_data_overlay[latency_col].isna().all():
+                                # Add statistical overlays with message size context
+                                add_statistical_overlays(fig, run_data_overlay, f"{mechanism} {msg_size}B", size_color, latency_type)
+                    
                     anomaly_info = ""
                     if anomalies:
                         anomaly_info = f" ({len(anomalies)} anomalies)"
-                    
-
-                    
-                    # Generate traces for each selected latency type
-                    for latency_type in latency_types:
-                        latency_col = 'one_way_latency_us' if latency_type == 'one_way' else 'round_trip_latency_us'
-                        type_label = 'One-way' if latency_type == 'one_way' else 'Round-trip'
-                        trace_color = get_mechanism_colors(mechanism, latency_type)
-                        
-                        # Skip if column doesn't exist in data
-                        if latency_col not in run_data.columns or run_data[latency_col].isna().all():
-                            continue
-                            
-                        if 'raw_dots' in display_options:
-                            fig.add_trace(go.Scatter(
-                                x=run_data.index,
-                                y=run_data[latency_col],
-                                mode='markers',
-                                name=f'{type_label}',
-                                marker=dict(color=trace_color, size=3, opacity=0.7, symbol=symbol),
-                                showlegend=True
-                            ))
-                        
-                        if 'moving_avg' in display_options and len(run_data) > moving_avg_window:
-                            ma_col = f'{latency_type}_ma'
-                            run_data[ma_col] = run_data[latency_col].rolling(window=moving_avg_window, min_periods=1).mean()
-                            
-                            fig.add_trace(go.Scatter(
-                                x=run_data.index,
-                                y=run_data[ma_col],
-                                mode='lines',
-                                name=f'{type_label} MA',
-                                line=dict(color=trace_color, width=2, dash='solid'),
-                                opacity=0.9,
-                                showlegend=True
-                            ))
                 
-                # Add performance zones if enabled
+                # Add performance zones if enabled - show overall mechanism zones for reference
                 if 'perf_zones' in view_options and len(mechanism_df) > 0:
-                    # Add performance zones for each selected latency type
+                    # Add overall mechanism performance zones for each selected latency type
                     for latency_type in latency_types:
                         latency_col = 'one_way_latency_us' if latency_type == 'one_way' else 'round_trip_latency_us'
                         type_label = 'One-way' if latency_type == 'one_way' else 'Round-trip'
@@ -2754,32 +2785,32 @@ class DashboardApp:
                             zone_color_p95 = '#f59e0b' if latency_type == 'one_way' else '#d97706'  # Orange family
                             
                             fig.add_hline(y=overall_p50, line_dash="dash", line_color=zone_color_p50, 
-                                         annotation_text=f"Good P50 ({type_label})", annotation_position="bottom right")
+                                         annotation_text=f"Overall P50 ({type_label})", annotation_position="bottom right")
                             fig.add_hline(y=overall_p95, line_dash="dash", line_color=zone_color_p95, 
-                                         annotation_text=f"Warning P95 ({type_label})", annotation_position="bottom right")
+                                         annotation_text=f"Overall P95 ({type_label})", annotation_position="bottom right")
                 
-                # Update chart layout for this mechanism (moved outside performance zones block)
-                fig.update_layout(
-                    title=f"{mechanism}{anomaly_info}",
-                    xaxis_title="Sample Index",
-                    yaxis_title="Latency (μs)",
-                    yaxis_type=y_axis_scale,
-                    showlegend=True,
-                    font=dict(size=12),
-                    height=550,
-                    template='plotly_white',
-                    legend=dict(
-                        orientation="h",
-                        yanchor="top",
-                        y=-0.15,
-                        xanchor="center",
-                        x=0.5,
-                        bgcolor="rgba(255,255,255,0.9)",
-                        bordercolor="rgba(0,0,0,0.2)",
-                        borderwidth=1
-                    ),
-                    margin=dict(b=100)
-                )
+                    # Update chart layout for this mechanism (moved outside performance zones block)
+                    fig.update_layout(
+                        title=f"{mechanism}{anomaly_info}",
+                        xaxis_title="Sample Index",
+                        yaxis_title="Latency (μs)",
+                        yaxis_type=y_axis_scale,
+                        showlegend=True,
+                        font=dict(size=12),
+                        height=550,
+                        template='plotly_white',
+                        legend=dict(
+                            orientation="h",
+                            yanchor="top",
+                            y=-0.15,
+                            xanchor="center",
+                            x=0.5,
+                            bgcolor="rgba(255,255,255,0.9)",
+                            bordercolor="rgba(0,0,0,0.2)",
+                            borderwidth=1
+                        ),
+                        margin=dict(b=100)
+                    )
                 
                 charts.append(html.Div([
                     dcc.Graph(figure=fig, id=f'separate-chart-{mechanism}')
@@ -3126,7 +3157,7 @@ body {
 
 .performance-note p {
     margin: 0;
-    color: #92400e;
+    color: black;
     font-weight: 500;
 }
 
@@ -3320,7 +3351,7 @@ input[type="checkbox"] {
     padding: 12px 16px;
     margin-bottom: 20px;
     font-size: 0.9rem;
-    color: #92400e;
+    color: black;
 }
 
 /* Enhanced chart container */
