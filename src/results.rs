@@ -283,6 +283,10 @@ pub struct BenchmarkResults {
     
     /// System information for reproducibility
     pub system_info: SystemInfo,
+    
+    /// Additional metadata fields for custom information (e.g., automotive, ultra-low latency)
+    #[serde(default)]
+    pub metadata: HashMap<String, String>,
 }
 
 /// Test configuration used for the benchmark
@@ -1451,12 +1455,22 @@ impl BenchmarkResults {
             timestamp: chrono::Utc::now(),
             test_duration: Duration::ZERO,
             system_info: SystemInfo::default(),
+            metadata: HashMap::new(),
         }
     }
 
     /// Mark the benchmark result as a failure
     pub fn set_failure(&mut self, error_message: String) {
         self.status = BenchmarkStatus::Failure(error_message);
+    }
+    
+    /// Add metadata to the benchmark results
+    /// 
+    /// This method allows adding custom key-value pairs to the results,
+    /// useful for automotive metrics, ultra-low latency data, or other
+    /// specialized information.
+    pub fn add_metadata(&mut self, key: &str, value: String) {
+        self.metadata.insert(key.to_string(), value);
     }
 
     /// Add one-way test results

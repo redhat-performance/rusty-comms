@@ -113,6 +113,15 @@ pub mod results;
 /// - Statistical calculation utilities
 pub mod utils;
 
+/// Automotive real-time metrics and safety evaluation
+///
+/// Specialized metrics collection for automotive/safety-critical systems:
+/// - ASIL safety level compliance checking
+/// - Hard deadline enforcement and violation tracking
+/// - Automotive-specific performance requirements
+/// - Safety margin calculation and reporting
+pub mod automotive_metrics;
+
 // Re-export key types for convenient library usage
 // These are the primary types that library users will interact with
 
@@ -145,6 +154,12 @@ pub use metrics::{LatencyMetrics, ThroughputMetrics};
 /// Key types for handling benchmark results, including the main `BenchmarkResults`
 /// structure and the `ResultsManager` for output handling.
 pub use results::{BenchmarkResults, ResultsManager};
+
+/// Automotive real-time metrics and evaluation
+///
+/// Specialized types for automotive/safety-critical evaluation including
+/// ASIL compliance checking and deadline enforcement.
+pub use automotive_metrics::{AutomotiveMetrics, AutomotiveSuitabilityReport, AutomotiveError};
 
 /// The current version of the IPC benchmark suite
 ///

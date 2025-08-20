@@ -9,6 +9,11 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, warn};
 
+#[cfg(unix)]
+use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
+use std::time::{Duration, Instant};
+use nix::libc;
+
 /// Unix Domain Socket transport implementation with multi-client support
 pub struct UnixDomainSocketTransport {
     state: TransportState,
@@ -20,6 +25,135 @@ pub struct UnixDomainSocketTransport {
     next_connection_id: Arc<AtomicU64>,
     socket_path: String,
     message_receiver: Option<mpsc::Receiver<(ConnectionId, Message)>>,
+}
+
+/// Ultra-low latency Unix Domain Socket optimizations
+impl UnixDomainSocketTransport {
+    /// Send message using direct syscalls without message framing (ultra-low latency)
+    /// 
+    /// This bypasses tokio async overhead and removes the 4-byte length prefix
+    /// for fixed-size messages in ultra-low latency mode.
+    #[cfg(unix)]
+    pub fn send_ultra_fast_direct(&self, fd: RawFd, data: &[u8]) -> Result<Duration> {
+        let start = Instant::now();
+        
+        // Direct sendmsg syscall with MSG_DONTWAIT | MSG_NOSIGNAL
+        let msg = libc::msghdr {
+            msg_name: std::ptr::null_mut(),
+            msg_namelen: 0,
+            msg_iov: &libc::iovec {
+                iov_base: data.as_ptr() as *mut libc::c_void,
+                iov_len: data.len(),
+            } as *const libc::iovec as *mut libc::iovec,
+            msg_iovlen: 1,
+            msg_control: std::ptr::null_mut(),
+            msg_controllen: 0,
+            msg_flags: 0,
+        };
+        
+        let result = unsafe {
+            libc::sendmsg(fd, &msg, libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL)
+        };
+        
+        if result == -1 {
+            let error = std::io::Error::last_os_error();
+            match error.raw_os_error() {
+                Some(libc::EAGAIN) | Some(libc::EWOULDBLOCK) => {
+                    return Err(anyhow!("Socket buffer full"));
+                }
+                Some(libc::EPIPE) | Some(libc::ECONNRESET) => {
+                    return Err(anyhow!("Connection closed"));
+                }
+                _ => return Err(error.into()),
+            }
+        }
+        
+        Ok(start.elapsed())
+    }
+    
+    /// Receive message using direct syscalls without message framing (ultra-low latency)
+    /// 
+    /// For fixed-size messages in ultra-low latency mode. No 4-byte length prefix.
+    #[cfg(unix)]
+    pub fn recv_ultra_fast_direct(&self, fd: RawFd, buffer: &mut [u8]) -> Result<(Duration, usize)> {
+        let start = Instant::now();
+        
+        // Direct recvmsg syscall with MSG_DONTWAIT
+        let msg = libc::msghdr {
+            msg_name: std::ptr::null_mut(),
+            msg_namelen: 0,
+            msg_iov: &libc::iovec {
+                iov_base: buffer.as_mut_ptr() as *mut libc::c_void,
+                iov_len: buffer.len(),
+            } as *const libc::iovec as *mut libc::iovec,
+            msg_iovlen: 1,
+            msg_control: std::ptr::null_mut(),
+            msg_controllen: 0,
+            msg_flags: 0,
+        };
+        
+        let bytes_received = unsafe {
+            libc::recvmsg(fd, &msg as *const libc::msghdr as *mut libc::msghdr, libc::MSG_DONTWAIT)
+        };
+        
+        if bytes_received == -1 {
+            let error = std::io::Error::last_os_error();
+            match error.raw_os_error() {
+                Some(libc::EAGAIN) | Some(libc::EWOULDBLOCK) => {
+                    return Err(anyhow!("No data available"));
+                }
+                Some(libc::ECONNRESET) => {
+                    return Err(anyhow!("Connection reset"));
+                }
+                _ => return Err(error.into()),
+            }
+        }
+        
+        Ok((start.elapsed(), bytes_received as usize))
+    }
+    
+    /// Get raw file descriptor from UnixStream for direct syscalls
+    #[cfg(unix)]
+    pub fn get_stream_fd(&self) -> Option<RawFd> {
+        self.stream.as_ref().map(|s| s.as_raw_fd())
+    }
+    
+    /// Send message with deadline enforcement (automotive mode)
+    #[cfg(unix)]
+    pub fn send_with_deadline(&self, fd: RawFd, data: &[u8], deadline_us: u64) -> Result<Duration> {
+        let start = Instant::now();
+        let deadline = start + Duration::from_micros(deadline_us);
+        
+        loop {
+            match self.send_ultra_fast_direct(fd, data) {
+                Ok(latency) => {
+                    // Check if we exceeded the deadline
+                    if latency.as_micros() > deadline_us as u128 {
+                        return Err(anyhow!(
+                            "Automotive deadline missed: {}μs > {}μs", 
+                            latency.as_micros(), 
+                            deadline_us
+                        ));
+                    }
+                    return Ok(latency);
+                }
+                Err(e) if e.to_string().contains("Socket buffer full") => {
+                    // Check if we have time for another attempt
+                    if Instant::now() >= deadline {
+                        return Err(anyhow!(
+                            "Automotive deadline exceeded during retry: {}μs", 
+                            start.elapsed().as_micros()
+                        ));
+                    }
+                    
+                    // Automotive systems don't usually yield - busy wait briefly
+                    std::hint::spin_loop();
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
 }
 
 impl UnixDomainSocketTransport {

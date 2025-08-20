@@ -281,6 +281,246 @@ impl Message {
     }
 }
 
+/// Ultra-low latency zero-copy message structure
+/// 
+/// Optimized for automotive/real-time systems where every nanosecond counts.
+/// Uses fixed-size layout with no heap allocations or serialization overhead.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct UltraLowLatencyMessage<const PAYLOAD_SIZE: usize> {
+    /// Message sequence number (4 bytes vs 8 for regular Message)
+    pub sequence: u32,
+    
+    /// High-precision timestamp (nanoseconds since test start)
+    pub timestamp_ns: u64,
+    
+    /// Fixed-size payload (inline, no Vec allocation)
+    /// Common sizes: 64, 256, 1024, 4096 bytes
+    pub payload: [u8; PAYLOAD_SIZE],
+    
+    /// Checksum for data integrity (automotive safety requirement)
+    pub checksum: u32,
+}
+
+impl<const PAYLOAD_SIZE: usize> UltraLowLatencyMessage<PAYLOAD_SIZE> {
+    /// Create new ultra-low latency message (zero allocations)
+    #[inline(always)]
+    pub fn new(sequence: u32, timestamp_ns: u64, data: &[u8]) -> Self {
+        let mut payload = [0u8; PAYLOAD_SIZE];
+        let copy_len = data.len().min(PAYLOAD_SIZE);
+        payload[..copy_len].copy_from_slice(&data[..copy_len]);
+        
+        // Simple checksum for automotive data integrity
+        let checksum = Self::calculate_checksum(&payload);
+        
+        Self {
+            sequence,
+            timestamp_ns,
+            payload,
+            checksum,
+        }
+    }
+    
+    /// Zero-copy access to payload data
+    #[inline(always)]
+    pub fn payload_bytes(&self) -> &[u8] {
+        &self.payload
+    }
+    
+    /// Validate message integrity (automotive safety)
+    #[inline(always)]
+    pub fn validate_checksum(&self) -> bool {
+        self.checksum == Self::calculate_checksum(&self.payload)
+    }
+    
+    /// Fast checksum calculation (CRC32 would be better for real automotive)
+    #[inline(always)]
+    fn calculate_checksum(data: &[u8]) -> u32 {
+        data.iter().fold(0u32, |acc, &byte| {
+            acc.wrapping_mul(31).wrapping_add(byte as u32)
+        })
+    }
+    
+    /// Convert to bytes for transmission (zero-copy cast)
+    #[inline(always)]
+    pub fn as_bytes(&self) -> &[u8] {
+        unsafe {
+            std::slice::from_raw_parts(
+                self as *const Self as *const u8,
+                std::mem::size_of::<Self>()
+            )
+        }
+    }
+    
+    /// Create from received bytes (zero-copy cast)
+    #[inline(always)]
+    pub fn from_bytes(bytes: &[u8]) -> Option<&Self> {
+        if bytes.len() >= std::mem::size_of::<Self>() {
+            unsafe {
+                Some(&*(bytes.as_ptr() as *const Self))
+            }
+        } else {
+            None
+        }
+    }
+    
+    /// Size of this message type in bytes (compile-time constant)
+    pub const fn size() -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+/// Automotive-specific message types for safety-critical systems
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutomotiveMessageType {
+    /// Critical control message (ASIL-D) - highest priority
+    CriticalControl = 0,
+    
+    /// Safety system message (ASIL-C) 
+    SafetySystem = 1,
+    
+    /// Real-time control (ASIL-B)
+    RealTimeControl = 2,
+    
+    /// Comfort system (ASIL-A)
+    ComfortSystem = 3,
+    
+    /// Diagnostic message (QM - Quality Management)
+    Diagnostic = 4,
+    
+    /// Heartbeat/keepalive message
+    Heartbeat = 5,
+}
+
+/// Automotive message with safety metadata
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct AutomotiveMessage<const PAYLOAD_SIZE: usize> {
+    /// Base ultra-low latency message
+    pub base: UltraLowLatencyMessage<PAYLOAD_SIZE>,
+    
+    /// ASIL safety level and message type
+    pub message_type: AutomotiveMessageType,
+    
+    /// Source ECU identifier
+    pub source_ecu: u8,
+    
+    /// Destination ECU identifier  
+    pub dest_ecu: u8,
+    
+    /// Message priority (0 = highest, 255 = lowest)
+    pub priority: u8,
+    
+    /// Rolling counter for replay attack detection
+    pub rolling_counter: u8,
+    
+    /// Safety padding to align to 8-byte boundary
+    _padding: [u8; 3],
+}
+
+impl<const PAYLOAD_SIZE: usize> AutomotiveMessage<PAYLOAD_SIZE> {
+    /// Create new automotive message with safety metadata
+    pub fn new(
+        sequence: u32,
+        timestamp_ns: u64, 
+        data: &[u8],
+        message_type: AutomotiveMessageType,
+        source_ecu: u8,
+        dest_ecu: u8,
+        priority: u8,
+        rolling_counter: u8,
+    ) -> Self {
+        Self {
+            base: UltraLowLatencyMessage::new(sequence, timestamp_ns, data),
+            message_type,
+            source_ecu,
+            dest_ecu,
+            priority,
+            rolling_counter,
+            _padding: [0; 3],
+        }
+    }
+    
+    /// Get deadline in microseconds based on message type
+    pub fn get_deadline_us(&self) -> u64 {
+        match self.message_type {
+            AutomotiveMessageType::CriticalControl => 100,    // 100μs for life-critical
+            AutomotiveMessageType::SafetySystem => 1000,      // 1ms for safety systems  
+            AutomotiveMessageType::RealTimeControl => 10000,  // 10ms for real-time
+            AutomotiveMessageType::ComfortSystem => 100000,   // 100ms for comfort
+            AutomotiveMessageType::Diagnostic => 1000000,     // 1s for diagnostics
+            AutomotiveMessageType::Heartbeat => 50000,        // 50ms for heartbeat
+        }
+    }
+    
+    /// Check if message is safety-critical (requires deterministic handling)
+    pub fn is_safety_critical(&self) -> bool {
+        matches!(self.message_type, 
+            AutomotiveMessageType::CriticalControl | 
+            AutomotiveMessageType::SafetySystem
+        )
+    }
+}
+
+/// Pre-defined ultra-low latency message sizes for common automotive scenarios
+pub type UllMessage64 = UltraLowLatencyMessage<64>;     // CAN-like small messages
+pub type UllMessage256 = UltraLowLatencyMessage<256>;   // Moderate automotive messages  
+pub type UllMessage1024 = UltraLowLatencyMessage<1024>; // Large automotive messages
+pub type UllMessage4096 = UltraLowLatencyMessage<4096>; // Maximum automotive messages
+
+/// Pre-defined automotive message sizes
+pub type AutomotiveMessage64 = AutomotiveMessage<64>;
+pub type AutomotiveMessage256 = AutomotiveMessage<256>;
+pub type AutomotiveMessage1024 = AutomotiveMessage<1024>;
+
+/// Message pool for zero-allocation ultra-low latency messaging
+pub struct UltraLowLatencyMessagePool<const PAYLOAD_SIZE: usize> {
+    messages: Vec<UltraLowLatencyMessage<PAYLOAD_SIZE>>,
+    current_index: std::sync::atomic::AtomicUsize,
+}
+
+impl<const PAYLOAD_SIZE: usize> UltraLowLatencyMessagePool<PAYLOAD_SIZE> {
+    /// Create new message pool with pre-allocated messages
+    pub fn new(capacity: usize) -> Self {
+        let mut messages = Vec::with_capacity(capacity);
+        
+        // Pre-allocate all messages  
+        for i in 0..capacity {
+            messages.push(UltraLowLatencyMessage::new(
+                i as u32,
+                0,
+                &vec![0u8; PAYLOAD_SIZE]
+            ));
+        }
+        
+        Self {
+            messages,
+            current_index: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+    
+    /// Get next pre-allocated message (zero allocation)
+    pub fn get_message(&self) -> Option<&mut UltraLowLatencyMessage<PAYLOAD_SIZE>> {
+        let index = self.current_index.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        
+        if index < self.messages.len() {
+            // Safety: We own the pool and index is within bounds
+            unsafe {
+                let ptr = self.messages.as_ptr().add(index) as *mut UltraLowLatencyMessage<PAYLOAD_SIZE>;
+                Some(&mut *ptr)
+            }
+        } else {
+            None // Pool exhausted
+        }
+    }
+    
+    /// Reset pool for reuse
+    pub fn reset(&self) {
+        self.current_index.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// Transport configuration for IPC mechanisms
 ///
 /// This structure contains all configuration parameters needed to

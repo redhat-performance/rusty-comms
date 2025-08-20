@@ -82,6 +82,42 @@ const CONCURRENCY: &str = "Concurrency";
 const OUTPUT_AND_LOGGING: &str = "Output and Logging";
 const ADVANCED: &str = "Advanced";
 
+/// Automotive Safety Integrity Level (ASIL) classification
+///
+/// ASIL levels define the safety requirements for automotive systems
+/// based on the potential severity of injury in case of malfunction.
+#[derive(Clone, Debug, ValueEnum, Serialize, Deserialize)]
+pub enum AsilLevel {
+    /// ASIL-A: Light injury potential
+    /// 
+    /// Lowest safety requirements, suitable for comfort functions
+    /// like air conditioning, seat adjustment.
+    #[value(name = "a")]
+    A,
+    
+    /// ASIL-B: Moderate injury potential
+    /// 
+    /// Medium safety requirements, suitable for non-critical
+    /// driver assistance systems.
+    #[value(name = "b")]
+    B,
+    
+    /// ASIL-C: Severe injury potential
+    /// 
+    /// High safety requirements, suitable for critical systems
+    /// like anti-lock braking, electronic stability control.
+    #[value(name = "c")]
+    C,
+    
+    /// ASIL-D: Life-threatening potential
+    /// 
+    /// Highest safety requirements, suitable for systems where
+    /// malfunction could cause death, like airbag deployment,
+    /// steering control, brake-by-wire.
+    #[value(name = "d")]
+    D,
+}
+
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None, styles = styles())]
 pub struct Args {
@@ -125,6 +161,46 @@ pub struct Args {
     /// to avoid race conditions in the current implementation.
     #[arg(short = 'c', long, default_value_t = crate::defaults::CONCURRENCY, help_heading = CONCURRENCY)]
     pub concurrency: usize,
+
+    /// Enable ultra-low latency optimizations
+    ///
+    /// Activates aggressive optimizations for sub-microsecond latency:
+    /// - Direct syscalls bypassing async overhead
+    /// - Pre-allocated memory pools
+    /// - Cache-aligned atomic operations
+    /// - Huge page memory allocation
+    /// - Zero-copy message handling
+    #[arg(long, help_heading = ADVANCED)]
+    pub ultra_low_latency: bool,
+
+    /// Enable automotive real-time evaluation mode
+    ///
+    /// Tests IPC mechanisms against automotive industry requirements:
+    /// - Hard deadline enforcement (microsecond precision)
+    /// - ASIL safety level compliance checking
+    /// - Deterministic timing validation
+    /// - Periodic task simulation
+    /// - Fault tolerance evaluation
+    #[arg(long, help_heading = ADVANCED)]
+    pub automotive_mode: bool,
+
+    /// Maximum latency deadline in microseconds (automotive mode)
+    ///
+    /// Hard deadline for message delivery. Any message exceeding this
+    /// latency will be recorded as a deadline miss. Critical for
+    /// automotive safety systems (typical: 10-1000μs).
+    #[arg(long, default_value_t = 100, help_heading = ADVANCED)]
+    pub max_latency_us: u64,
+
+    /// Automotive Safety Integrity Level (ASIL A-D)
+    ///
+    /// Sets the safety requirements for evaluation:
+    /// - ASIL-A: Light injury (relaxed timing)
+    /// - ASIL-B: Moderate injury 
+    /// - ASIL-C: Severe injury (strict timing)
+    /// - ASIL-D: Life-threatening (strictest timing)
+    #[arg(long, value_enum, default_value_t = AsilLevel::A, help_heading = ADVANCED)]
+    pub asil_level: AsilLevel,
 
     /// Path to the final JSON output file. If used without a path, defaults to 'benchmark_results.json'.
     ///

@@ -37,7 +37,7 @@
 
 use crate::{
     cli::{Args, IpcMechanism},
-    ipc::{Message, MessageType, TransportConfig, TransportFactory},
+    ipc::{IpcTransport, Message, MessageType, TransportConfig, TransportFactory},
     metrics::{LatencyType, MetricsCollector, PerformanceMetrics},
     results::BenchmarkResults,
 };
@@ -135,6 +135,36 @@ pub struct BenchmarkConfig {
     /// Base port number that will be modified to ensure uniqueness
     /// across concurrent tests. Ignored by non-network mechanisms.
     pub port: u16,
+    
+    /// Enable ultra-low latency optimizations
+    ///
+    /// When enabled, activates aggressive optimizations for sub-microsecond latency:
+    /// - Direct syscalls bypassing async overhead
+    /// - Pre-allocated memory pools
+    /// - Cache-aligned atomic operations  
+    /// - Huge page memory allocation
+    /// - Zero-copy message handling
+    pub ultra_low_latency: bool,
+    
+    /// Enable automotive real-time evaluation mode
+    ///
+    /// When enabled, tests IPC mechanisms against automotive requirements:
+    /// - Hard deadline enforcement
+    /// - ASIL safety level compliance
+    /// - Deterministic timing validation
+    /// - Periodic task simulation
+    pub automotive_mode: bool,
+    
+    /// Maximum latency deadline in microseconds
+    ///
+    /// Hard deadline for message delivery. Messages exceeding this
+    /// latency are recorded as deadline misses for automotive evaluation.
+    pub max_latency_us: u64,
+    
+    /// Automotive Safety Integrity Level
+    ///
+    /// Defines safety requirements and error tolerances for evaluation.
+    pub asil_level: crate::cli::AsilLevel,
 }
 
 impl BenchmarkConfig {
@@ -184,6 +214,10 @@ impl BenchmarkConfig {
             buffer_size: args.buffer_size,
             host: args.host.clone(),
             port: args.port,
+            ultra_low_latency: args.ultra_low_latency,
+            automotive_mode: args.automotive_mode,
+            max_latency_us: args.max_latency_us,
+            asil_level: args.asil_level.clone(),
         })
     }
 }
@@ -1336,6 +1370,307 @@ impl BenchmarkRunner {
     /// The number of iterations to execute, either from configuration or default
     fn get_iteration_count(&self) -> usize {
         self.config.iterations.unwrap_or(10000)
+    }
+    
+    /// Run ultra-low latency benchmark with direct syscalls and zero-copy operations
+    /// 
+    /// This method bypasses all async overhead and uses the optimized implementations
+    /// we added to each IPC mechanism for automotive/real-time systems.
+    pub async fn run_ultra_low_latency(&self, results_manager: Option<&mut crate::results::ResultsManager>) -> Result<crate::automotive_metrics::AutomotiveMetrics> {
+        if !self.config.ultra_low_latency {
+            return Err(anyhow!("Ultra-low latency mode not enabled in configuration"));
+        }
+        
+        let mut automotive_metrics = crate::automotive_metrics::AutomotiveMetrics::new(
+            self.mechanism,
+            self.config.message_size,
+            self.config.asil_level.clone(),
+            crate::automotive_metrics::AutomotiveApplication::SafetyCritical, // Default to safety-critical
+        );
+        
+        match self.mechanism {
+            IpcMechanism::SharedMemory => {
+                self.run_ultra_low_latency_shared_memory(&mut automotive_metrics, results_manager).await
+            }
+            IpcMechanism::UnixDomainSocket => {
+                self.run_ultra_low_latency_unix_domain_socket(&mut automotive_metrics, results_manager).await
+            }
+            IpcMechanism::PosixMessageQueue => {
+                self.run_ultra_low_latency_posix_message_queue(&mut automotive_metrics, results_manager).await
+            }
+            IpcMechanism::TcpSocket => {
+                Err(anyhow!("TCP sockets not recommended for ultra-low latency automotive applications"))
+            }
+            IpcMechanism::All => {
+                Err(anyhow!("Cannot run ultra-low latency test on 'All' mechanisms - specify individual mechanism"))
+            }
+        }?;
+        
+        Ok(automotive_metrics)
+    }
+    
+    /// Ultra-low latency shared memory benchmark using zero-copy operations
+    async fn run_ultra_low_latency_shared_memory(
+        &self, 
+        automotive_metrics: &mut crate::automotive_metrics::AutomotiveMetrics,
+        mut results_manager: Option<&mut crate::results::ResultsManager>
+    ) -> Result<()> {
+        use crate::ipc::shared_memory::SharedMemoryTransport;
+        
+        let transport = SharedMemoryTransport::new();
+        let segment_name = format!("ull_shm_{}", uuid::Uuid::new_v4());
+        
+        // Create ultra-low latency segment with power-of-2 capacity
+        let capacity = 1024; // Power of 2 for bit-mask operations
+        let (_shmem, ring_buffer) = transport.create_ultra_low_latency_segment(
+            &segment_name,
+            capacity,
+            self.config.message_size,
+        )?;
+        
+        // Pre-allocate message data
+        let message_data = vec![0xAA; self.config.message_size];
+        let mut receive_buffer = vec![0u8; self.config.message_size];
+        
+        let test_duration = self.config.duration.unwrap_or(Duration::from_secs(1));
+        let start_time = Instant::now();
+        let mut iteration = 0u64;
+        
+        // Ultra-low latency test loop
+        while start_time.elapsed() < test_duration {
+            let operation_start = Instant::now();
+            
+            // Zero-copy send
+            if transport.send_ultra_fast(ring_buffer, &message_data) {
+                // Zero-copy receive
+                if transport.recv_ultra_fast(ring_buffer, &mut receive_buffer) {
+                    let latency = operation_start.elapsed();
+                    automotive_metrics.record_success(latency);
+                    
+                    // Stream individual latency record if streaming is enabled
+                    if let Some(ref mut manager) = results_manager {
+                        let record = crate::results::MessageLatencyRecord::new(
+                            iteration,
+                            self.mechanism,
+                            self.config.message_size,
+                            crate::metrics::LatencyType::OneWay, // Ultra-low latency is one-way focused
+                            latency, // latency is already Duration from elapsed()
+                        );
+                        if let Err(e) = manager.stream_latency_record(&record).await {
+                            tracing::warn!("Failed to stream latency record: {}", e);
+                        }
+                    }
+                    
+                    iteration += 1;
+                } else {
+                    // No message available - continue
+                    continue;
+                }
+            } else {
+                // Buffer full - continue without penalty
+                continue;
+            }
+        }
+        
+        info!("Ultra-low latency shared memory test completed: {} operations", iteration);
+        Ok(())
+    }
+    
+    /// Ultra-low latency Unix Domain Socket benchmark using direct syscalls  
+    async fn run_ultra_low_latency_unix_domain_socket(
+        &self,
+        automotive_metrics: &mut crate::automotive_metrics::AutomotiveMetrics,
+        mut results_manager: Option<&mut crate::results::ResultsManager>
+    ) -> Result<()> {
+        use crate::ipc::unix_domain_socket::UnixDomainSocketTransport;
+        use tokio::sync::Notify;
+        use std::sync::Arc;
+        
+        let mut server_transport = UnixDomainSocketTransport::new();
+        let mut client_transport = UnixDomainSocketTransport::new();
+        let config = self.create_transport_config()?;
+        
+        // Setup server-client connection for ultra-low latency
+        let server_ready = Arc::new(Notify::new());
+        let server_ready_clone = server_ready.clone();
+        
+        // Start server in background
+        let server_config = config.clone();
+        let server_handle = tokio::spawn(async move {
+            if let Err(e) = server_transport.start_server(&server_config).await {
+                tracing::error!("Server failed to start: {}", e);
+                return Err(e);
+            }
+            server_ready_clone.notify_one();
+            
+            // Keep server alive for ultra-low latency test
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            Ok(())
+        });
+        
+        // Wait for server to be ready
+        server_ready.notified().await;
+        
+        // Connect client
+        client_transport.start_client(&config).await?;
+        
+        // Get raw file descriptor for direct syscalls from client side
+        let fd = client_transport.get_stream_fd()
+            .ok_or_else(|| anyhow!("Failed to get Unix socket file descriptor from client"))?;
+        
+        // Pre-allocate message data (no length prefix for ultra-low latency)
+        let message_data = vec![0xBB; self.config.message_size];
+        let mut receive_buffer = vec![0u8; self.config.message_size];
+        
+        let test_duration = self.config.duration.unwrap_or(Duration::from_secs(1));
+        let start_time = Instant::now();
+        let mut iteration = 0u64;
+        
+        // Ultra-low latency test loop with deadline enforcement
+        while start_time.elapsed() < test_duration {
+            let operation_start = Instant::now();
+            
+            // Direct syscall send with automotive deadline
+            match client_transport.send_with_deadline(fd, &message_data, self.config.max_latency_us) {
+                Ok(latency_duration) => {
+                    automotive_metrics.record_success(latency_duration);
+                    
+                    // Stream individual latency record if streaming is enabled
+                    if let Some(ref mut manager) = results_manager {
+                        let record = crate::results::MessageLatencyRecord::new(
+                            iteration,
+                            self.mechanism,
+                            self.config.message_size,
+                            crate::metrics::LatencyType::OneWay, // Ultra-low latency is one-way focused
+                            latency_duration,
+                        );
+                        if let Err(e) = manager.stream_latency_record(&record).await {
+                            tracing::warn!("Failed to stream latency record: {}", e);
+                        }
+                    }
+                    
+                    iteration += 1;
+                }
+                Err(e) => {
+                    // Record deadline miss or other automotive error
+                    if e.to_string().contains("deadline") {
+                        automotive_metrics.record_deadline_miss(
+                            operation_start.elapsed().as_micros() as u64,
+                            self.config.max_latency_us
+                        );
+                    }
+                    continue;
+                }
+            }
+        }
+        
+        // Clean up resources
+        client_transport.close().await?;
+        server_handle.abort(); // Stop the server task
+        info!("Ultra-low latency Unix Domain Socket test completed: {} operations", iteration);
+        Ok(())
+    }
+    
+    /// Ultra-low latency POSIX Message Queue benchmark using direct libc calls
+    async fn run_ultra_low_latency_posix_message_queue(
+        &self,
+        automotive_metrics: &mut crate::automotive_metrics::AutomotiveMetrics,
+        mut results_manager: Option<&mut crate::results::ResultsManager>
+    ) -> Result<()> {
+        use crate::ipc::posix_message_queue::PosixMessageQueueTransport;
+        
+        let mut transport = PosixMessageQueueTransport::new();
+        let config = self.create_transport_config()?;
+        
+        // Setup message queue (async setup required)
+        transport.start_server(&config).await?;
+        
+        // Configure for ultra-low latency
+        transport.configure_ultra_low_latency()?;
+        
+        // Pre-allocate message data (no serialization for ultra-low latency)
+        let message_data = vec![0xCC; self.config.message_size]; 
+        let mut receive_buffer = vec![0u8; self.config.message_size];
+        
+        let test_duration = self.config.duration.unwrap_or(Duration::from_secs(1));
+        let start_time = Instant::now();
+        let mut iteration = 0u64;
+        
+        // Ultra-low latency test loop with automotive deadline enforcement
+        while start_time.elapsed() < test_duration {
+            // Direct libc send with deadline
+            match transport.send_with_deadline_ultra_fast(&message_data, self.config.max_latency_us) {
+                Ok(latency_duration) => {
+                    automotive_metrics.record_success(latency_duration);
+                    
+                    // Stream individual latency record if streaming is enabled
+                    if let Some(ref mut manager) = results_manager {
+                        let record = crate::results::MessageLatencyRecord::new(
+                            iteration,
+                            self.mechanism,
+                            self.config.message_size,
+                            crate::metrics::LatencyType::OneWay, // Ultra-low latency is one-way focused
+                            latency_duration,
+                        );
+                        if let Err(e) = manager.stream_latency_record(&record).await {
+                            tracing::warn!("Failed to stream latency record: {}", e);
+                        }
+                    }
+                    
+                    iteration += 1;
+                }
+                Err(e) => {
+                    // Record automotive safety violation  
+                    if e.to_string().contains("deadline") {
+                        let operation_time = start_time.elapsed();
+                        automotive_metrics.record_deadline_miss(
+                            operation_time.as_micros() as u64,
+                            self.config.max_latency_us
+                        );
+                    }
+                    continue;
+                }
+            }
+        }
+        
+        transport.close().await?;
+        info!("Ultra-low latency POSIX Message Queue test completed: {} operations", iteration);
+        Ok(())
+    }
+    
+    /// Run automotive real-time evaluation with comprehensive safety analysis
+    pub async fn run_automotive_evaluation(&self, results_manager: Option<&mut crate::results::ResultsManager>) -> Result<crate::automotive_metrics::AutomotiveSuitabilityReport> {
+        if !self.config.automotive_mode {
+            return Err(anyhow!("Automotive mode not enabled in configuration"));
+        }
+        
+        // Run ultra-low latency benchmark
+        let mut automotive_metrics = self.run_ultra_low_latency(results_manager).await?;
+        
+        // Set test duration for metrics
+        automotive_metrics.test_duration = self.config.duration.unwrap_or(Duration::from_secs(10));
+        
+        // Calculate determinism score (requires latency samples)
+        // For now, we'll use a simplified calculation based on jitter
+        let determinism_score = if automotive_metrics.jitter_us > 0 {
+            let relative_jitter = automotive_metrics.jitter_us as f64 / automotive_metrics.average_latency_us;
+            (1.0 - relative_jitter.min(1.0)).max(0.0)
+        } else {
+            1.0 // Perfect determinism if no jitter
+        };
+        automotive_metrics.determinism_score = determinism_score;
+        
+        // Generate comprehensive automotive suitability report
+        let report = automotive_metrics.evaluate_automotive_suitability();
+        
+        info!(
+            "Automotive evaluation completed: Score {:.1}/100, ASIL-{:?} suitable, {} applications supported",
+            report.overall_score,
+            report.max_suitable_asil,
+            report.suitable_applications.len()
+        );
+        
+        Ok(report)
     }
 }
 

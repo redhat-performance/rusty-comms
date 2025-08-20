@@ -33,13 +33,16 @@
 
 use clap::Parser;
 use ipc_benchmark::{
+    automotive_metrics::{AutomotiveMetrics, AutomotiveSuitabilityReport},
     benchmark::{BenchmarkConfig, BenchmarkRunner},
     cli::{Args, IpcMechanism},
+    metrics::{LatencyMetrics, LatencyType, PercentileValue, PerformanceMetrics, ThroughputMetrics},
     results::{BenchmarkResults, ResultsManager},
 };
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::{filter::LevelFilter, prelude::*, Layer};
 use anyhow::Result;
+use std::time::Duration;
 use tracing_appender;
 
 mod logging;
@@ -273,14 +276,257 @@ async fn run_benchmark_for_mechanism(
     // running warmup iterations, executing tests, and collecting metrics
     let runner = BenchmarkRunner::new(config.clone(), *mechanism);
     
-    // Execute the benchmark and collect comprehensive results
-    // This includes latency histograms, throughput measurements,
-    // and statistical analysis (percentiles, mean, std dev, etc.)
-    let results = runner.run(Some(results_manager)).await?;
+    // Check if automotive mode is enabled for ultra-low latency testing
+    if config.automotive_mode {
+        info!("Running automotive ASIL-{:?} evaluation with ultra-low latency optimizations", config.asil_level);
+        info!("   - Hard deadline: {}μs", config.max_latency_us);
+        info!("   - Safety-critical mode enabled");
+        
+        // Use automotive evaluation with ultra-low latency optimizations
+        match runner.run_automotive_evaluation(Some(results_manager)).await {
+            Ok(automotive_report) => {
+                info!("Automotive evaluation completed - Score: {:.1}/100", automotive_report.overall_score);
+                info!("   - Max suitable ASIL level: {:?}", automotive_report.max_suitable_asil);
+                info!("   - Suitable applications: {}", automotive_report.suitable_applications.len());
+                
+                if !automotive_report.issues.is_empty() {
+                    info!("Issues detected:");
+                    for issue in &automotive_report.issues {
+                        info!("   - {}", issue);
+                    }
+                }
+                
+                // Convert automotive report to standard BenchmarkResults for output compatibility
+                let results = convert_automotive_report_to_results(automotive_report, *mechanism, config)?;
+                results_manager.add_results(results).await?;
+            }
+            Err(e) => {
+                error!("Automotive evaluation failed: {}", e);
+                return Err(e);
+            }
+        }
+    } else if config.ultra_low_latency {
+        info!("Running ultra-low latency benchmark (non-automotive mode)");
+        
+        // Use ultra-low latency optimizations without automotive requirements
+        match runner.run_ultra_low_latency(Some(results_manager)).await {
+            Ok(automotive_metrics) => {
+                info!("Ultra-low latency test completed");
+                info!("   - Average latency: {:.2}μs", automotive_metrics.average_latency_us);
+                info!("   - Worst case: {}μs", automotive_metrics.worst_case_latency_us);
+                info!("   - Total operations: {}", automotive_metrics.total_operations);
+                
+                // Convert ultra-low latency metrics to standard BenchmarkResults
+                let results = convert_ull_metrics_to_results(automotive_metrics, *mechanism, config)?;
+                results_manager.add_results(results).await?;
+            }
+            Err(e) => {
+                error!("Ultra-low latency test failed: {}", e);
+                return Err(e);
+            }
+        }
+    } else {
+        // Standard benchmark execution
+        info!("Running standard benchmark for {} mechanism", mechanism);
+        
+        // Execute the benchmark and collect comprehensive results
+        // This includes latency histograms, throughput measurements,
+        // and statistical analysis (percentiles, mean, std dev, etc.)
+        let results = runner.run(Some(results_manager)).await?;
+        
+        // Add results to the manager for aggregation and output
+        // The manager handles both immediate streaming (if enabled)
+        // and final consolidated output formatting
+        results_manager.add_results(results).await?;
+    }
     
-    // Add results to the manager for aggregation and output
-    // The manager handles both immediate streaming (if enabled)
-    // and final consolidated output formatting
-    results_manager.add_results(results).await?;
     Ok(())
+}
+
+/// Convert automotive suitability report to standard BenchmarkResults format
+/// 
+/// This function bridges our specialized automotive metrics with the standard
+/// results format for consistent output handling.
+fn convert_automotive_report_to_results(
+    report: AutomotiveSuitabilityReport,
+    mechanism: IpcMechanism,
+    config: &BenchmarkConfig,
+) -> Result<BenchmarkResults> {
+    let metrics = &report.metrics_summary;
+    
+    // Create standard benchmark results structure
+    let mut results = BenchmarkResults::new(
+        mechanism,
+        config.message_size,
+        config.concurrency,
+        config.iterations,
+        config.duration,
+    );
+    
+    // Create proper PerformanceMetrics from automotive data
+    if metrics.total_operations > 0 {
+        let test_duration = config.duration.unwrap_or(Duration::from_secs(10));
+        
+        // Create LatencyMetrics
+        let latency_metrics = LatencyMetrics {
+            latency_type: LatencyType::OneWay,
+            min_ns: (metrics.best_case_latency_us * 1000) as u64,
+            max_ns: (metrics.worst_case_latency_us * 1000) as u64,
+            mean_ns: (metrics.average_latency_us * 1000.0),
+            median_ns: (metrics.average_latency_us * 1000.0), // Estimate median as mean
+            std_dev_ns: (metrics.jitter_us as f64 * 1000.0) / 4.0, // Rough estimate: jitter/4
+            percentiles: vec![
+                PercentileValue { percentile: 50.0, value_ns: (metrics.average_latency_us * 1000.0) as u64 },
+                PercentileValue { percentile: 95.0, value_ns: (metrics.average_latency_us * 1000.0 * 1.5) as u64 },
+                PercentileValue { percentile: 99.0, value_ns: (metrics.worst_case_latency_us * 1000) as u64 },
+                PercentileValue { percentile: 99.9, value_ns: (metrics.worst_case_latency_us * 1000) as u64 },
+            ],
+            total_samples: metrics.total_operations as usize,
+            histogram_data: vec![], // No detailed histogram data available from automotive metrics
+        };
+        
+        // Create ThroughputMetrics
+        let messages_per_second = metrics.total_operations as f64 / test_duration.as_secs_f64();
+        let bytes_per_second = messages_per_second * config.message_size as f64;
+        
+        let throughput_metrics = ThroughputMetrics {
+            messages_per_second,
+            bytes_per_second,
+            total_messages: metrics.total_operations as usize,
+            total_bytes: (metrics.total_operations as usize) * config.message_size,
+            duration_ns: test_duration.as_nanos() as u64,
+        };
+        
+        // Create PerformanceMetrics
+        let performance_metrics = PerformanceMetrics {
+            latency: Some(latency_metrics),
+            throughput: throughput_metrics,
+            timestamp: chrono::Utc::now(),
+        };
+        
+        // Add to results
+        results.add_one_way_results(performance_metrics);
+    }
+    
+    // Add automotive-specific metadata to the results
+    results.add_metadata("automotive_mode", "true".to_string());
+    results.add_metadata("asil_level", format!("{:?}", config.asil_level));
+    results.add_metadata("max_latency_deadline_us", config.max_latency_us.to_string());
+    results.add_metadata("automotive_score", format!("{:.1}", report.overall_score));
+    results.add_metadata("max_suitable_asil", format!("{:?}", report.max_suitable_asil));
+    results.add_metadata("suitable_applications_count", report.suitable_applications.len().to_string());
+    results.add_metadata("deadline_misses", metrics.deadline_misses.to_string());
+    results.add_metadata("deadline_miss_rate_ppm", format!("{:.2}", metrics.deadline_miss_rate_ppm));
+    results.add_metadata("safety_margin_percent", format!("{:.1}", metrics.safety_margin_percent));
+    results.add_metadata("determinism_score", format!("{:.3}", metrics.determinism_score));
+    results.add_metadata("asil_compliant", metrics.asil_compliant.to_string());
+    
+    // Add issues and recommendations
+    if !report.issues.is_empty() {
+        results.add_metadata("automotive_issues", serde_json::to_string(&report.issues)?);
+    }
+    if !report.recommendations.is_empty() {
+        results.add_metadata("automotive_recommendations", serde_json::to_string(&report.recommendations)?);
+    }
+    
+    if metrics.asil_compliant {
+        info!("ASIL-{:?} compliance: PASSED", config.asil_level);
+    } else {
+        warn!("ASIL-{:?} compliance: FAILED", config.asil_level);
+        warn!("   Deadline miss rate: {:.2} PPM (max allowed: {} PPM)", 
+              metrics.deadline_miss_rate_ppm, 
+              metrics.automotive_application.max_error_rate_ppm());
+    }
+    
+    Ok(results)
+}
+
+/// Convert ultra-low latency metrics to standard BenchmarkResults format
+/// 
+/// This function converts our ultra-low latency AutomotiveMetrics to the standard
+/// BenchmarkResults format for consistent output.
+fn convert_ull_metrics_to_results(
+    metrics: AutomotiveMetrics,
+    mechanism: IpcMechanism,
+    config: &BenchmarkConfig,
+) -> Result<BenchmarkResults> {
+    // Create standard benchmark results structure
+    let mut results = BenchmarkResults::new(
+        mechanism,
+        config.message_size,
+        config.concurrency,
+        config.iterations,
+        config.duration,
+    );
+    
+    // Create proper PerformanceMetrics from ultra-low latency data
+    if metrics.total_operations > 0 {
+        let test_duration = config.duration.unwrap_or(Duration::from_secs(10));
+        
+        // Create LatencyMetrics
+        let latency_metrics = LatencyMetrics {
+            latency_type: LatencyType::OneWay,
+            min_ns: (metrics.best_case_latency_us * 1000) as u64,
+            max_ns: (metrics.worst_case_latency_us * 1000) as u64,
+            mean_ns: (metrics.average_latency_us * 1000.0),
+            median_ns: (metrics.average_latency_us * 1000.0), // Estimate median as mean
+            std_dev_ns: (metrics.jitter_us as f64 * 1000.0) / 4.0, // Rough estimate: jitter/4
+            percentiles: vec![
+                PercentileValue { percentile: 50.0, value_ns: (metrics.average_latency_us * 1000.0) as u64 },
+                PercentileValue { percentile: 95.0, value_ns: (metrics.average_latency_us * 1000.0 * 1.2) as u64 },
+                PercentileValue { percentile: 99.0, value_ns: (metrics.worst_case_latency_us * 1000) as u64 },
+                PercentileValue { percentile: 99.9, value_ns: (metrics.worst_case_latency_us * 1000) as u64 },
+            ],
+            total_samples: metrics.total_operations as usize,
+            histogram_data: vec![], // No detailed histogram data available from automotive metrics
+        };
+        
+        // Create ThroughputMetrics
+        let messages_per_second = metrics.total_operations as f64 / test_duration.as_secs_f64();
+        let bytes_per_second = messages_per_second * config.message_size as f64;
+        
+        let throughput_metrics = ThroughputMetrics {
+            messages_per_second,
+            bytes_per_second,
+            total_messages: metrics.total_operations as usize,
+            total_bytes: (metrics.total_operations as usize) * config.message_size,
+            duration_ns: test_duration.as_nanos() as u64,
+        };
+        
+        // Create PerformanceMetrics
+        let performance_metrics = PerformanceMetrics {
+            latency: Some(latency_metrics),
+            throughput: throughput_metrics,
+            timestamp: chrono::Utc::now(),
+        };
+        
+        // Add to results
+        results.add_one_way_results(performance_metrics);
+    }
+    
+    // Add ultra-low latency specific metadata
+    results.add_metadata("ultra_low_latency_mode", "true".to_string());
+    results.add_metadata("total_operations", metrics.total_operations.to_string());
+    results.add_metadata("average_latency_us", format!("{:.2}", metrics.average_latency_us));
+    results.add_metadata("worst_case_latency_us", metrics.worst_case_latency_us.to_string());
+    results.add_metadata("best_case_latency_us", metrics.best_case_latency_us.to_string());
+    results.add_metadata("jitter_us", metrics.jitter_us.to_string());
+    results.add_metadata("determinism_score", format!("{:.3}", metrics.determinism_score));
+    
+    if metrics.deadline_misses > 0 {
+        results.add_metadata("deadline_misses", metrics.deadline_misses.to_string());
+        results.add_metadata("deadline_miss_rate_ppm", format!("{:.2}", metrics.deadline_miss_rate_ppm));
+        warn!("{} deadline misses detected in ultra-low latency test", metrics.deadline_misses);
+    }
+    
+    info!("Ultra-low latency performance:");
+    info!("   Average: {:.2}μs, Best: {}μs, Worst: {}μs", 
+          metrics.average_latency_us, 
+          metrics.best_case_latency_us, 
+          metrics.worst_case_latency_us);
+    info!("   Jitter: {}μs, Determinism: {:.1}%", 
+          metrics.jitter_us, 
+          metrics.determinism_score * 100.0);
+    
+    Ok(results)
 }

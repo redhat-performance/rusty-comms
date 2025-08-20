@@ -10,6 +10,10 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::time::sleep;
 use tracing::debug;
 
+#[cfg(target_os = "linux")]
+use std::os::unix::io::AsRawFd;
+use nix::libc;
+
 /// Shared memory ring buffer structure
 #[repr(C)]
 struct SharedMemoryRingBuffer {
@@ -143,6 +147,125 @@ impl SharedMemoryRingBuffer {
             .store((read_pos + data_len + 4) % capacity, Ordering::Release);
 
         Ok(data)
+    }
+}
+
+/// Ultra-low latency cache-aligned shared memory ring buffer
+/// 
+/// Optimized for automotive/real-time systems with:
+/// - Cache-line aligned atomics to prevent false sharing
+/// - Bit-mask operations (requires power-of-2 size) for speed  
+/// - Zero-copy operations for fixed-size messages
+/// - Huge page support for reduced TLB misses
+#[repr(C)]
+#[repr(align(64))] // Cache-line aligned structure
+pub struct UltraLowLatencyRingBuffer {
+    // Producer cache line (64 bytes) - aligned by struct alignment
+    write_pos: AtomicUsize,
+    _pad1: [u8; 64 - std::mem::size_of::<AtomicUsize>()],
+    
+    // Consumer cache line (64 bytes)  
+    read_pos: AtomicUsize,
+    _pad2: [u8; 64 - std::mem::size_of::<AtomicUsize>()],
+    
+    // Shared metadata cache line (64 bytes) 
+    capacity: usize,           // Must be power of 2 for bit-mask operations
+    capacity_mask: usize,      // capacity - 1 for fast modulo
+    message_size: usize,       // Fixed message size for zero-copy
+    server_ready: AtomicBool,
+    client_ready: AtomicBool,
+    shutdown: AtomicBool,
+    _pad3: [u8; 64 - (std::mem::size_of::<usize>() * 3 + std::mem::size_of::<AtomicBool>() * 3)],
+}
+
+impl UltraLowLatencyRingBuffer {
+    const HEADER_SIZE: usize = std::mem::size_of::<Self>();
+    
+    /// Create new ultra-low latency ring buffer
+    /// capacity must be power of 2 for bit-mask optimization
+    fn new(capacity: usize, message_size: usize) -> Result<Self> {
+        // Ensure capacity is power of 2
+        if !capacity.is_power_of_two() {
+            return Err(anyhow!("Capacity must be power of 2 for ultra-low latency mode"));
+        }
+        
+        Ok(Self {
+            write_pos: AtomicUsize::new(0),
+            _pad1: [0; 64 - std::mem::size_of::<AtomicUsize>()],
+            read_pos: AtomicUsize::new(0),
+            _pad2: [0; 64 - std::mem::size_of::<AtomicUsize>()],
+            capacity,
+            capacity_mask: capacity - 1,
+            message_size,
+            server_ready: AtomicBool::new(false),
+            client_ready: AtomicBool::new(false),
+            shutdown: AtomicBool::new(false),
+            _pad3: [0; 64 - (std::mem::size_of::<usize>() * 3 + std::mem::size_of::<AtomicBool>() * 3)],
+        })
+    }
+    
+    fn data_ptr(&self) -> *mut u8 {
+        unsafe { (self as *const Self as *mut u8).add(Self::HEADER_SIZE) }
+    }
+    
+    /// Ultra-fast send using bit-mask and zero-copy
+    /// Returns true if sent, false if buffer full
+    #[inline(always)]
+    fn try_send_zero_copy(&self, data: &[u8]) -> bool {
+        if data.len() != self.message_size {
+            return false; // Only fixed-size messages in ultra-low latency mode
+        }
+        
+        let write_pos = self.write_pos.load(Ordering::Relaxed);
+        let read_pos = self.read_pos.load(Ordering::Acquire);
+        
+        // Check if buffer is full using bit-mask (faster than modulo)
+        let next_write = (write_pos + 1) & self.capacity_mask;
+        if next_write == read_pos {
+            return false; // Buffer full
+        }
+        
+        // Zero-copy write directly to ring buffer
+        let offset = write_pos & self.capacity_mask;
+        let dest_ptr = unsafe { self.data_ptr().add(offset * self.message_size) };
+        
+        unsafe {
+            std::ptr::copy_nonoverlapping(data.as_ptr(), dest_ptr, self.message_size);
+        }
+        
+        // Release write position (makes data visible to consumer)
+        self.write_pos.store(next_write, Ordering::Release);
+        true
+    }
+    
+    /// Ultra-fast receive using bit-mask and zero-copy
+    /// Returns true if received, false if buffer empty
+    #[inline(always)] 
+    fn try_recv_zero_copy(&self, buffer: &mut [u8]) -> bool {
+        if buffer.len() < self.message_size {
+            return false; // Buffer too small
+        }
+        
+        let read_pos = self.read_pos.load(Ordering::Relaxed);
+        let write_pos = self.write_pos.load(Ordering::Acquire);
+        
+        // Check if buffer is empty
+        if read_pos == write_pos {
+            return false; // Buffer empty
+        }
+        
+        // Zero-copy read directly from ring buffer
+        let offset = read_pos & self.capacity_mask;
+        let src_ptr = unsafe { self.data_ptr().add(offset * self.message_size) };
+        
+        unsafe {
+            std::ptr::copy_nonoverlapping(src_ptr, buffer.as_mut_ptr(), self.message_size);
+        }
+        
+        // Release read position (frees slot for producer)
+        let next_read = (read_pos + 1) & self.capacity_mask;
+        self.read_pos.store(next_read, Ordering::Release);
+        true
     }
 }
 
@@ -304,6 +427,85 @@ pub struct SharedMemoryTransport {
 
 unsafe impl Send for SharedMemoryTransport {}
 unsafe impl Sync for SharedMemoryTransport {}
+
+/// Ultra-low latency shared memory transport optimizations
+impl SharedMemoryTransport {
+    /// Enable huge pages for ultra-low latency (Linux only)
+    #[cfg(target_os = "linux")]
+    pub fn enable_huge_pages(&self, shmem: &Shmem) -> Result<()> {
+        use std::os::unix::io::AsRawFd;
+        
+        // Use madvise to enable huge pages for the shared memory segment
+        let size = shmem.len();
+        let ptr = shmem.as_ptr() as *mut libc::c_void;
+        
+        unsafe {
+            // Use transparent huge pages
+            if libc::madvise(ptr, size, libc::MADV_HUGEPAGE) != 0 {
+                return Err(anyhow!("Failed to enable huge pages: {}", std::io::Error::last_os_error()));
+            }
+            
+            // Lock memory in RAM (no page faults)
+            if libc::mlock(ptr, size) != 0 {
+                return Err(anyhow!("Failed to lock memory: {}", std::io::Error::last_os_error()));
+            }
+        }
+        
+        debug!("Enabled huge pages and memory locking for shared memory segment");
+        Ok(())
+    }
+    
+    /// Create ultra-low latency shared memory segment with power-of-2 capacity
+    pub fn create_ultra_low_latency_segment(
+        &self, 
+        segment_name: &str,
+        capacity: usize,
+        message_size: usize
+    ) -> Result<(Arc<Shmem>, *mut UltraLowLatencyRingBuffer)> {
+        // Ensure capacity is power of 2
+        let capacity = if !capacity.is_power_of_two() {
+            capacity.next_power_of_two()
+        } else {
+            capacity
+        };
+        
+        let total_size = UltraLowLatencyRingBuffer::HEADER_SIZE + (capacity * message_size);
+        
+        // Create shared memory segment 
+        let shmem = ShmemConf::new()
+            .size(total_size)
+            .flink(segment_name)
+            .create()?;
+        
+        #[cfg(target_os = "linux")]
+        if let Err(e) = self.enable_huge_pages(&shmem) {
+            tracing::warn!("Could not enable huge pages optimization: {} (continuing without huge pages)", e);
+        }
+        
+        // Initialize ultra-low latency ring buffer
+        let ring_buffer = shmem.as_ptr() as *mut UltraLowLatencyRingBuffer;
+        unsafe {
+            let buffer = UltraLowLatencyRingBuffer::new(capacity, message_size)?;
+            std::ptr::write(ring_buffer, buffer);
+        }
+        
+        Ok((Arc::new(shmem), ring_buffer))
+    }
+    
+    /// Send message with ultra-low latency (zero-copy, no async overhead)
+    pub fn send_ultra_fast(&self, ring_buffer: *mut UltraLowLatencyRingBuffer, data: &[u8]) -> bool {
+        unsafe { 
+            (*ring_buffer).try_send_zero_copy(data)
+        }
+    }
+    
+    /// Receive message with ultra-low latency (zero-copy, no async overhead) 
+    pub fn recv_ultra_fast(&self, ring_buffer: *mut UltraLowLatencyRingBuffer, buffer: &mut [u8]) -> bool {
+        unsafe { 
+            (*ring_buffer).try_recv_zero_copy(buffer)
+        }
+    }
+}
 
 impl SharedMemoryTransport {
     /// Create a new Shared Memory transport

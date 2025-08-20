@@ -24,3 +24,6 @@ target
 .vscode
 *.json*
 *.log*
+# Local benchmark scripts
+ipc_benchmark.sh
+ipc_benchmark_automotive.sh

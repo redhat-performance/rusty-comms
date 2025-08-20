@@ -64,9 +64,13 @@ use nix::errno::Errno;
 use nix::mqueue::{mq_close, mq_open, mq_receive, mq_send, mq_unlink, MQ_OFlag, MqAttr, MqdT};
 use nix::sys::stat::Mode;
 use std::os::unix::io::{AsRawFd, FromRawFd};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
+
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+use nix::libc;
 
 /// POSIX Message Queue transport implementation
 ///
@@ -122,6 +126,258 @@ pub struct PosixMessageQueueTransport {
     /// This prevents clients from accidentally destroying queues that other
     /// processes may still be using.
     is_creator: bool,
+}
+
+/// Pre-allocated message buffer pool for ultra-low latency operations
+pub struct MessagePool {
+    send_buffers: Arc<Mutex<VecDeque<Vec<u8>>>>,
+    recv_buffers: Arc<Mutex<VecDeque<Vec<u8>>>>,
+    message_size: usize,
+}
+
+impl MessagePool {
+        pub fn new(capacity: usize, message_size: usize) -> Self {
+            let mut send_buffers = VecDeque::with_capacity(capacity);
+            let mut recv_buffers = VecDeque::with_capacity(capacity);
+            
+            // Pre-allocate all buffers
+            for _ in 0..capacity {
+                send_buffers.push_back(vec![0u8; message_size]);
+                recv_buffers.push_back(vec![0u8; message_size]);
+            }
+            
+            Self {
+                send_buffers: Arc::new(Mutex::new(send_buffers)),
+                recv_buffers: Arc::new(Mutex::new(recv_buffers)),
+                message_size,
+            }
+        }
+        
+        pub fn get_send_buffer(&self) -> Option<Vec<u8>> {
+            self.send_buffers.lock().unwrap().pop_front()
+        }
+        
+        pub fn return_send_buffer(&self, buffer: Vec<u8>) {
+            if buffer.len() == self.message_size {
+                self.send_buffers.lock().unwrap().push_back(buffer);
+            }
+        }
+        
+        pub fn get_recv_buffer(&self) -> Option<Vec<u8>> {
+            self.recv_buffers.lock().unwrap().pop_front()
+        }
+        
+        pub fn return_recv_buffer(&self, buffer: Vec<u8>) {
+            if buffer.len() == self.message_size {
+                self.recv_buffers.lock().unwrap().push_back(buffer);
+            }
+            }
+}
+
+/// Ultra-low latency POSIX Message Queue optimizations
+impl PosixMessageQueueTransport {
+    /// Send message using direct libc calls (ultra-low latency)
+    /// 
+    /// Bypasses nix wrapper and tokio async overhead
+    pub fn send_ultra_fast_direct(&self, data: &[u8]) -> Result<Duration> {
+        let start = Instant::now();
+        
+        let mq_fd = match &self.mq_fd {
+            Some(fd) => fd.as_raw_fd(),
+            None => return Err(anyhow!("Message queue not initialized")),
+        };
+        
+        // Direct libc mq_send call
+        let result = unsafe {
+            libc::mq_send(
+                mq_fd,
+                data.as_ptr() as *const u8,
+                data.len(),
+                0, // Priority 0 for consistent timing
+            )
+        };
+        
+        if result == -1 {
+            let error = std::io::Error::last_os_error();
+            match error.raw_os_error() {
+                Some(libc::EAGAIN) => {
+                    return Err(anyhow!("Message queue full"));
+                }
+                _ => return Err(error.into()),
+            }
+        }
+        
+        Ok(start.elapsed())
+    }
+    
+    /// Receive message using direct libc calls (ultra-low latency)
+    /// 
+    /// Bypasses nix wrapper and tokio async overhead
+    pub fn recv_ultra_fast_direct(&self, buffer: &mut [u8]) -> Result<(Duration, usize)> {
+        let start = Instant::now();
+        
+        let mq_fd = match &self.mq_fd {
+            Some(fd) => fd.as_raw_fd(),
+            None => return Err(anyhow!("Message queue not initialized")),
+        };
+        
+        // Direct libc mq_receive call
+        let bytes_received = unsafe {
+            libc::mq_receive(
+                mq_fd,
+                buffer.as_mut_ptr() as *mut u8,
+                buffer.len(),
+                std::ptr::null_mut(), // Priority not needed for benchmarking
+            )
+        };
+        
+        if bytes_received == -1 {
+            let error = std::io::Error::last_os_error();
+            match error.raw_os_error() {
+                Some(libc::EAGAIN) => {
+                    return Err(anyhow!("No message available"));
+                }
+                _ => return Err(error.into()),
+            }
+        }
+        
+        Ok((start.elapsed(), bytes_received as usize))
+    }
+    
+    /// Send with microsecond timeout using mq_timedsend (automotive mode)
+    pub fn send_with_deadline_ultra_fast(&self, data: &[u8], deadline_us: u64) -> Result<Duration> {
+        let start = Instant::now();
+        
+        let mq_fd = match &self.mq_fd {
+            Some(fd) => fd.as_raw_fd(),
+            None => return Err(anyhow!("Message queue not initialized")),
+        };
+        
+        // Use mq_timedsend with microsecond precision
+        let timeout = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: (deadline_us * 1000) as i64, // Convert μs to ns
+        };
+        
+        let result = unsafe {
+            libc::mq_timedsend(
+                mq_fd,
+                data.as_ptr() as *const u8,
+                data.len(),
+                0, // Priority 0
+                &timeout,
+            )
+        };
+        
+        let latency = start.elapsed();
+        
+        if result == -1 {
+            let error = std::io::Error::last_os_error();
+            match error.raw_os_error() {
+                Some(libc::ETIMEDOUT) => {
+                    return Err(anyhow!(
+                        "Automotive deadline exceeded: {}μs > {}μs", 
+                        latency.as_micros(),
+                        deadline_us
+                    ));
+                }
+                Some(libc::EAGAIN) => {
+                    return Err(anyhow!("Message queue full"));
+                }
+                _ => return Err(error.into()),
+            }
+        }
+        
+        // Check if we exceeded automotive deadline even if successful
+        if latency.as_micros() > deadline_us as u128 {
+            return Err(anyhow!(
+                "Automotive deadline missed: {}μs > {}μs", 
+                latency.as_micros(), 
+                deadline_us
+            ));
+        }
+        
+        Ok(latency)
+    }
+    
+    /// Receive with microsecond timeout (automotive mode)
+    pub fn recv_with_deadline_ultra_fast(&self, buffer: &mut [u8], deadline_us: u64) -> Result<(Duration, usize)> {
+        let start = Instant::now();
+        
+        let mq_fd = match &self.mq_fd {
+            Some(fd) => fd.as_raw_fd(),
+            None => return Err(anyhow!("Message queue not initialized")),
+        };
+        
+        let timeout = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: (deadline_us * 1000) as i64,
+        };
+        
+        let bytes_received = unsafe {
+            libc::mq_timedreceive(
+                mq_fd,
+                buffer.as_mut_ptr() as *mut u8,
+                buffer.len(),
+                std::ptr::null_mut(),
+                &timeout,
+            )
+        };
+        
+        let latency = start.elapsed();
+        
+        if bytes_received == -1 {
+            let error = std::io::Error::last_os_error();
+            match error.raw_os_error() {
+                Some(libc::ETIMEDOUT) => {
+                    return Err(anyhow!(
+                        "Automotive receive deadline exceeded: {}μs > {}μs", 
+                        latency.as_micros(),
+                        deadline_us
+                    ));
+                }
+                Some(libc::EAGAIN) => {
+                    return Err(anyhow!("No message available"));
+                }
+                _ => return Err(error.into()),
+            }
+        }
+        
+        // Check automotive deadline compliance
+        if latency.as_micros() > deadline_us as u128 {
+            return Err(anyhow!(
+                "Automotive receive deadline missed: {}μs > {}μs", 
+                latency.as_micros(), 
+                deadline_us
+            ));
+        }
+        
+        Ok((latency, bytes_received as usize))
+    }
+    
+    /// Configure message queue for ultra-low latency
+    pub fn configure_ultra_low_latency(&mut self) -> Result<()> {
+        // Set non-blocking mode for the queue
+        if let Some(mq_fd) = &self.mq_fd {
+            let fd = mq_fd.as_raw_fd();
+            
+            unsafe {
+                // Get current flags
+                let flags = libc::fcntl(fd, libc::F_GETFL);
+                if flags == -1 {
+                    return Err(std::io::Error::last_os_error().into());
+                }
+                
+                // Set O_NONBLOCK for ultra-low latency (no blocking syscalls)
+                if libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) == -1 {
+                    return Err(std::io::Error::last_os_error().into());
+                }
+            }
+        }
+        
+        debug!("Configured POSIX Message Queue for ultra-low latency");
+        Ok(())
+    }
 }
 
 impl PosixMessageQueueTransport {

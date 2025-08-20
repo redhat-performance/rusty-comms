@@ -451,9 +451,9 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and changes.
 
 | Transport | Concurrency > 1 | Behavior |
 |-----------|----------------|----------|
-| **TCP** | ✅ Supported | Simulated concurrency (sequential tests) |
-| **Unix Domain Sockets** | ✅ Supported | Simulated concurrency (sequential tests) |
-| **Shared Memory** | ⚠️ **Forced to single-thread** | Automatically uses `concurrency = 1` |
+| **TCP** | Supported | Simulated concurrency (sequential tests) |
+| **Unix Domain Sockets** | Supported | Simulated concurrency (sequential tests) |
+| **Shared Memory** | **Forced to single-thread** | Automatically uses `concurrency = 1` |
 
 ### Shared Memory Limitations
 
@@ -488,16 +488,16 @@ ipc-benchmark -m shm -i 10000 -s 1024 --buffer-size 8192
 ### Recommended Usage
 
 ```bash
-# ✅ Optimal for latency measurement
+# Optimal for latency measurement
 ipc-benchmark -m all -c 1 -i 10000 -s 1024
 
-# ✅ Good for throughput analysis (TCP/UDS only)
+# Good for throughput analysis (TCP/UDS only)
 ipc-benchmark -m tcp,uds -c 4 -i 10000 -s 1024
 
-# ✅ Shared memory with adequate buffer
+# Shared memory with adequate buffer
 ipc-benchmark -m shm -i 10000 -s 1024 --buffer-size 50000000
 
-# ⚠️ Will automatically use c=1 for shared memory
+# Will automatically use c=1 for shared memory
 ipc-benchmark -m shm -c 4 -i 10000 -s 1024
 ```
 
