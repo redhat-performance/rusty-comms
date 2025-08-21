@@ -1279,26 +1279,33 @@ impl BenchmarkRunner {
         let adaptive_queue_depth = if self.mechanism == IpcMechanism::PosixMessageQueue {
             let iterations = self.get_iteration_count();
             
-            // Warn about PMQ limitations for high-throughput tests
-            if iterations > 10000 {
-                warn!(
-                    "PMQ with {} iterations may be very slow due to system queue depth limits (typically 10). \
-                     Consider using fewer iterations or a different mechanism for high-throughput testing.",
-                    iterations
-                );
-            }
+            // For ULL tests, use larger queue depth to handle high message rates
+            let queue_depth = if self.config.ultra_low_latency {
+                // ULL tests generate messages rapidly, but stay within system limits
+                // Most systems have msg_max around 10-100, so use conservative values
+                50.min(iterations / 20).max(20) // Between 20-50 based on test size
+            } else {
+                // Warn about PMQ limitations for high-throughput tests
+                if iterations > 10000 {
+                    warn!(
+                        "PMQ with {} iterations may be very slow due to system queue depth limits (typically 10). \
+                         Consider using fewer iterations or a different mechanism for high-throughput testing.",
+                        iterations
+                    );
+                }
+                
+                // Use conservative values that work within typical system limits
+                // Most systems default to msg_max=10, so we'll stay at that limit
+                10 // Always use system default for non-ULL
+            };
             
-            // Use conservative values that work within typical system limits
-            // Most systems default to msg_max=10, so we'll stay at that limit
-            let queue_depth = 10; // Always use system default
-            
-            debug!("PMQ using conservative queue depth: {} iterations -> depth {}", iterations, queue_depth);
+            debug!("PMQ using queue depth: {} iterations -> depth {} (ULL: {})", iterations, queue_depth, self.config.ultra_low_latency);
             queue_depth
         } else {
             10 // Default for other mechanisms
         };
 
-        Ok(TransportConfig {
+        let config = TransportConfig {
             buffer_size: adaptive_buffer_size,
             host: self.config.host.clone(),
             port: unique_port,
@@ -1307,7 +1314,14 @@ impl BenchmarkRunner {
             max_connections: self.config.concurrency.max(16), // Set based on concurrency level
             message_queue_depth: adaptive_queue_depth,
             message_queue_name: format!("ipc_benchmark_pmq_{}", unique_id),
-        })
+        };
+        
+        if self.mechanism == IpcMechanism::PosixMessageQueue {
+                    debug!("PMQ ULL RT: Created transport config - buffer_size: {}, original: {}, adaptive: {}", 
+               config.buffer_size, self.config.buffer_size, adaptive_buffer_size);
+        }
+        
+        Ok(config)
     }
 
     /// Calculate adaptive buffer size based on test parameters
@@ -1415,10 +1429,27 @@ impl BenchmarkRunner {
         automotive_metrics: &mut crate::automotive_metrics::AutomotiveMetrics,
         mut results_manager: Option<&mut crate::results::ResultsManager>
     ) -> Result<()> {
+        // Run one-way test
+        let one_way_results = self.run_shm_ull_one_way(automotive_metrics, results_manager.as_deref_mut()).await?;
+        
+        // Run round-trip test  
+        let round_trip_results = self.run_shm_ull_round_trip(automotive_metrics, results_manager.as_deref_mut()).await?;
+        
+        info!("Ultra-low latency shared memory test completed - One-way: {} ops, Round-trip: {} ops", 
+              one_way_results, round_trip_results);
+        Ok(())
+    }
+    
+    /// Run SHM ULL one-way test
+    async fn run_shm_ull_one_way(
+        &self,
+        automotive_metrics: &mut crate::automotive_metrics::AutomotiveMetrics,
+        mut results_manager: Option<&mut crate::results::ResultsManager>
+    ) -> Result<u64> {
         use crate::ipc::shared_memory::SharedMemoryTransport;
         
         let transport = SharedMemoryTransport::new();
-        let segment_name = format!("ull_shm_{}", uuid::Uuid::new_v4());
+        let segment_name = format!("ull_shm_one_way_{}", uuid::Uuid::new_v4());
         
         // Create ultra-low latency segment with power-of-2 capacity
         let capacity = 1024; // Power of 2 for bit-mask operations
@@ -1436,7 +1467,7 @@ impl BenchmarkRunner {
         let start_time = Instant::now();
         let mut iteration = 0u64;
         
-        // Ultra-low latency test loop
+        // Ultra-low latency one-way test loop
         while start_time.elapsed() < test_duration {
             let operation_start = Instant::now();
             
@@ -1453,8 +1484,8 @@ impl BenchmarkRunner {
                             iteration,
                             self.mechanism,
                             self.config.message_size,
-                            crate::metrics::LatencyType::OneWay, // Ultra-low latency is one-way focused
-                            latency, // latency is already Duration from elapsed()
+                            crate::metrics::LatencyType::OneWay,
+                            latency,
                         );
                         if let Err(e) = manager.stream_latency_record(&record).await {
                             tracing::warn!("Failed to stream latency record: {}", e);
@@ -1472,8 +1503,77 @@ impl BenchmarkRunner {
             }
         }
         
-        info!("Ultra-low latency shared memory test completed: {} operations", iteration);
-        Ok(())
+        Ok(iteration)
+    }
+    
+    /// Run SHM ULL round-trip test
+    async fn run_shm_ull_round_trip(
+        &self,
+        automotive_metrics: &mut crate::automotive_metrics::AutomotiveMetrics,
+        mut results_manager: Option<&mut crate::results::ResultsManager>
+    ) -> Result<u64> {
+        use crate::ipc::shared_memory::SharedMemoryTransport;
+        
+        // For shared memory, we'll use a simpler approach without separate server task
+        // since shared memory operations are inherently synchronous and cross-process
+        let transport = SharedMemoryTransport::new();
+        let segment_name = format!("ull_shm_round_trip_{}", uuid::Uuid::new_v4());
+        
+        let capacity = 1024; // Power of 2 for bit-mask operations
+        let (_shmem, ring_buffer) = transport.create_ultra_low_latency_segment(
+            &segment_name,
+            capacity,
+            self.config.message_size,
+        )?;
+        
+        // Pre-allocate message data
+        let message_data = vec![0xBB; self.config.message_size];
+        let mut response_buffer = vec![0u8; self.config.message_size];
+        
+        let test_duration = self.config.duration.unwrap_or(Duration::from_secs(1));
+        let start_time = Instant::now();
+        let mut iteration = 0u64;
+        
+        // Ultra-low latency round-trip test loop (simulated by send-then-receive)
+        while start_time.elapsed() < test_duration {
+            let round_trip_start = Instant::now();
+            
+            // Send request
+            if transport.send_ultra_fast(ring_buffer, &message_data) {
+                // Immediate receive to simulate round-trip
+                if transport.recv_ultra_fast(ring_buffer, &mut response_buffer) {
+                    let round_trip_latency = round_trip_start.elapsed();
+                    automotive_metrics.record_success(round_trip_latency);
+                    
+                    // Stream individual latency record if streaming is enabled
+                    if let Some(ref mut manager) = results_manager {
+                        let record = crate::results::MessageLatencyRecord::new(
+                            iteration,
+                            self.mechanism,
+                            self.config.message_size,
+                            crate::metrics::LatencyType::RoundTrip,
+                            round_trip_latency,
+                        );
+                        if let Err(e) = manager.stream_latency_record(&record).await {
+                            tracing::warn!("Failed to stream latency record: {}", e);
+                        }
+                    }
+                    
+                    iteration += 1;
+                } else {
+                    // No response available - this shouldn't happen in this simplified test
+                    automotive_metrics.record_deadline_miss(
+                        round_trip_start.elapsed().as_micros() as u64,
+                        self.config.max_latency_us
+                    );
+                }
+            } else {
+                // Request buffer full - continue without penalty
+                continue;
+            }
+        }
+        
+        Ok(iteration)
     }
     
     /// Ultra-low latency Unix Domain Socket benchmark using direct syscalls  
@@ -1482,93 +1582,254 @@ impl BenchmarkRunner {
         automotive_metrics: &mut crate::automotive_metrics::AutomotiveMetrics,
         mut results_manager: Option<&mut crate::results::ResultsManager>
     ) -> Result<()> {
+        let config = self.create_transport_config()?;
+        
+        // Run one-way test
+        let one_way_results = self.run_uds_ull_one_way(&config, automotive_metrics, results_manager.as_deref_mut()).await?;
+        
+        // Run round-trip test
+        let round_trip_results = self.run_uds_ull_round_trip(&config, automotive_metrics, results_manager.as_deref_mut()).await?;
+        
+        info!("Ultra-low latency Unix Domain Socket test completed - One-way: {} ops, Round-trip: {} ops", 
+              one_way_results, round_trip_results);
+        Ok(())
+    }
+    
+    /// Run UDS ULL one-way test
+    async fn run_uds_ull_one_way(
+        &self,
+        config: &crate::ipc::TransportConfig,
+        automotive_metrics: &mut crate::automotive_metrics::AutomotiveMetrics,
+        mut results_manager: Option<&mut crate::results::ResultsManager>
+    ) -> Result<u64> {
         use crate::ipc::unix_domain_socket::UnixDomainSocketTransport;
         use tokio::sync::Notify;
         use std::sync::Arc;
+        use tokio::net::{UnixListener, UnixStream};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
         
-        let mut server_transport = UnixDomainSocketTransport::new();
-        let mut client_transport = UnixDomainSocketTransport::new();
-        let config = self.create_transport_config()?;
-        
-        // Setup server-client connection for ultra-low latency
         let server_ready = Arc::new(Notify::new());
         let server_ready_clone = server_ready.clone();
         
-        // Start server in background
         let server_config = config.clone();
+        
+        // Start server that accepts connections and continuously reads data
         let server_handle = tokio::spawn(async move {
-            if let Err(e) = server_transport.start_server(&server_config).await {
-                tracing::error!("Server failed to start: {}", e);
-                return Err(e);
-            }
+            let _ = std::fs::remove_file(&server_config.socket_path);
+            let listener = UnixListener::bind(&server_config.socket_path)?;
             server_ready_clone.notify_one();
             
-            // Keep server alive for ultra-low latency test
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-            Ok(())
+            // Accept and read from connection
+            if let Ok((stream, _)) = listener.accept().await {
+                let (mut read_half, _) = stream.into_split();
+                let mut buffer = vec![0u8; 8192]; // Large buffer for continuous reading
+                
+                // Continuously read data to prevent client from hanging
+                loop {
+                    match tokio::time::timeout(Duration::from_millis(50), read_half.read(&mut buffer)).await {
+                        Ok(Ok(0)) => break, // Client disconnected
+                        Ok(Ok(_)) => continue, // Data received, keep reading
+                        Ok(Err(_)) => break, // Read error
+                        Err(_) => continue, // Timeout, keep trying
+                    }
+                }
+            }
+            
+            let _ = std::fs::remove_file(&server_config.socket_path);
+            Ok::<(), anyhow::Error>(())
         });
         
         // Wait for server to be ready
         server_ready.notified().await;
         
-        // Connect client
-        client_transport.start_client(&config).await?;
+        // Give server time to bind
+        tokio::time::sleep(Duration::from_millis(100)).await;
         
-        // Get raw file descriptor for direct syscalls from client side
-        let fd = client_transport.get_stream_fd()
-            .ok_or_else(|| anyhow!("Failed to get Unix socket file descriptor from client"))?;
+        // Connect client directly
+        let client_stream = UnixStream::connect(&config.socket_path).await?;
+        let (_, mut client_write) = client_stream.into_split();
         
-        // Pre-allocate message data (no length prefix for ultra-low latency)
+        // Pre-allocate message data
         let message_data = vec![0xBB; self.config.message_size];
-        let mut receive_buffer = vec![0u8; self.config.message_size];
         
         let test_duration = self.config.duration.unwrap_or(Duration::from_secs(1));
         let start_time = Instant::now();
         let mut iteration = 0u64;
         
-        // Ultra-low latency test loop with deadline enforcement
+        // Ultra-low latency one-way test loop
         while start_time.elapsed() < test_duration {
             let operation_start = Instant::now();
             
-            // Direct syscall send with automotive deadline
-            match client_transport.send_with_deadline(fd, &message_data, self.config.max_latency_us) {
-                Ok(latency_duration) => {
-                    automotive_metrics.record_success(latency_duration);
+            // Send message with deadline check
+            match client_write.write_all(&message_data).await {
+                Ok(_) => {
+                    let latency_duration = operation_start.elapsed();
                     
-                    // Stream individual latency record if streaming is enabled
-                    if let Some(ref mut manager) = results_manager {
-                        let record = crate::results::MessageLatencyRecord::new(
-                            iteration,
-                            self.mechanism,
-                            self.config.message_size,
-                            crate::metrics::LatencyType::OneWay, // Ultra-low latency is one-way focused
-                            latency_duration,
+                    // Check deadline compliance
+                    if latency_duration.as_micros() > self.config.max_latency_us as u128 {
+                        automotive_metrics.record_deadline_miss(
+                            latency_duration.as_micros() as u64,
+                            self.config.max_latency_us
                         );
-                        if let Err(e) = manager.stream_latency_record(&record).await {
-                            tracing::warn!("Failed to stream latency record: {}", e);
+                    } else {
+                        automotive_metrics.record_success(latency_duration);
+                        
+                        // Stream individual latency record if streaming is enabled
+                        if let Some(ref mut manager) = results_manager {
+                            let record = crate::results::MessageLatencyRecord::new(
+                                iteration,
+                                self.mechanism,
+                                self.config.message_size,
+                                crate::metrics::LatencyType::OneWay,
+                                latency_duration,
+                            );
+                            if let Err(e) = manager.stream_latency_record(&record).await {
+                                tracing::warn!("Failed to stream latency record: {}", e);
+                            }
                         }
                     }
                     
                     iteration += 1;
                 }
-                Err(e) => {
-                    // Record deadline miss or other automotive error
-                    if e.to_string().contains("deadline") {
-                        automotive_metrics.record_deadline_miss(
-                            operation_start.elapsed().as_micros() as u64,
-                            self.config.max_latency_us
-                        );
-                    }
+                Err(_) => {
+                    // Send failed
+                    automotive_metrics.record_deadline_miss(
+                        operation_start.elapsed().as_micros() as u64,
+                        self.config.max_latency_us
+                    );
                     continue;
                 }
             }
         }
         
         // Clean up resources
-        client_transport.close().await?;
-        server_handle.abort(); // Stop the server task
-        info!("Ultra-low latency Unix Domain Socket test completed: {} operations", iteration);
-        Ok(())
+        server_handle.abort();
+        Ok(iteration)
+    }
+    
+    /// Run UDS ULL round-trip test
+    async fn run_uds_ull_round_trip(
+        &self,
+        config: &crate::ipc::TransportConfig,
+        automotive_metrics: &mut crate::automotive_metrics::AutomotiveMetrics,
+        mut results_manager: Option<&mut crate::results::ResultsManager>
+    ) -> Result<u64> {
+        use crate::ipc::unix_domain_socket::UnixDomainSocketTransport;
+        use tokio::sync::Notify;
+        use std::sync::Arc;
+        use tokio::net::{UnixListener, UnixStream};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        
+        let server_ready = Arc::new(Notify::new());
+        let server_ready_clone = server_ready.clone();
+        
+        // Clone data for the async task to avoid lifetime issues
+        let server_config = config.clone();
+        let message_size = self.config.message_size;
+        
+        // Start echo server with proper connection handling
+        let server_handle = tokio::spawn(async move {
+            // Create listener manually for better control
+            let _ = std::fs::remove_file(&server_config.socket_path); // Clean up any existing socket
+            let listener = UnixListener::bind(&server_config.socket_path)?;
+            
+            server_ready_clone.notify_one();
+            
+            // Accept one client connection
+            let (stream, _) = listener.accept().await?;
+            
+            // Use tokio's async I/O instead of raw syscalls for round-trip
+            let (mut read_half, mut write_half) = stream.into_split();
+            let mut receive_buffer = vec![0u8; message_size];
+            
+            // Server echo loop with proper async I/O
+            loop {
+                match tokio::time::timeout(Duration::from_millis(100), 
+                                         read_half.read_exact(&mut receive_buffer)).await {
+                    Ok(Ok(_)) => {
+                        // Echo back immediately
+                        if let Err(_) = write_half.write_all(&receive_buffer).await {
+                            break; // Client disconnected
+                        }
+                    }
+                    Ok(Err(_)) => break, // Read error
+                    Err(_) => continue, // Timeout - keep waiting
+                }
+            }
+            
+            let _ = std::fs::remove_file(&server_config.socket_path); // Cleanup
+            Ok::<(), anyhow::Error>(())
+        });
+        
+        // Wait for server to be ready
+        server_ready.notified().await;
+        
+        // Create client connection directly  
+        let client_stream = UnixStream::connect(&config.socket_path).await?;
+        let (mut client_read, mut client_write) = client_stream.into_split();
+        
+        // Pre-allocate message data
+        let message_data = vec![0xCC; self.config.message_size];
+        let mut response_buffer = vec![0u8; self.config.message_size];
+        
+        let test_duration = self.config.duration.unwrap_or(Duration::from_secs(1));
+        let start_time = Instant::now();
+        let mut iteration = 0u64;
+        
+        // Ultra-low latency round-trip test loop
+        while start_time.elapsed() < test_duration {
+            let round_trip_start = Instant::now();
+            
+            // Send request
+            match client_write.write_all(&message_data).await {
+                Ok(_) => {
+                    // Wait for response with more reasonable timeout for ULL
+                    let timeout_duration = Duration::from_millis(5); // 5ms timeout for ULL context
+                    match tokio::time::timeout(timeout_duration, client_read.read_exact(&mut response_buffer)).await {
+                        Ok(Ok(_)) => {
+                            let round_trip_latency = round_trip_start.elapsed();
+                            automotive_metrics.record_success(round_trip_latency);
+                            
+                            // Stream individual latency record if streaming is enabled
+                            if let Some(ref mut manager) = results_manager {
+                                let record = crate::results::MessageLatencyRecord::new(
+                                    iteration,
+                                    self.mechanism,
+                                    self.config.message_size,
+                                    crate::metrics::LatencyType::RoundTrip,
+                                    round_trip_latency,
+                                );
+                                if let Err(e) = manager.stream_latency_record(&record).await {
+                                    tracing::warn!("Failed to stream latency record: {}", e);
+                                }
+                            }
+                            
+                            iteration += 1;
+                        }
+                        Ok(Err(_)) | Err(_) => {
+                            // Read error or timeout - deadline miss
+                            automotive_metrics.record_deadline_miss(
+                                round_trip_start.elapsed().as_micros() as u64,
+                                self.config.max_latency_us
+                            );
+                            continue;
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Send failed - deadline miss  
+                    automotive_metrics.record_deadline_miss(
+                        round_trip_start.elapsed().as_micros() as u64,
+                        self.config.max_latency_us
+                    );
+                    continue;
+                }
+            }
+        }
+        
+        // Client streams will be cleaned up automatically
+        server_handle.abort();
+        Ok(iteration)
     }
     
     /// Ultra-low latency POSIX Message Queue benchmark using direct libc calls
@@ -1578,28 +1839,100 @@ impl BenchmarkRunner {
         mut results_manager: Option<&mut crate::results::ResultsManager>
     ) -> Result<()> {
         use crate::ipc::posix_message_queue::PosixMessageQueueTransport;
+        use tokio::sync::Barrier;
+        use tokio::time::timeout;
         
-        let mut transport = PosixMessageQueueTransport::new();
         let config = self.create_transport_config()?;
+        let test_duration = self.config.duration.unwrap_or(Duration::from_secs(1));
+        
+        let mut one_way_results = 0u64;
+        let mut round_trip_results = 0u64;
+        
+        // Run one-way test only if enabled
+        if self.config.one_way {
+            one_way_results = self.run_pmq_ull_one_way(&config, automotive_metrics, results_manager.as_deref_mut()).await?;
+        }
+        
+        // Run round-trip test only if enabled
+        if self.config.round_trip {
+            round_trip_results = self.run_pmq_ull_round_trip(&config, automotive_metrics, results_manager.as_deref_mut()).await?;
+        }
+        
+        info!("Ultra-low latency POSIX Message Queue test completed - One-way: {} ops, Round-trip: {} ops", 
+              one_way_results, round_trip_results);
+        Ok(())
+    }
+    
+    /// Run PMQ ULL one-way test
+    async fn run_pmq_ull_one_way(
+        &self,
+        config: &crate::ipc::TransportConfig,
+        automotive_metrics: &mut crate::automotive_metrics::AutomotiveMetrics,
+        mut results_manager: Option<&mut crate::results::ResultsManager>
+    ) -> Result<u64> {
+        use crate::ipc::posix_message_queue::PosixMessageQueueTransport;
+        use tokio::sync::Notify;
+        
+        let server_ready = Arc::new(Notify::new());
+        let server_ready_clone = server_ready.clone();
+        let config_clone = config.clone();
+        let message_size = self.config.message_size;
+        
+        // Start background receiver to drain the queue (like standard PMQ one-way)
+        let receiver_handle = tokio::spawn(async move {
+            let mut receiver_transport = PosixMessageQueueTransport::new();
+            if let Err(e) = receiver_transport.start_server(&config_clone).await {
+                tracing::error!("Failed to start receiver: {}", e);
+                return;
+            }
+            if let Err(e) = receiver_transport.configure_ultra_low_latency() {
+                tracing::error!("Failed to configure receiver ULL: {}", e);
+                return;
+            }
+            
+            server_ready_clone.notify_one();
+            
+            let mut receive_buffer = vec![0u8; message_size];
+            
+            // Continuously drain messages to prevent queue from filling up
+            loop {
+                match receiver_transport.recv_ultra_fast_direct(&mut receive_buffer) {
+                    Ok(_) => {
+                        // Message received, continue draining
+                        continue;
+                    }
+                    Err(_) => {
+                        // No message available - brief sleep to avoid busy loop
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                        continue;
+                    }
+                }
+            }
+        });
+        
+        // Wait for receiver to be ready
+        server_ready.notified().await;
+        tokio::time::sleep(Duration::from_millis(10)).await; // Give receiver time to initialize
+        
+        let mut sender_transport = PosixMessageQueueTransport::new();
         
         // Setup message queue (async setup required)
-        transport.start_server(&config).await?;
+        sender_transport.start_client(&config).await?;
         
         // Configure for ultra-low latency
-        transport.configure_ultra_low_latency()?;
+        sender_transport.configure_ultra_low_latency()?;
         
         // Pre-allocate message data (no serialization for ultra-low latency)
         let message_data = vec![0xCC; self.config.message_size]; 
-        let mut receive_buffer = vec![0u8; self.config.message_size];
         
         let test_duration = self.config.duration.unwrap_or(Duration::from_secs(1));
         let start_time = Instant::now();
         let mut iteration = 0u64;
         
-        // Ultra-low latency test loop with automotive deadline enforcement
+        // Ultra-low latency one-way test loop with automotive deadline enforcement
         while start_time.elapsed() < test_duration {
             // Direct libc send with deadline
-            match transport.send_with_deadline_ultra_fast(&message_data, self.config.max_latency_us) {
+            match sender_transport.send_with_deadline_ultra_fast(&message_data, self.config.max_latency_us) {
                 Ok(latency_duration) => {
                     automotive_metrics.record_success(latency_duration);
                     
@@ -1609,7 +1942,7 @@ impl BenchmarkRunner {
                             iteration,
                             self.mechanism,
                             self.config.message_size,
-                            crate::metrics::LatencyType::OneWay, // Ultra-low latency is one-way focused
+                            crate::metrics::LatencyType::OneWay,
                             latency_duration,
                         );
                         if let Err(e) = manager.stream_latency_record(&record).await {
@@ -1633,9 +1966,204 @@ impl BenchmarkRunner {
             }
         }
         
-        transport.close().await?;
-        info!("Ultra-low latency POSIX Message Queue test completed: {} operations", iteration);
-        Ok(())
+        sender_transport.close().await?;
+        receiver_handle.abort(); // Stop the background receiver
+        Ok(iteration)
+    }
+    
+    /// Run PMQ ULL round-trip test
+    async fn run_pmq_ull_round_trip(
+        &self,
+        config: &crate::ipc::TransportConfig,
+        automotive_metrics: &mut crate::automotive_metrics::AutomotiveMetrics,
+        mut results_manager: Option<&mut crate::results::ResultsManager>
+    ) -> Result<u64> {
+        use crate::ipc::posix_message_queue::PosixMessageQueueTransport;
+        use tokio::sync::Barrier;
+        
+        info!("PMQ ULL round-trip test starting with single-queue design");
+        
+        let server_ready = Arc::new(Barrier::new(2));
+        let server_ready_clone = server_ready.clone();
+        
+        debug!("PMQ ULL RT: Starting setup phase");
+        
+        // Clone data for the async task to avoid lifetime issues
+        let config_clone = config.clone();
+        let message_size = self.config.message_size;
+        
+        // Start echo server using single shared queue (like standard PMQ)
+        let server_handle: tokio::task::JoinHandle<Result<(), anyhow::Error>> = tokio::spawn(async move {
+            let mut server_transport = PosixMessageQueueTransport::new();
+            
+            // Use the same queue as client for true echo behavior
+            if let Err(e) = server_transport.start_server(&config_clone).await {
+                tracing::error!("Server start failed: {}", e);
+                return Err(anyhow::anyhow!("Server start failed: {}", e));
+            }
+            
+                    // Configure for ultra-low latency
+        if let Err(e) = server_transport.configure_ultra_low_latency() {
+            tracing::error!("Server ULL config failed: {}", e);
+            return Err(anyhow::anyhow!("Server ULL config failed: {}", e));
+        }
+        
+        debug!("PMQ ULL RT Server: Config buffer_size: {}, queue_name: {}", 
+               config_clone.buffer_size, config_clone.message_queue_name);
+            
+            // Signal server ready
+            server_ready_clone.wait().await;
+            
+            // PMQ requires buffer size to match queue's max_msg_size, not actual message size
+            let queue_max_msg_size = config_clone.buffer_size.max(1024); // Same as PMQ transport logic
+            let mut receive_buffer = vec![0u8; queue_max_msg_size];
+            let mut messages_echoed = 0u64;
+            
+            debug!("PMQ ULL RT Server: Buffer allocated with size {} (queue max_msg_size), message_size from task: {}", 
+                   receive_buffer.len(), message_size);
+            
+            // Server echo loop - receive and immediately echo back to same queue
+            loop {
+                match server_transport.recv_ultra_fast_direct(&mut receive_buffer) {
+                    Ok(_) => {
+                        messages_echoed += 1;
+                        debug!("PMQ ULL RT Server: Received message {}, echoing back", messages_echoed);
+                        // Echo back immediately to same queue
+                        match server_transport.send_ultra_fast_direct(&receive_buffer) {
+                            Ok(_) => {
+                                debug!("PMQ ULL RT Server: Echo successful");
+                            }
+                            Err(e) => {
+                                debug!("PMQ ULL RT Server: Echo failed: {}", e);
+                                // If echo fails, continue to next message
+                                continue;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        // No message available - brief sleep to avoid busy loop
+                        debug!("PMQ ULL RT Server: No message available: {}", e);
+                        tokio::time::sleep(Duration::from_micros(10)).await;
+                        continue;
+                    }
+                }
+            }
+        });
+        
+        // Wait for server to be ready
+        debug!("PMQ ULL RT: Waiting for server to be ready");
+        server_ready.wait().await;
+        debug!("PMQ ULL RT: Server ready, initializing client");
+        tokio::time::sleep(Duration::from_millis(50)).await; // Give server time to fully initialize
+        
+        // Create client using same queue
+        let mut client_transport = PosixMessageQueueTransport::new();
+        debug!("PMQ ULL RT: Starting client transport");
+        client_transport.start_client(&config).await?;
+        debug!("PMQ ULL RT: Configuring client for ULL");
+        client_transport.configure_ultra_low_latency()?;
+        
+        // Pre-allocate message data with unique pattern for round-trip
+        let message_data = vec![0xDD; self.config.message_size]; 
+        // PMQ requires buffer size to match queue's max_msg_size, not actual message size
+        let queue_max_msg_size = config.buffer_size.max(1024); // Same as PMQ transport logic
+        let mut response_buffer = vec![0u8; queue_max_msg_size];
+        
+        debug!("PMQ ULL RT Client: Message size: {}, send buffer: {}, receive buffer: {} (queue max_msg_size)", 
+               self.config.message_size, message_data.len(), response_buffer.len());
+        
+        let test_duration = self.config.duration.unwrap_or(Duration::from_secs(1));
+        let start_time = Instant::now();
+        let mut iteration = 0u64;
+        let mut total_attempts = 0u64;
+        
+        debug!("PMQ ULL RT: Starting main loop with test duration {:?}", test_duration);
+        
+        // Ultra-low latency round-trip test loop with single-queue design
+        while start_time.elapsed() < test_duration {
+            total_attempts += 1;
+            let round_trip_start = Instant::now();
+            
+            // Send request
+            debug!("PMQ ULL RT: Attempting send, iteration {}", total_attempts);
+            match client_transport.send_with_deadline_ultra_fast(&message_data, self.config.max_latency_us) {
+                Ok(_) => {
+                    debug!("PMQ ULL RT: Send successful, attempting receive");
+                    // Wait for echo response with remaining deadline
+                    let elapsed = round_trip_start.elapsed();
+                    let remaining_deadline = if elapsed.as_micros() < self.config.max_latency_us as u128 {
+                        self.config.max_latency_us - elapsed.as_micros() as u64
+                    } else {
+                        1 // Minimum deadline
+                    };
+                    
+                    let deadline = Instant::now() + Duration::from_micros(remaining_deadline);
+                    let mut response_received = false;
+                    
+                    // Poll for echo response
+                    while Instant::now() < deadline {
+                        match client_transport.recv_ultra_fast_direct(&mut response_buffer) {
+                            Ok(_) => {
+                                // Verify this is our echo (same data pattern)
+                                if response_buffer[..self.config.message_size] == message_data[..] {
+                                    response_received = true;
+                                    break;
+                                }
+                                // If not our message, continue polling
+                            }
+                            Err(_) => {
+                                // No message yet - continue polling
+                                std::hint::spin_loop();
+                                continue;
+                            }
+                        }
+                    }
+                    
+                    if response_received {
+                        let round_trip_latency = round_trip_start.elapsed();
+                        debug!("PMQ ULL RT: Round-trip successful, latency: {:?}", round_trip_latency);
+                        automotive_metrics.record_success(round_trip_latency);
+                        
+                        // Stream individual latency record if streaming is enabled
+                        if let Some(ref mut manager) = results_manager {
+                            let record = crate::results::MessageLatencyRecord::new(
+                                iteration,
+                                self.mechanism,
+                                self.config.message_size,
+                                crate::metrics::LatencyType::RoundTrip,
+                                round_trip_latency,
+                            );
+                            if let Err(e) = manager.stream_latency_record(&record).await {
+                                tracing::warn!("Failed to stream latency record: {}", e);
+                            }
+                        }
+                        
+                        iteration += 1;
+                    } else {
+                        // Timeout - deadline miss
+                        debug!("PMQ ULL RT: No response received within deadline");
+                        automotive_metrics.record_deadline_miss(
+                            round_trip_start.elapsed().as_micros() as u64,
+                            self.config.max_latency_us
+                        );
+                    }
+                }
+                Err(e) => {
+                    // Send failed - deadline miss  
+                    debug!("PMQ ULL RT: Send failed: {}", e);
+                    automotive_metrics.record_deadline_miss(
+                        round_trip_start.elapsed().as_micros() as u64,
+                        self.config.max_latency_us
+                    );
+                }
+            }
+        }
+        
+        client_transport.close().await?;
+        server_handle.abort();
+        
+        info!("PMQ ULL round-trip test completed: {} successful iterations out of {} attempts", iteration, total_attempts);
+        Ok(iteration)
     }
     
     /// Run automotive real-time evaluation with comprehensive safety analysis

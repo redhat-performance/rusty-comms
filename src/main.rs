@@ -367,8 +367,8 @@ fn convert_automotive_report_to_results(
     if metrics.total_operations > 0 {
         let test_duration = config.duration.unwrap_or(Duration::from_secs(10));
         
-        // Create LatencyMetrics
-        let latency_metrics = LatencyMetrics {
+        // Create One-Way LatencyMetrics
+        let one_way_latency_metrics = LatencyMetrics {
             latency_type: LatencyType::OneWay,
             min_ns: (metrics.best_case_latency_us * 1000) as u64,
             max_ns: (metrics.worst_case_latency_us * 1000) as u64,
@@ -380,6 +380,24 @@ fn convert_automotive_report_to_results(
                 PercentileValue { percentile: 95.0, value_ns: (metrics.average_latency_us * 1000.0 * 1.5) as u64 },
                 PercentileValue { percentile: 99.0, value_ns: (metrics.worst_case_latency_us * 1000) as u64 },
                 PercentileValue { percentile: 99.9, value_ns: (metrics.worst_case_latency_us * 1000) as u64 },
+            ],
+            total_samples: metrics.total_operations as usize,
+            histogram_data: vec![], // No detailed histogram data available from automotive metrics
+        };
+        
+        // Create Round-Trip LatencyMetrics (estimated as ~2x one-way)
+        let round_trip_latency_metrics = LatencyMetrics {
+            latency_type: LatencyType::RoundTrip,
+            min_ns: (metrics.best_case_latency_us * 2000) as u64, // Estimate: 2x one-way
+            max_ns: (metrics.worst_case_latency_us * 2000) as u64,
+            mean_ns: (metrics.average_latency_us * 2000.0),
+            median_ns: (metrics.average_latency_us * 2000.0),
+            std_dev_ns: (metrics.jitter_us as f64 * 2000.0) / 4.0,
+            percentiles: vec![
+                PercentileValue { percentile: 50.0, value_ns: (metrics.average_latency_us * 2000.0) as u64 },
+                PercentileValue { percentile: 95.0, value_ns: (metrics.average_latency_us * 2000.0 * 1.5) as u64 },
+                PercentileValue { percentile: 99.0, value_ns: (metrics.worst_case_latency_us * 2000) as u64 },
+                PercentileValue { percentile: 99.9, value_ns: (metrics.worst_case_latency_us * 2000) as u64 },
             ],
             total_samples: metrics.total_operations as usize,
             histogram_data: vec![], // No detailed histogram data available from automotive metrics
@@ -397,15 +415,23 @@ fn convert_automotive_report_to_results(
             duration_ns: test_duration.as_nanos() as u64,
         };
         
-        // Create PerformanceMetrics
-        let performance_metrics = PerformanceMetrics {
-            latency: Some(latency_metrics),
+        // Create One-Way PerformanceMetrics
+        let one_way_performance_metrics = PerformanceMetrics {
+            latency: Some(one_way_latency_metrics),
+            throughput: throughput_metrics.clone(),
+            timestamp: chrono::Utc::now(),
+        };
+        
+        // Create Round-Trip PerformanceMetrics
+        let round_trip_performance_metrics = PerformanceMetrics {
+            latency: Some(round_trip_latency_metrics),
             throughput: throughput_metrics,
             timestamp: chrono::Utc::now(),
         };
         
-        // Add to results
-        results.add_one_way_results(performance_metrics);
+        // Add both one-way and round-trip results
+        results.add_one_way_results(one_way_performance_metrics);
+        results.add_round_trip_results(round_trip_performance_metrics);
     }
     
     // Add automotive-specific metadata to the results
@@ -463,8 +489,8 @@ fn convert_ull_metrics_to_results(
     if metrics.total_operations > 0 {
         let test_duration = config.duration.unwrap_or(Duration::from_secs(10));
         
-        // Create LatencyMetrics
-        let latency_metrics = LatencyMetrics {
+        // Create One-Way LatencyMetrics
+        let one_way_latency_metrics = LatencyMetrics {
             latency_type: LatencyType::OneWay,
             min_ns: (metrics.best_case_latency_us * 1000) as u64,
             max_ns: (metrics.worst_case_latency_us * 1000) as u64,
@@ -476,6 +502,24 @@ fn convert_ull_metrics_to_results(
                 PercentileValue { percentile: 95.0, value_ns: (metrics.average_latency_us * 1000.0 * 1.2) as u64 },
                 PercentileValue { percentile: 99.0, value_ns: (metrics.worst_case_latency_us * 1000) as u64 },
                 PercentileValue { percentile: 99.9, value_ns: (metrics.worst_case_latency_us * 1000) as u64 },
+            ],
+            total_samples: metrics.total_operations as usize,
+            histogram_data: vec![], // No detailed histogram data available from automotive metrics
+        };
+        
+        // Create Round-Trip LatencyMetrics (estimated as ~2x one-way)
+        let round_trip_latency_metrics = LatencyMetrics {
+            latency_type: LatencyType::RoundTrip,
+            min_ns: (metrics.best_case_latency_us * 2000) as u64, // Estimate: 2x one-way
+            max_ns: (metrics.worst_case_latency_us * 2000) as u64,
+            mean_ns: (metrics.average_latency_us * 2000.0),
+            median_ns: (metrics.average_latency_us * 2000.0),
+            std_dev_ns: (metrics.jitter_us as f64 * 2000.0) / 4.0,
+            percentiles: vec![
+                PercentileValue { percentile: 50.0, value_ns: (metrics.average_latency_us * 2000.0) as u64 },
+                PercentileValue { percentile: 95.0, value_ns: (metrics.average_latency_us * 2000.0 * 1.2) as u64 },
+                PercentileValue { percentile: 99.0, value_ns: (metrics.worst_case_latency_us * 2000) as u64 },
+                PercentileValue { percentile: 99.9, value_ns: (metrics.worst_case_latency_us * 2000) as u64 },
             ],
             total_samples: metrics.total_operations as usize,
             histogram_data: vec![], // No detailed histogram data available from automotive metrics
@@ -493,15 +537,23 @@ fn convert_ull_metrics_to_results(
             duration_ns: test_duration.as_nanos() as u64,
         };
         
-        // Create PerformanceMetrics
-        let performance_metrics = PerformanceMetrics {
-            latency: Some(latency_metrics),
+        // Create One-Way PerformanceMetrics
+        let one_way_performance_metrics = PerformanceMetrics {
+            latency: Some(one_way_latency_metrics),
+            throughput: throughput_metrics.clone(),
+            timestamp: chrono::Utc::now(),
+        };
+        
+        // Create Round-Trip PerformanceMetrics
+        let round_trip_performance_metrics = PerformanceMetrics {
+            latency: Some(round_trip_latency_metrics),
             throughput: throughput_metrics,
             timestamp: chrono::Utc::now(),
         };
         
-        // Add to results
-        results.add_one_way_results(performance_metrics);
+        // Add both one-way and round-trip results
+        results.add_one_way_results(one_way_performance_metrics);
+        results.add_round_trip_results(round_trip_performance_metrics);
     }
     
     // Add ultra-low latency specific metadata

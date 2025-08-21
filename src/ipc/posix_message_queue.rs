@@ -253,11 +253,21 @@ impl PosixMessageQueueTransport {
             None => return Err(anyhow!("Message queue not initialized")),
         };
         
-        // Use mq_timedsend with microsecond precision
-        let timeout = libc::timespec {
-            tv_sec: 0,
-            tv_nsec: (deadline_us * 1000) as i64, // Convert μs to ns
-        };
+        // Use mq_timedsend with absolute timeout (current time + deadline)
+        let mut timeout = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        unsafe {
+            libc::clock_gettime(libc::CLOCK_REALTIME, &mut timeout);
+        }
+        
+        // Add deadline to current time
+        let deadline_ns = deadline_us * 1000; // Convert μs to ns
+        timeout.tv_nsec += deadline_ns as i64;
+        
+        // Handle nanosecond overflow
+        if timeout.tv_nsec >= 1_000_000_000 {
+            timeout.tv_sec += timeout.tv_nsec / 1_000_000_000;
+            timeout.tv_nsec %= 1_000_000_000;
+        }
         
         let result = unsafe {
             libc::mq_timedsend(
@@ -309,10 +319,21 @@ impl PosixMessageQueueTransport {
             None => return Err(anyhow!("Message queue not initialized")),
         };
         
-        let timeout = libc::timespec {
-            tv_sec: 0,
-            tv_nsec: (deadline_us * 1000) as i64,
-        };
+        // Use absolute timeout (current time + deadline)
+        let mut timeout = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        unsafe {
+            libc::clock_gettime(libc::CLOCK_REALTIME, &mut timeout);
+        }
+        
+        // Add deadline to current time
+        let deadline_ns = deadline_us * 1000; // Convert μs to ns
+        timeout.tv_nsec += deadline_ns as i64;
+        
+        // Handle nanosecond overflow
+        if timeout.tv_nsec >= 1_000_000_000 {
+            timeout.tv_sec += timeout.tv_nsec / 1_000_000_000;
+            timeout.tv_nsec %= 1_000_000_000;
+        }
         
         let bytes_received = unsafe {
             libc::mq_timedreceive(
