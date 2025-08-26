@@ -34,10 +34,11 @@
 use clap::Parser;
 use ipc_benchmark::{
     benchmark::{BenchmarkConfig, BenchmarkRunner},
-    cli::{Args, IpcMechanism},
+    cli::{Args, IpcMechanism, BenchmarkConfiguration, ExecutionMode},
+    coordination,
     results::{BenchmarkResults, ResultsManager},
 };
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::{filter::LevelFilter, prelude::*, Layer};
 use anyhow::Result;
 use tracing_appender;
@@ -131,7 +132,7 @@ async fn main() -> Result<()> {
     // Create benchmark configuration from parsed CLI arguments
     // This converts the user-friendly CLI format into the internal
     // configuration structure used by the benchmark engine
-    let config = BenchmarkConfig::from_args(&args)?;
+    let config = BenchmarkConfiguration::from(&args);
 
     // Calculate today's date string once to ensure consistency across all branches.
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
@@ -203,7 +204,9 @@ async fn main() -> Result<()> {
     for &mechanism in &mechanisms {
         // Execute the benchmark for the current mechanism and handle the result.
         // The `run_benchmark_for_mechanism` function encapsulates all logic for a single test.
-        match run_benchmark_for_mechanism(&config, &mechanism, &mut results_manager).await {
+        // Convert to single-mechanism config
+        let mechanism_config = create_mechanism_config(&config, mechanism);
+        match run_benchmark_for_mechanism(&mechanism_config, &mechanism, &mut results_manager).await {
             Ok(()) => {
                 // On success, the `run_benchmark_for_mechanism` function has already added
                 // the results to the `results_manager`. No further action is needed here.
@@ -316,7 +319,7 @@ async fn run_benchmark_for_mechanism(
 /// - Operates in passive mode waiting for host connections
 /// - Participates in benchmarks as directed by host coordinator
 /// - Reports results back to host
-async fn run_cross_environment_coordination(config: &BenchmarkConfig) -> Result<()> {
+async fn run_cross_environment_coordination(config: &BenchmarkConfiguration) -> Result<()> {
     use ipc_benchmark::coordination;
     use ipc_benchmark::cli::ExecutionMode;
 
@@ -348,4 +351,22 @@ async fn run_cross_environment_coordination(config: &BenchmarkConfig) -> Result<
     }
 
     Ok(())
+}
+
+/// Create a single-mechanism BenchmarkConfig from BenchmarkConfiguration
+fn create_mechanism_config(config: &BenchmarkConfiguration, mechanism: IpcMechanism) -> BenchmarkConfig {
+    BenchmarkConfig {
+        mechanism,
+        message_size: config.message_size,
+        msg_count: config.msg_count,
+        duration: config.duration,
+        concurrency: config.concurrency,
+        one_way: config.one_way,
+        round_trip: config.round_trip,
+        warmup_iterations: config.warmup_iterations,
+        percentiles: config.percentiles.clone(),
+        buffer_size: config.buffer_size,
+        host: config.host.clone(),
+        port: config.port,
+    }
 }
