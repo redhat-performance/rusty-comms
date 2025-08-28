@@ -41,7 +41,7 @@ use crate::{
     metrics::{LatencyType, MetricsCollector, PerformanceMetrics},
     results::BenchmarkResults,
 };
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Barrier;
@@ -135,6 +135,9 @@ pub struct BenchmarkConfig {
     /// Base port number that will be modified to ensure uniqueness
     /// across concurrent tests. Ignored by non-network mechanisms.
     pub port: u16,
+
+    /// Optional override for UDS socket path (used in cross-environment host mode)
+    pub socket_path_override: Option<String>,
 }
 
 impl BenchmarkConfig {
@@ -184,6 +187,7 @@ impl BenchmarkConfig {
             buffer_size: args.buffer_size,
             host: args.host.clone(),
             port: args.port,
+            socket_path_override: None,
         })
     }
 }
@@ -1264,11 +1268,17 @@ impl BenchmarkRunner {
             10 // Default for other mechanisms
         };
 
+        let default_socket_path = format!("/tmp/ipc_benchmark_{}.sock", unique_id);
+        let socket_path = match (self.mechanism, &self.config.socket_path_override) {
+            (IpcMechanism::UnixDomainSocket, Some(path)) => path.clone(),
+            _ => default_socket_path,
+        };
+
         Ok(TransportConfig {
             buffer_size: adaptive_buffer_size,
             host: self.config.host.clone(),
             port: unique_port,
-            socket_path: format!("/tmp/ipc_benchmark_{}.sock", unique_id),
+            socket_path,
             shared_memory_name: format!("ipc_benchmark_{}", unique_id),
             max_connections: self.config.concurrency.max(16), // Set based on concurrency level
             message_queue_depth: adaptive_queue_depth,
@@ -1360,6 +1370,7 @@ mod tests {
             buffer_size: 8192,
             host: "127.0.0.1".to_string(),
             port: 8080,
+            socket_path_override: None,
         };
 
         assert_eq!(config.message_size, 1024);
@@ -1385,6 +1396,7 @@ mod tests {
             buffer_size: 8192,
             host: "127.0.0.1".to_string(),
             port: 8080,
+            socket_path_override: None,
         };
 
         let runner = BenchmarkRunner::new(config, IpcMechanism::UnixDomainSocket);

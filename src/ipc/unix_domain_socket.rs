@@ -19,6 +19,9 @@ pub struct UnixDomainSocketTransport {
     connections: Arc<Mutex<HashMap<ConnectionId, UnixStream>>>,
     next_connection_id: Arc<AtomicU64>,
     socket_path: String,
+    // True if this instance created/bound the socket file (server side)
+    // Only the owning server should unlink the socket during cleanup.
+    owns_socket_file: bool,
     message_receiver: Option<mpsc::Receiver<(ConnectionId, Message)>>,
 }
 
@@ -32,6 +35,7 @@ impl UnixDomainSocketTransport {
             connections: Arc::new(Mutex::new(HashMap::new())),
             next_connection_id: Arc::new(AtomicU64::new(1)),
             socket_path: String::new(),
+            owns_socket_file: false,
             message_receiver: None,
         }
     }
@@ -71,7 +75,7 @@ impl UnixDomainSocketTransport {
 
     /// Clean up socket file
     fn cleanup_socket(&self) -> Result<()> {
-        if !self.socket_path.is_empty() {
+        if self.owns_socket_file && !self.socket_path.is_empty() {
             if let Err(e) = std::fs::remove_file(&self.socket_path) {
                 if e.kind() != std::io::ErrorKind::NotFound {
                     warn!("Failed to remove socket file {}: {}", self.socket_path, e);
@@ -84,7 +88,7 @@ impl UnixDomainSocketTransport {
     /// Handle a single client connection in multi-server mode
     async fn handle_connection(
         connection_id: ConnectionId,
-        mut stream: UnixStream,
+        stream: UnixStream,
         message_sender: mpsc::Sender<(ConnectionId, Message)>,
         connections: Arc<Mutex<HashMap<ConnectionId, UnixStream>>>,
     ) {
@@ -183,11 +187,19 @@ impl IpcTransport for UnixDomainSocketTransport {
         self.socket_path = config.socket_path.clone();
         self.state = TransportState::Initializing;
 
-        // Clean up existing socket file
-        self.cleanup_socket()?;
+        // Server owns the socket file. Best-effort remove if stale exists.
+        self.owns_socket_file = true;
+        let _ = std::fs::remove_file(&config.socket_path);
 
         // Create listener
         let listener = UnixListener::bind(&config.socket_path)?;
+        // Relax permissions so host and container users can connect
+        #[cfg(unix)]
+        {
+            use std::fs;
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&config.socket_path, fs::Permissions::from_mode(0o666));
+        }
         self.listener = Some(listener);
         self.state = TransportState::Connected;
 
@@ -203,6 +215,8 @@ impl IpcTransport for UnixDomainSocketTransport {
 
         self.socket_path = config.socket_path.clone();
         self.state = TransportState::Initializing;
+        // Client never owns the socket file
+        self.owns_socket_file = false;
 
         // Connect to server
         let stream = UnixStream::connect(&config.socket_path).await?;
@@ -308,11 +322,19 @@ impl IpcTransport for UnixDomainSocketTransport {
         self.socket_path = config.socket_path.clone();
         self.state = TransportState::Initializing;
 
-        // Clean up existing socket file
-        self.cleanup_socket()?;
+        // Multi-server also owns the socket file. Best-effort remove if stale exists.
+        self.owns_socket_file = true;
+        let _ = std::fs::remove_file(&config.socket_path);
 
         // Create listener
         let listener = UnixListener::bind(&config.socket_path)?;
+        // Relax permissions for multi-server as well
+        #[cfg(unix)]
+        {
+            use std::fs;
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&config.socket_path, fs::Permissions::from_mode(0o666));
+        }
         debug!(
             "Unix Domain Socket multi-server listening on: {}",
             config.socket_path
@@ -493,16 +515,14 @@ mod tests {
         // Receive messages from multiple clients
         let mut received_count = 0;
         while received_count < 3 {
-            if let Ok((connection_id, message)) =
+            if let Ok(Some((connection_id, msg))) =
                 tokio::time::timeout(Duration::from_millis(1000), receiver.recv()).await
             {
-                if let Some((_conn_id, msg)) = message {
-                    debug!(
-                        "Received message {} from connection {}",
-                        msg.id, connection_id
-                    );
-                    received_count += 1;
-                }
+                debug!(
+                    "Received message {} from connection {}",
+                    msg.id, connection_id
+                );
+                received_count += 1;
             } else {
                 break;
             }

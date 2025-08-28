@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{debug, info};
 
@@ -777,11 +777,22 @@ impl ResultsManager {
     /// aggregation, used for combined tests where both latencies are measured
     /// for the same message simultaneously.
     pub async fn write_streaming_record_direct(&mut self, record: &MessageLatencyRecord) -> Result<()> {
-        if !self.streaming_enabled || !self.per_message_streaming {
-            return Ok(());
+        // JSON per-message streaming if enabled
+        if self.streaming_enabled && self.per_message_streaming {
+            self.write_streaming_record(record).await?;
         }
 
-        self.write_streaming_record(record).await
+        // CSV per-message streaming if enabled (independent of JSON streaming)
+        if self.csv_streaming_enabled {
+            if let Some(ref streaming_csv_file) = self.streaming_csv_file {
+                let mut file = OpenOptions::new().append(true).open(streaming_csv_file)?;
+                let csv_record = record.to_csv_record();
+                writeln!(file, "{}", csv_record)?;
+                file.flush()?;
+            }
+        }
+
+        Ok(())
     }
 
     /// Add benchmark results

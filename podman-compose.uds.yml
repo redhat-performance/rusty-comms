@@ -1,0 +1,68 @@
+services:
+  # Server running in container
+  rusty-comms-server:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: rusty-comms-uds-server
+    volumes:
+      # Mount socket directory for UDS communication (shared SELinux label)
+      - ./sockets:/app/sockets:z
+      # Mount output directory for results (shared SELinux label)
+      - ./output:/app/output:z
+    environment:
+      - RUST_LOG=debug
+      - IPC_BENCHMARK_SOCKET_DIR=/app/sockets
+      - IPC_BENCHMARK_DEFAULT_SOCKET_PATH=/app/sockets/ipc_benchmark.sock
+      - IPC_BENCHMARK_OUTPUT_DIR=/app/output
+    command: 
+      - "sh"
+      - "-c"
+      - |
+        echo "Starting UDS server (client mode)..."
+        umask 000
+        mkdir -p ./sockets ./output
+        chmod 777 ./sockets || true
+        rm -f ./sockets/ipc_benchmark.sock || true
+        ipc-benchmark \
+          -m uds \
+          --mode client \
+          --ipc-path ./sockets/ipc_benchmark.sock \
+          --msg-count 1000 \
+          --message-size 1024 \
+          --output-file ./output/container_server_results.json \
+          --log-file stderr
+    restart: unless-stopped
+
+  # Optional: Client running in another container for testing
+  rusty-comms-client:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: rusty-comms-uds-client
+    volumes:
+      # Mount socket directory for UDS communication
+      - ./sockets:/app/sockets:Z
+      # Mount output directory for results
+      - ./output:/app/output:Z
+    environment:
+      - RUST_LOG=debug
+      - IPC_BENCHMARK_SOCKET_DIR=/app/sockets
+      - IPC_BENCHMARK_DEFAULT_SOCKET_PATH=/app/sockets/ipc_benchmark.sock
+      - IPC_BENCHMARK_OUTPUT_DIR=/app/output
+    command: >
+      sh -c "
+        sleep 2 && 
+        ipc-benchmark 
+        -m uds 
+        --mode client 
+        --ipc-path /app/sockets/ipc_benchmark.sock
+        --msg-count 1000
+        --message-size 1024
+        --output-file /app/output/container_client_results.json
+        --log-file stderr
+      "
+    depends_on:
+      - rusty-comms-server
+    profiles:
+      - testing

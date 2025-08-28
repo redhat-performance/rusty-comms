@@ -29,7 +29,7 @@
 
 use crate::{
     cli::{BenchmarkConfiguration, ExecutionMode},
-    results::{BenchmarkResults, ResultsManager},
+    results::BenchmarkResults,
 };
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
@@ -37,9 +37,9 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::Mutex;
 use tokio::time::sleep;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 /// Process identifier for tracking spawned processes
 pub type ProcessId = u32;
@@ -112,23 +112,37 @@ impl HostCoordinator {
     pub async fn run(&mut self) -> Result<Vec<BenchmarkResults>> {
         info!("Starting host coordinator for {} clients", self.config.client_count);
 
-        // Spawn server processes for each expected client
-        self.spawn_server_processes().await?;
+        // For UDS cross-environment MVP: wait for the client-side server socket to appear
+        let ipc_path = self
+            .config
+            .ipc_path
+            .as_ref()
+            .ok_or_else(|| anyhow!("ipc_path must be specified in host mode"))?
+            .clone();
 
-        // Wait for all clients to connect
-        self.wait_for_client_connections().await?;
+        info!("Waiting for client socket at {:?}", ipc_path);
+        let timeout_duration = Duration::from_secs(self.config.connection_timeout);
+        let start_time = Instant::now();
+        while start_time.elapsed() < timeout_duration {
+            if std::path::Path::new(&ipc_path).exists() {
+                info!("Client socket detected at {:?}", ipc_path);
+                break;
+            }
+            sleep(Duration::from_millis(200)).await;
+        }
 
-        // Execute coordinated benchmark
+        if !std::path::Path::new(&ipc_path).exists() {
+            return Err(anyhow!(
+                "Timeout waiting for client socket at {:?}",
+                ipc_path
+            ));
+        }
+
+        // Execute a client-side benchmark against the client-provided UDS server
         self.execute_benchmark().await?;
 
-        // Collect results from all processes
-        let results = self.collect_results().await?;
-
-        // Clean up processes
-        self.cleanup_processes().await?;
-
         info!("Host coordination completed successfully");
-        Ok(results)
+        Ok(Vec::new())
     }
 
     /// Spawn server processes for each expected client
@@ -169,9 +183,16 @@ impl HostCoordinator {
             .as_ref()
             .ok_or_else(|| anyhow!("ipc_path must be specified in host mode"))?;
 
-        let filename = format!("rusty-comms-{}-client{}-{:?}.sock", 
-                               std::process::id(), client_id, mechanism);
-        Ok(base_path.join(filename))
+        // For single client scenarios, use the simple expected socket name
+        if self.config.client_count == 1 && client_id == 0 {
+            let filename = "ipc_benchmark.sock";
+            Ok(base_path.join(filename))
+        } else {
+            // For multi-client scenarios, use unique names
+            let filename = format!("rusty-comms-{}-client{}-{:?}.sock", 
+                                   std::process::id(), client_id, mechanism);
+            Ok(base_path.join(filename))
+        }
     }
 
     /// Spawn a single server process
@@ -186,12 +207,11 @@ impl HostCoordinator {
 
         let mut cmd = Command::new(current_exe);
         
-        // Configure the command to run in standalone server mode
-        cmd.arg("--mode").arg("standalone")
-           .arg("--mechanisms").arg(&format!("{:?}", mechanism).to_lowercase())
+        // Configure the command to run a UDS server that creates a socket at the specified path
+        // Use the proper CLI short value (e.g., "uds") for the mechanism
+        cmd.arg("-m").arg(mechanism.cli_value())
            .arg("--message-size").arg(self.config.message_size.to_string())
            .arg("--concurrency").arg("1") // Force single-threaded for cross-env
-           .arg("--ipc-path").arg(ipc_path)
            .stdin(Stdio::null())
            .stdout(Stdio::piped())
            .stderr(Stdio::piped());
@@ -254,20 +274,168 @@ impl HostCoordinator {
 
     /// Execute coordinated benchmark across all processes
     async fn execute_benchmark(&self) -> Result<()> {
-        info!("Executing coordinated benchmark");
+        info!("Executing coordinated benchmark (UDS client)");
 
-        // In a full implementation, this would:
-        // 1. Send start signals to all processes
-        // 2. Monitor progress
-        // 3. Handle any process failures
-        // 4. Coordinate timing across processes
+        // Only UDS is supported in this minimal cross-env path
+        use crate::ipc::{IpcTransport, TransportConfig};
+        use crate::ipc::unix_domain_socket::UnixDomainSocketTransport;
 
-        let estimated_duration = self.config.duration
-            .unwrap_or(Duration::from_secs(30)); // Default estimate
+        let socket_path = self
+            .config
+            .ipc_path
+            .as_ref()
+            .ok_or_else(|| anyhow!("ipc_path must be specified in host mode"))?
+            .to_string_lossy()
+            .to_string();
 
-        info!("Benchmark running for approximately {:?}", estimated_duration);
-        sleep(estimated_duration + Duration::from_secs(5)).await; // Extra time for cleanup
+        let transport_config = TransportConfig {
+            socket_path,
+            buffer_size: self.config.buffer_size,
+            host: self.config.host.clone(),
+            port: self.config.port,
+            shared_memory_name: "ipc_benchmark_shm".to_string(),
+            max_connections: 1,
+            message_queue_depth: 10,
+            message_queue_name: "ipc_benchmark_pmq".to_string(),
+        };
 
+        let mut client = UnixDomainSocketTransport::new();
+        client.start_client(&transport_config).await?;
+        info!("Connected to client UDS server");
+
+        // Prepare payload and metrics collection
+        let payload = vec![0u8; self.config.message_size];
+        let mut latencies_ns: Vec<u128> = Vec::with_capacity(self.config.msg_count.unwrap_or(10_000));
+        let bench_start = Instant::now();
+        let mut messages_sent: u64 = 0;
+
+        // Initialize streaming writers once (avoid creating runtime inside runtime)
+        let mut stream_manager: Option<crate::results::ResultsManager> = {
+            // Only create if either streaming path is set
+            if self.config.streaming_output_json.is_some() || self.config.streaming_output_csv.is_some() {
+                let mut rm = crate::results::ResultsManager::new(None, None)?;
+                if let Some(ref json_path) = self.config.streaming_output_json {
+                    rm.enable_per_message_streaming(json_path)?;
+                }
+                if let Some(ref csv_path) = self.config.streaming_output_csv {
+                    rm.enable_csv_streaming(csv_path)?;
+                }
+                Some(rm)
+            } else {
+                None
+            }
+        };
+
+        // Default to one-way sends; if round_trip set, measure round-trip latency instead
+        if let Some(duration) = self.config.duration {
+            let start = Instant::now();
+            let mut i: u64 = 0;
+            while start.elapsed() < duration {
+                let send_start = Instant::now();
+                let msg = crate::ipc::Message::new(i, payload.clone(), if self.config.round_trip { crate::ipc::MessageType::Request } else { crate::ipc::MessageType::OneWay });
+                let _ = client.send(&msg).await; // ignore individual send errors
+                if self.config.round_trip {
+                    let _ = client.receive().await; // best-effort response
+                }
+                // Stream per-message latency if configured
+                if let Some(rm) = &mut stream_manager {
+                    let record = crate::results::MessageLatencyRecord::new(
+                        i,
+                        crate::cli::IpcMechanism::UnixDomainSocket,
+                        self.config.message_size,
+                        if self.config.round_trip { crate::metrics::LatencyType::RoundTrip } else { crate::metrics::LatencyType::OneWay },
+                        send_start.elapsed(),
+                    );
+                    rm.write_streaming_record_direct(&record).await?;
+                }
+                let elapsed = send_start.elapsed().as_nanos();
+                latencies_ns.push(elapsed);
+                i += 1;
+                messages_sent = i;
+            }
+        } else {
+            let count = self.config.msg_count.unwrap_or(1000);
+            for i in 0..count {
+                let send_start = Instant::now();
+                let msg = crate::ipc::Message::new(i as u64, payload.clone(), if self.config.round_trip { crate::ipc::MessageType::Request } else { crate::ipc::MessageType::OneWay });
+                let _ = client.send(&msg).await;
+                if self.config.round_trip {
+                    let _ = client.receive().await;
+                }
+                if let Some(rm) = &mut stream_manager {
+                    let record = crate::results::MessageLatencyRecord::new(
+                        i as u64,
+                        crate::cli::IpcMechanism::UnixDomainSocket,
+                        self.config.message_size,
+                        if self.config.round_trip { crate::metrics::LatencyType::RoundTrip } else { crate::metrics::LatencyType::OneWay },
+                        send_start.elapsed(),
+                    );
+                    rm.write_streaming_record_direct(&record).await?;
+                }
+                let elapsed = send_start.elapsed().as_nanos();
+                latencies_ns.push(elapsed);
+                messages_sent = i as u64 + 1;
+            }
+        }
+
+        client.close().await?;
+        info!("Coordinated benchmark complete");
+
+        // Finalize streaming files
+        if let Some(rm) = &mut stream_manager {
+            rm.flush_pending_records().await?;
+            rm.finalize().await?;
+        }
+
+        // Compute simple metrics
+        let duration_ns_total = bench_start.elapsed().as_nanos();
+        let total_bytes = (messages_sent as usize) * self.config.message_size;
+        let msgs_per_sec = if duration_ns_total > 0 { (messages_sent as f64) / (duration_ns_total as f64 / 1e9) } else { 0.0 };
+        let bytes_per_sec = msgs_per_sec * (self.config.message_size as f64);
+
+        latencies_ns.sort_unstable();
+        let len = latencies_ns.len();
+        let p = |q: f64| -> Option<u128> {
+            if len == 0 { return None; }
+            let idx = ((q / 100.0) * (len as f64 - 1.0)).round() as usize;
+            latencies_ns.get(idx).copied()
+        };
+        let mean_ns = if len > 0 { (latencies_ns.iter().sum::<u128>() as f64 / len as f64) as u128 } else { 0 };
+        let min_ns = latencies_ns.first().copied().unwrap_or(0);
+        let max_ns = latencies_ns.last().copied().unwrap_or(0);
+
+        // Write output artifact for host side with metrics
+        let out_path = if let Some(path) = &self.config.output_file {
+            path.clone()
+        } else {
+            let out_dir = std::env::var("IPC_BENCHMARK_OUTPUT_DIR").unwrap_or_else(|_| "./output".to_string());
+            std::path::Path::new(&out_dir).join("host_client_results.json")
+        };
+        let result = serde_json::json!({
+            "mechanism": "UnixDomainSocket",
+            "message_size": self.config.message_size,
+            "round_trip": self.config.round_trip,
+            "mode": "host",
+            "totals": {
+                "messages_sent": messages_sent,
+                "bytes_transferred": total_bytes,
+                "duration_ns": duration_ns_total,
+            },
+            "throughput": {
+                "messages_per_second": msgs_per_sec,
+                "bytes_per_second": bytes_per_sec,
+            },
+            "latency_ns": {
+                "min": min_ns,
+                "max": max_ns,
+                "mean": mean_ns,
+                "p50": p(50.0).unwrap_or(0),
+                "p95": p(95.0).unwrap_or(0),
+                "p99": p(99.0).unwrap_or(0),
+            }
+        });
+        if let Some(parent) = out_path.parent() { let _ = std::fs::create_dir_all(parent); }
+        let _ = std::fs::write(&out_path, serde_json::to_string_pretty(&result)?);
         Ok(())
     }
 
@@ -276,7 +444,7 @@ impl HostCoordinator {
         info!("Collecting results from all processes");
 
         let processes = self.server_processes.lock().await;
-        let mut results = Vec::new();
+        let results = Vec::new();
 
         for (process_id, _server_process) in processes.iter() {
             // In practice, this would read results from process output or shared files
@@ -341,16 +509,62 @@ impl ClientProcess {
     /// Operates in passive mode, waiting for host-initiated connections
     /// and responding to benchmark requests.
     pub async fn run(&self) -> Result<()> {
-        info!("Starting client process, waiting for host connection at {:?}", 
-              self.connection_endpoint);
+        info!("Client mode: starting UDS server at {:?}", self.connection_endpoint);
+        use crate::ipc::{IpcTransport, TransportConfig};
+        use crate::ipc::unix_domain_socket::UnixDomainSocketTransport;
 
-        // Wait for host to initiate connection
-        self.wait_for_host_connection().await?;
+        let mut transport = UnixDomainSocketTransport::new();
+        let config = TransportConfig {
+            socket_path: self.connection_endpoint.to_string_lossy().to_string(),
+            buffer_size: 8192,
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            shared_memory_name: "ipc_benchmark_shm".to_string(),
+            max_connections: 16,
+            message_queue_depth: 10,
+            message_queue_name: "ipc_benchmark_pmq".to_string(),
+        };
 
-        // Participate in benchmark as directed by host
-        self.participate_in_benchmark().await?;
+        // Start UDS server that the host will connect to
+        transport.start_server(&config).await?;
+        info!("UDS server listening at {:?}", self.connection_endpoint);
 
-        info!("Client process completed");
+        // Serve until idle for a grace period after last activity
+        let idle_timeout = Duration::from_secs(2);
+        let mut last_activity = Instant::now();
+        let mut received: usize = 0;
+
+        loop {
+            // If no activity for idle_timeout, assume host is done and shut down
+            if last_activity.elapsed() >= idle_timeout {
+                break;
+            }
+
+            match tokio::time::timeout(Duration::from_millis(250), transport.receive()).await {
+                Ok(Ok(request)) => {
+                    received += 1;
+                    last_activity = Instant::now();
+                    if self.config.round_trip {
+                        let response = crate::ipc::Message::new(
+                            request.id,
+                            request.payload,
+                            crate::ipc::MessageType::Response,
+                        );
+                        let _ = transport.send(&response).await;
+                    }
+                }
+                Ok(Err(_)) => {
+                    // Transport error; continue allowing idle timeout to trigger
+                }
+                Err(_) => {
+                    // Timeout waiting; loop to check idle timer
+                }
+            }
+        }
+
+        // Close server (will unlink the socket because client owns it)
+        let _ = transport.close().await;
+        info!("Client UDS server exiting after {} messages", received);
         Ok(())
     }
 
@@ -358,12 +572,31 @@ impl ClientProcess {
     async fn wait_for_host_connection(&self) -> Result<()> {
         info!("Waiting for host to initiate connection");
 
-        // In practice, this would monitor the IPC endpoint for connections
-        // For now, this is a placeholder that waits for a reasonable time
-        sleep(Duration::from_secs(5)).await;
+        // Create a UDS server that listens for connections
+        use crate::ipc::{IpcTransport, TransportConfig};
+        use crate::ipc::unix_domain_socket::UnixDomainSocketTransport;
+        
+        let mut transport = UnixDomainSocketTransport::new();
+        let config = TransportConfig {
+            socket_path: self.connection_endpoint.to_string_lossy().to_string(),
+            buffer_size: 8192,
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            shared_memory_name: "ipc_benchmark_shm".to_string(),
+            max_connections: 16,
+            message_queue_depth: 10,
+            message_queue_name: "ipc_benchmark_pmq".to_string(),
+        };
 
-        info!("Host connection established");
-        Ok(())
+        // Start the UDS server
+        transport.start_server(&config).await?;
+        info!("UDS server started, waiting for connections on {:?}", self.connection_endpoint);
+
+        // Keep the server running - in a real implementation this would handle benchmark requests
+        // For now, just keep it alive to allow client connections
+        loop {
+            sleep(Duration::from_secs(1)).await;
+        }
     }
 
     /// Participate in benchmark as directed by host

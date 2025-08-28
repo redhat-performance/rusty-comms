@@ -1,0 +1,73 @@
+services:
+  # Server running in container
+  rusty-comms-server:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: rusty-comms-uds-server
+    volumes:
+      # Mount socket directory for UDS communication
+      - ./sockets:/app/sockets:rw
+      # Mount output directory for results
+      - ./output:/app/output:rw
+    environment:
+      - RUST_LOG=debug
+      - IPC_BENCHMARK_SOCKET_DIR=/app/sockets
+      - IPC_BENCHMARK_DEFAULT_SOCKET_PATH=/app/sockets/ipc_benchmark.sock
+      - IPC_BENCHMARK_OUTPUT_DIR=/app/output
+    command: >
+      ipc-benchmark 
+      --mechanisms unix-domain-socket 
+      --mode host 
+      --ipc-path ./sockets/ipc_benchmark.sock
+      --msg-count 1000
+      --message-size 1024
+      --client-count 1
+      --output-file ./output/container_server_results.json
+    networks:
+      - ipc-net
+    restart: unless-stopped
+
+  # Optional: Client running in another container for testing
+  rusty-comms-client:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: rusty-comms-uds-client
+    volumes:
+      # Mount socket directory for UDS communication
+      - ./sockets:/app/sockets:rw
+      # Mount output directory for results
+      - ./output:/app/output:rw
+    environment:
+      - RUST_LOG=debug
+      - IPC_BENCHMARK_SOCKET_DIR=/app/sockets
+      - IPC_BENCHMARK_DEFAULT_SOCKET_PATH=/app/sockets/ipc_benchmark.sock
+      - IPC_BENCHMARK_OUTPUT_DIR=/app/output
+    command: >
+      sh -c "
+        sleep 2 && 
+        ipc-benchmark 
+        --mechanisms unix-domain-socket 
+        --mode client 
+        --ipc-path ./sockets/ipc_benchmark.sock
+        --msg-count 1000
+        --message-size 1024
+        --output-file ./output/container_client_results.json
+      "
+    depends_on:
+      - rusty-comms-server
+    networks:
+      - ipc-net
+    profiles:
+      - testing
+
+networks:
+  ipc-net:
+    driver: bridge
+
+volumes:
+  socket-data:
+    driver: local
+  output-data:
+    driver: local

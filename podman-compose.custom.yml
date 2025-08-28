@@ -1,0 +1,30 @@
+services:
+  rusty-comms-client:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: rusty-comms-uds-client
+    volumes:
+      # Mount socket directory for UDS communication with proper SELinux context
+      - ./sockets:/app/sockets:Z
+      # Mount output directory for results with proper SELinux context
+      - ./output:/app/output:Z
+    environment:
+      - RUST_LOG=info
+      - IPC_BENCHMARK_SOCKET_DIR=/app/sockets
+      - IPC_BENCHMARK_DEFAULT_SOCKET_PATH=/app/sockets/ipc_benchmark.sock
+      - IPC_BENCHMARK_OUTPUT_DIR=/app/output
+    command: >
+      sh -c "
+        echo 'Starting container client with custom parameters...' &&
+        mkdir -p /app/sockets /app/output &&
+        echo 'Parameters: 100000 messages, 4096 bytes, 1 concurrent' &&
+        echo 'Waiting for host server socket...' &&
+        while [ ! -S /app/sockets/ipc_benchmark.sock ]; do
+          echo 'Waiting for host to create socket at /app/sockets/ipc_benchmark.sock...' &&
+          sleep 2
+        done &&
+        echo 'Socket found! Running container benchmark...' &&
+        ipc-benchmark -m uds --msg-count 100000 --message-size 4096 --concurrency 1 --output-file /app/output/container_results_100000_4096.json
+      "
+    restart: "no"

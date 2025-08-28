@@ -378,7 +378,7 @@ impl SharedMemoryTransport {
     /// Handle a client connection in multi-server mode
     async fn handle_connection(
         connection_id: ConnectionId,
-        mut connection: SharedMemoryConnection,
+        connection: SharedMemoryConnection,
         message_sender: mpsc::Sender<(ConnectionId, Message)>,
         connections: Arc<Mutex<HashMap<ConnectionId, SharedMemoryConnection>>>,
     ) {

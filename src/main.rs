@@ -34,8 +34,7 @@
 use clap::Parser;
 use ipc_benchmark::{
     benchmark::{BenchmarkConfig, BenchmarkRunner},
-    cli::{Args, IpcMechanism, BenchmarkConfiguration, ExecutionMode},
-    coordination,
+    cli::{Args, IpcMechanism, BenchmarkConfiguration},
     results::{BenchmarkResults, ResultsManager},
 };
 use tracing::{error, info, warn};
@@ -190,6 +189,7 @@ async fn main() -> Result<()> {
             // Cross-environment coordination mode
             info!("Running in {} mode for cross-environment IPC testing", config.mode);
             run_cross_environment_coordination(&config).await?;
+            // After cross-env coordination completes, exit early (no local per-mechanism run)
             return Ok(());
         }
         ExecutionMode::Standalone => {
@@ -205,7 +205,14 @@ async fn main() -> Result<()> {
         // Execute the benchmark for the current mechanism and handle the result.
         // The `run_benchmark_for_mechanism` function encapsulates all logic for a single test.
         // Convert to single-mechanism config
-        let mechanism_config = create_mechanism_config(&config, mechanism);
+        let mut mechanism_config = create_mechanism_config(&config, mechanism);
+        // If the user provided an explicit IPC path and we're testing UDS,
+        // override the default socket path so we talk to the shared UDS.
+        if mechanism == IpcMechanism::UnixDomainSocket {
+            if let Some(ipc_path) = config.ipc_path.as_ref() {
+                mechanism_config.socket_path_override = Some(ipc_path.to_string_lossy().to_string());
+            }
+        }
         match run_benchmark_for_mechanism(&mechanism_config, &mechanism, &mut results_manager).await {
             Ok(()) => {
                 // On success, the `run_benchmark_for_mechanism` function has already added
@@ -368,5 +375,6 @@ fn create_mechanism_config(config: &BenchmarkConfiguration, mechanism: IpcMechan
         buffer_size: config.buffer_size,
         host: config.host.clone(),
         port: config.port,
+        socket_path_override: None,
     }
 }

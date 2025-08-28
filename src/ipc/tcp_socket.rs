@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex};
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 /// TCP Socket transport implementation with multi-client support
 pub struct TcpSocketTransport {
@@ -75,7 +75,7 @@ impl TcpSocketTransport {
     /// Handle a single client connection in multi-server mode
     async fn handle_connection(
         connection_id: ConnectionId,
-        mut stream: TcpStream,
+        stream: TcpStream,
         message_sender: mpsc::Sender<(ConnectionId, Message)>,
         connections: Arc<Mutex<HashMap<ConnectionId, TcpStream>>>,
     ) {

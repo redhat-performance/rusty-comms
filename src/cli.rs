@@ -40,7 +40,7 @@
 use clap::{builder::styling::{AnsiColor, Styles}, Parser, ValueEnum};
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// IPC Benchmark Suite - A comprehensive tool for measuring IPC performance
@@ -438,6 +438,20 @@ impl IpcMechanism {
             mechanisms
         }
     }
+
+    /// Return the CLI value expected by clap for this mechanism
+    ///
+    /// Ensures we pass valid short names like "uds" instead of debug names
+    /// when spawning subprocesses from coordination logic.
+    pub fn cli_value(&self) -> &'static str {
+        match self {
+            IpcMechanism::UnixDomainSocket => "uds",
+            IpcMechanism::SharedMemory => "shm",
+            IpcMechanism::TcpSocket => "tcp",
+            IpcMechanism::PosixMessageQueue => "pmq",
+            IpcMechanism::All => "all",
+        }
+    }
 }
 
 /// Configuration for the benchmark execution
@@ -505,6 +519,15 @@ pub struct BenchmarkConfiguration {
     
     /// Enable cross-environment coordination debugging
     pub cross_env_debug: bool,
+
+    /// Optional final output file path
+    pub output_file: Option<PathBuf>,
+
+    /// Optional per-message JSON streaming file path
+    pub streaming_output_json: Option<PathBuf>,
+
+    /// Optional per-message CSV streaming file path
+    pub streaming_output_csv: Option<PathBuf>,
 }
 
 impl From<&Args> for BenchmarkConfiguration {
@@ -553,6 +576,9 @@ impl From<&Args> for BenchmarkConfiguration {
             ipc_path: args.ipc_path.clone(),
             connection_timeout: args.connection_timeout,
             cross_env_debug: args.cross_env_debug,
+            output_file: args.output_file.clone(),
+            streaming_output_json: args.streaming_output_json.clone(),
+            streaming_output_csv: args.streaming_output_csv.clone(),
         }
     }
 }

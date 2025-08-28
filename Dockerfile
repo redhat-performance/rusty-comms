@@ -1,5 +1,5 @@
-# Build stage
-FROM rust:1.75-slim as builder
+# Build stage  
+FROM rust:latest as builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -12,7 +12,9 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy the Cargo.toml and Cargo.lock
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml ./
+# Let Docker generate a compatible Cargo.lock
+RUN cargo fetch
 
 # Copy the source code
 COPY src ./src
@@ -20,8 +22,8 @@ COPY src ./src
 # Build the application in release mode
 RUN cargo build --release
 
-# Runtime stage
-FROM debian:bookworm-slim
+# Runtime stage - use newer base with compatible GLIBC
+FROM ubuntu:24.04
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
@@ -41,9 +43,10 @@ COPY --from=builder /app/target/release/ipc-benchmark /usr/local/bin/ipc-benchma
 # Make the binary executable
 RUN chmod +x /usr/local/bin/ipc-benchmark
 
-# Create directories for output
-RUN mkdir -p /app/output && \
-    chown ipc-benchmark:ipc-benchmark /app/output
+# Create directories for output and IPC sockets
+RUN mkdir -p /app/output /app/sockets /tmp/ipc && \
+    chown -R ipc-benchmark:ipc-benchmark /app && \
+    chmod 755 /app/sockets /tmp/ipc
 
 # Switch to non-root user
 USER ipc-benchmark
@@ -53,8 +56,10 @@ WORKDIR /app
 
 # Set environment variables
 ENV RUST_LOG=info
-ENV IPC_BENCHMARK_TEMP_DIR=/tmp
+ENV IPC_BENCHMARK_TEMP_DIR=/tmp/ipc
 ENV IPC_BENCHMARK_OUTPUT_DIR=/app/output
+ENV IPC_BENCHMARK_SOCKET_DIR=/app/sockets
+ENV IPC_BENCHMARK_DEFAULT_SOCKET_PATH=/app/sockets/ipc_benchmark.sock
 
 # Expose no ports by default (IPC is local)
 # TCP tests will use ephemeral ports
