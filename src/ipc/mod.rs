@@ -49,7 +49,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::time::Instant;
+
 use tokio::sync::mpsc;
 
 // Public module exports for specific transport implementations
@@ -203,7 +203,7 @@ impl Message {
     pub fn new(id: u64, payload: Vec<u8>, message_type: MessageType) -> Self {
         Self {
             id,
-            timestamp: Instant::now().elapsed().as_nanos() as u64,
+            timestamp: crate::utils::current_timestamp_ns(),
             payload,
             message_type,
         }

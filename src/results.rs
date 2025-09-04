@@ -534,34 +534,7 @@ impl ResultsManager {
     /// ]
     /// ```
     ///
-    /// ## File Management
-    ///
-    /// The streaming file is created immediately and truncated if it exists.
-    /// The JSON array opening bracket is written immediately to establish
-    /// the format for incremental updates.
-    pub fn enable_streaming(&mut self, streaming_file: &Path) -> Result<()> {
-        self.streaming_file = Some(streaming_file.to_path_buf());
-        self.streaming_enabled = true;
-        self.per_message_streaming = false; // Default to final results streaming
-
-        // Create/truncate the streaming file and initialize JSON array
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&self.streaming_file.as_ref().unwrap())?;
-
-        // Write JSON array opening bracket
-        writeln!(file, "[")?;
-
-        debug!("Enabled streaming to: {:?}", self.streaming_file);
-        Ok(())
-    }
-
-    /// Enable per-message latency streaming to a file
-    ///
-    /// Configures real-time per-message latency streaming to capture individual
-    /// message timing data during benchmark execution. This provides fine-grained
+    
     /// latency monitoring for analysis and debugging.
     ///
     /// ## Parameters
