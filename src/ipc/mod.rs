@@ -806,37 +806,7 @@ impl TransportFactory {
         }
     }
 
-    /// Create multiple transport instances for concurrent testing
-    ///
-    /// Factory method that creates multiple instances of the same transport
-    /// type, useful for concurrent testing scenarios where multiple workers
-    /// need independent transport instances.
-    ///
-    /// ## Parameters
-    /// - `mechanism`: The IPC mechanism type to create
-    /// - `count`: Number of transport instances to create
-    ///
-    /// ## Returns
-    /// - `Ok(Vec<Box<dyn IpcTransport>>)`: Vector of transport instances
-    /// - `Err(anyhow::Error)`: Creation failed for any instance
-    ///
-    /// ## Use Cases
-    ///
-    /// - Concurrent worker testing
-    /// - Load testing with multiple clients
-    /// - Isolation testing with separate transport instances
-    /// - Parallel benchmark execution
-    ///
-    /// ## Error Handling
-    ///
-    /// If any instance creation fails, the entire operation fails
-    /// to ensure consistent test conditions across all workers.
-    pub fn create_multiple(
-        mechanism: &crate::cli::IpcMechanism,
-        count: usize,
-    ) -> Result<Vec<Box<dyn IpcTransport>>> {
-        (0..count).map(|_| Self::create(mechanism)).collect()
-    }
+    
 }
 
 #[cfg(test)]

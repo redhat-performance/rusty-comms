@@ -979,39 +979,7 @@ pub mod utils {
     /// percentile calculation, which provides more accurate results
     /// than simple index-based lookup.
     ///
-    /// ## Performance
-    ///
-    /// This function sorts the input array, so it has O(n log n) complexity.
-    /// For frequent percentile calculations, HDR histograms are more efficient.
-    pub fn calculate_percentiles(
-        mut latencies: Vec<u64>,
-        percentiles: &[f64],
-    ) -> Vec<PercentileValue> {
-        if latencies.is_empty() {
-            return Vec::new();
-        }
-
-        // Sort latencies for percentile calculation
-        latencies.sort_unstable();
-        let mut result = Vec::new();
-
-        for &p in percentiles {
-            // Use linear interpolation for smooth percentile calculation
-            let index = ((p / 100.0) * (latencies.len() - 1) as f64).round() as usize;
-            let value = latencies[index.min(latencies.len() - 1)];
-            result.push(PercentileValue {
-                percentile: p,
-                value_ns: value,
-            });
-        }
-
-        result
-    }
-
-    /// Format latency value for human-readable output
-    ///
-    /// Converts nanosecond latency values to human-readable strings
-    /// with appropriate units (ns, μs, ms, s) based on magnitude.
+    
     ///
     /// ## Parameters
     /// - `latency_ns`: Latency value in nanoseconds
