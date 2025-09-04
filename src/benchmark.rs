@@ -41,7 +41,7 @@ use crate::{
     metrics::{LatencyType, MetricsCollector, PerformanceMetrics},
     results::BenchmarkResults,
 };
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Barrier;
@@ -203,10 +203,39 @@ impl BenchmarkConfig {
 ///
 /// ## Usage Pattern
 ///
-/// ```rust
+/// ```rust,no_run
+/// # use ipc_benchmark::benchmark::{BenchmarkConfig, BenchmarkRunner};
+/// # use ipc_benchmark::cli::{Args, IpcMechanism};
+/// # use std::time::Duration;
+/// #
+/// # #[tokio::main]
+/// # async fn main() -> anyhow::Result<()> {
+/// # let args = Args {
+/// #     mechanisms: vec![],
+/// #     message_size: 1024,
+/// #     msg_count: 1000,
+/// #     duration: None,
+/// #     concurrency: 1,
+/// #     one_way: true,
+/// #     round_trip: true,
+/// #     warmup_iterations: 100,
+/// #     percentiles: vec![50.0, 95.0, 99.0],
+/// #     buffer_size: 8192,
+/// #     host: "127.0.0.1".to_string(),
+/// #     port: 8080,
+/// #     output_file: None,
+/// #     continue_on_error: false,
+/// #     quiet: false,
+/// #     verbose: 0,
+/// #     log_file: None,
+/// #     streaming_output_json: None,
+/// #     streaming_output_csv: None,
+/// # };
 /// let config = BenchmarkConfig::from_args(&args)?;
 /// let runner = BenchmarkRunner::new(config, IpcMechanism::UnixDomainSocket);
-/// let results = runner.run().await?;
+/// let results = runner.run(None).await?;
+/// # Ok(())
+/// # }
 /// ```
 pub struct BenchmarkRunner {
     /// Benchmark configuration parameters
@@ -260,7 +289,7 @@ impl BenchmarkRunner {
             self.mechanism,
             self.config.message_size,
             self.config.concurrency,
-            self.config.iterations,
+            self.config.msg_count,
             self.config.duration,
         );
 

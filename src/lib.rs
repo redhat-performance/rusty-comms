@@ -33,12 +33,20 @@
 //!     let config = BenchmarkConfig {
 //!         mechanism: IpcMechanism::UnixDomainSocket,
 //!         message_size: 1024,
-//!         iterations: Some(10000),
-//!         // ... other configuration
+//!         msg_count: Some(10000),
+//!         duration: None,
+//!         concurrency: 1,
+//!         one_way: true,
+//!         round_trip: false,
+//!         warmup_iterations: 100,
+//!         percentiles: vec![50.0, 95.0, 99.0],
+//!         buffer_size: 8192,
+//!         host: "127.0.0.1".to_string(),
+//!         port: 8080,
 //!     };
 //!     
 //!     let runner = BenchmarkRunner::new(config, IpcMechanism::UnixDomainSocket);
-//!     let results = runner.run().await?;
+//!     let results = runner.run(None).await?;
 //!     
 //!     println!("Average latency: {:?}", results.summary.average_latency_ns);
 //!     Ok(())
@@ -111,6 +119,20 @@ pub mod results;
 /// - Input validation for configuration parameters
 /// - System information detection (CPU cores, memory, containers)
 /// - Statistical calculation utilities
+///
+/// ```rust
+/// # use ipc_benchmark::utils::*;
+/// # fn main() -> anyhow::Result<()> {
+/// // Validate a message size
+/// validate_message_size(1024)?; // OK
+/// assert!(validate_message_size(0).is_err()); // Error: Too small
+///
+/// // Validate concurrency
+/// validate_concurrency(4)?; // OK
+/// assert!(validate_concurrency(0).is_err()); // Error: Must be > 0
+/// # Ok(())
+/// # }
+/// ```
 pub mod utils;
 
 // Re-export key types for convenient library usage
@@ -138,6 +160,8 @@ pub use ipc::{IpcTransport, Message};
 ///
 /// Essential metrics types for collecting and analyzing benchmark results.
 /// These provide detailed latency and throughput measurements.
+///
+/// ```
 pub use metrics::{LatencyMetrics, ThroughputMetrics};
 
 /// Result collection and management

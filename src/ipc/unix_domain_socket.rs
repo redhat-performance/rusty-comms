@@ -84,7 +84,7 @@ impl UnixDomainSocketTransport {
     /// Handle a single client connection in multi-server mode
     async fn handle_connection(
         connection_id: ConnectionId,
-        mut stream: UnixStream,
+        stream: UnixStream,
         message_sender: mpsc::Sender<(ConnectionId, Message)>,
         connections: Arc<Mutex<HashMap<ConnectionId, UnixStream>>>,
     ) {
@@ -493,18 +493,17 @@ mod tests {
         // Receive messages from multiple clients
         let mut received_count = 0;
         while received_count < 3 {
-            if let Ok((connection_id, message)) =
-                tokio::time::timeout(Duration::from_millis(1000), receiver.recv()).await
-            {
-                if let Some((_conn_id, msg)) = message {
+            match tokio::time::timeout(Duration::from_millis(1000), receiver.recv()).await {
+                Ok(Some((connection_id, message))) => {
                     debug!(
                         "Received message {} from connection {}",
-                        msg.id, connection_id
+                        message.id, connection_id
                     );
                     received_count += 1;
                 }
-            } else {
-                break;
+                _ => {
+                    break;
+                }
             }
         }
 

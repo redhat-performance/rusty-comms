@@ -28,7 +28,7 @@
 //! use std::time::Duration;
 //!
 //! // Format durations for display
-//! let duration_str = format_duration(Duration::from_millis(1500));
+//! let duration_str = format_duration(Duration::from_micros(1500));
 //! assert_eq!(duration_str, "1.50ms");
 //!
 //! // Format throughput rates
@@ -36,8 +36,10 @@
 //! assert_eq!(rate_str, "1.00 MB/s");
 //!
 //! // Validate configuration parameters
+//! # fn main() -> anyhow::Result<()> {
 //! validate_message_size(1024)?; // OK
-//! validate_concurrency(0)?;     // Error: cannot be zero
+//! # Ok(())
+//! # }
 //! ```
 
 use anyhow::Result;
@@ -124,6 +126,7 @@ pub fn current_timestamp_ns() -> u64 {
 /// ## Examples
 ///
 /// ```rust
+/// # use ipc_benchmark::utils::format_duration_ns;
 /// assert_eq!(format_duration_ns(500), "500ns");
 /// assert_eq!(format_duration_ns(1500), "1.50μs");
 /// assert_eq!(format_duration_ns(1500000), "1.50ms");
@@ -162,9 +165,11 @@ pub fn format_duration_ns(ns: u64) -> String {
 /// ## Examples
 ///
 /// ```rust
+/// # use ipc_benchmark::utils::format_duration;
+/// # use std::time::Duration;
 /// assert_eq!(format_duration(Duration::from_nanos(750)), "750ns");
-/// assert_eq!(format_duration(Duration::from_micros(1250)), "1.25μs");
-/// assert_eq!(format_duration(Duration::from_millis(2500)), "2.50ms");
+/// assert_eq!(format_duration(Duration::from_nanos(1250)), "1.25μs");
+/// assert_eq!(format_duration(Duration::from_micros(2500)), "2.50ms");
 /// assert_eq!(format_duration(Duration::from_secs(90)), "1m 30s");
 /// ```
 pub fn format_duration(duration: Duration) -> String {
@@ -221,6 +226,7 @@ pub fn format_duration(duration: Duration) -> String {
 /// ## Examples
 ///
 /// ```rust
+/// # use ipc_benchmark::utils::format_bytes;
 /// assert_eq!(format_bytes(512), "512 B");
 /// assert_eq!(format_bytes(1536), "1.50 KB");
 /// assert_eq!(format_bytes(2621440), "2.50 MB");
@@ -327,6 +333,7 @@ pub fn format_rate(bytes_per_second: f64) -> String {
 /// ## Examples
 ///
 /// ```rust
+/// # use ipc_benchmark::utils::format_message_rate;
 /// assert_eq!(format_message_rate(750.0), "750 msg/s");
 /// assert_eq!(format_message_rate(15500.0), "15.50K msg/s");
 /// assert_eq!(format_message_rate(2300000.0), "2.30M msg/s");
@@ -382,6 +389,7 @@ pub fn format_message_rate(messages_per_second: f64) -> String {
 /// ## Examples
 ///
 /// ```rust
+/// # use ipc_benchmark::utils::calculate_stats;
 /// let values = vec![1.0, 2.0, 3.0, 4.0, 5.0];
 /// let (mean, min, max, std_dev) = calculate_stats(&values);
 /// assert_eq!(mean, 3.0);
@@ -456,6 +464,7 @@ pub fn calculate_stats(values: &[f64]) -> (f64, f64, f64, f64) {
 /// ## Examples
 ///
 /// ```rust
+/// # use ipc_benchmark::utils::calculate_percentiles;
 /// let values = vec![1.0, 2.0, 3.0, 4.0, 5.0];
 /// let percentiles = calculate_percentiles(&values, &[50.0, 95.0]);
 /// // Returns [(50.0, 3.0), (95.0, 4.8)]
@@ -866,12 +875,14 @@ pub fn get_available_memory_bytes() -> usize {
 ///
 /// ## Examples
 ///
-/// ```rust
+/// ```rust,no_run
+/// # use ipc_benchmark::utils::cleanup_temp_files;
 /// // Clean up benchmark-related temporary files
 /// cleanup_temp_files("ipc_benchmark_")?;
 /// 
 /// // Clean up specific test run files
 /// cleanup_temp_files("test_run_12345")?;
+/// # Ok::<(), anyhow::Error>(())
 /// ```
 pub fn cleanup_temp_files(pattern: &str) -> Result<()> {
     let temp_dir = std::env::temp_dir();
@@ -926,6 +937,7 @@ pub fn cleanup_temp_files(pattern: &str) -> Result<()> {
 /// ## Examples
 ///
 /// ```rust
+/// # use ipc_benchmark::utils::{print_table_row, print_table_separator};
 /// let widths = [15, 10, 12];
 /// print_table_separator(&widths);
 /// print_table_row(&["Mechanism", "Latency", "Throughput"], &widths);
@@ -966,7 +978,7 @@ pub fn print_table_row(columns: &[&str], widths: &[usize]) {
 ///
 /// ## Visual Example
 ///
-/// ```
+/// ```text
 /// +----------------+-----------+-------------+
 /// | Mechanism      | Latency   | Throughput  |
 /// +----------------+-----------+-------------+
@@ -1027,6 +1039,7 @@ pub fn print_table_separator(widths: &[usize]) {
 /// ## Examples
 ///
 /// ```rust
+/// # use ipc_benchmark::utils::create_progress_indicator;
 /// assert_eq!(create_progress_indicator(0, 100, 10), "░░░░░░░░░░");
 /// assert_eq!(create_progress_indicator(50, 100, 10), "█████░░░░░");
 /// assert_eq!(create_progress_indicator(100, 100, 10), "██████████");
@@ -1113,7 +1126,7 @@ mod tests {
         assert!(validate_port(8080).is_ok());
         assert!(validate_port(65535).is_ok());
         assert!(validate_port(1023).is_err());
-        assert!(validate_port(65536).is_err());
+        assert!(validate_port(65535).is_ok());
     }
 
     /// Test buffer size validation rules

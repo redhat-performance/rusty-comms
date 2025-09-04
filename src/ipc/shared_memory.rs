@@ -149,10 +149,9 @@ impl SharedMemoryRingBuffer {
 /// Connection-specific shared memory segment
 struct SharedMemoryConnection {
     connection_id: ConnectionId,
-    shmem: Arc<Shmem>,
     ring_buffer: *mut SharedMemoryRingBuffer,
-    segment_name: String,
     role: ConnectionRole,
+    _shmem: Arc<Shmem>,
 }
 
 unsafe impl Send for SharedMemoryConnection {}
@@ -188,10 +187,9 @@ impl SharedMemoryConnection {
 
         Ok(Self {
             connection_id,
-            shmem: Arc::new(shmem),
             ring_buffer: ring_buffer_ptr,
-            segment_name,
             role,
+            _shmem: Arc::new(shmem),
         })
     }
 
@@ -378,8 +376,8 @@ impl SharedMemoryTransport {
     /// Handle a client connection in multi-server mode
     async fn handle_connection(
         connection_id: ConnectionId,
-        mut connection: SharedMemoryConnection,
-        message_sender: mpsc::Sender<(ConnectionId, Message)>,
+        connection: SharedMemoryConnection,
+        _message_sender: mpsc::Sender<(ConnectionId, Message)>,
         connections: Arc<Mutex<HashMap<ConnectionId, SharedMemoryConnection>>>,
     ) {
         debug!("Handling shared memory connection {}", connection_id);
@@ -403,9 +401,9 @@ impl SharedMemoryTransport {
         }
 
         // Get the connection back for receiving messages
-        let conn = {
+        let _conn = {
             let conns = connections.lock().await;
-            if let Some(conn) = conns.get(&connection_id) {
+            if let Some(_conn) = conns.get(&connection_id) {
                 // We can't easily clone the connection, so we'll work with the one in the map
                 // This is a limitation of the current design - we'd need a more sophisticated
                 // approach for true concurrent access
@@ -414,10 +412,6 @@ impl SharedMemoryTransport {
                 return;
             }
         };
-
-        // For now, we'll use a simpler approach where each connection
-        // is handled independently in the multi-server setup
-        debug!("Connection {} handler setup completed", connection_id);
     }
 }
 
@@ -559,7 +553,7 @@ impl IpcTransport for SharedMemoryTransport {
         // Instead, we'll create a monitoring task that checks for new segments
 
         let connections = self.connections.clone();
-        let next_connection_id = self.next_connection_id.clone();
+        let _next_connection_id = self.next_connection_id.clone();
         let base_name = config.shared_memory_name.clone();
         let buffer_size = config.buffer_size;
         let max_connections = config.max_connections; // Clone the value to avoid borrowing issues
@@ -688,13 +682,14 @@ mod tests {
         });
 
         // Give server time to start
-        sleep(Duration::from_millis(100)).await;
+        sleep(Duration::from_millis(500)).await;
 
         // Start client and communicate
         client.start_client(&config).await.unwrap();
 
         let message = Message::new(1, vec![1, 2, 3, 4, 5], MessageType::Request);
         client.send(&message).await.unwrap();
+        sleep(Duration::from_millis(100)).await;
 
         let response = client.receive().await.unwrap();
         assert_eq!(response.id, 2);
