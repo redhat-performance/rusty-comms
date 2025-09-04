@@ -20,18 +20,6 @@
 //! - **Cross-Platform**: Functions work consistently across operating systems
 //! - **Performance**: Minimal overhead for frequently called functions
 //! - **Extensibility**: Easy to add new formatters and validators
-//!
-//! ## Usage Examples
-//!
-//! ```rust
-//! use ipc_benchmark::utils::*;
-//!
-//! // Validate configuration parameters
-//! # fn main() -> anyhow::Result<()> {
-//! validate_message_size(1024)?; // OK
-//! # Ok(())
-//! # }
-//! ```
 
 use anyhow::Result;
 use std::time::{SystemTime, UNIX_EPOCH};

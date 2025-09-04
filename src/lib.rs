@@ -112,27 +112,6 @@ pub mod metrics;
 /// - System information collection for reproducibility
 pub mod results;
 
-/// Utility functions and helpers
-///
-/// Common functionality used throughout the library including:
-/// - Human-readable formatting for durations, bytes, and rates
-/// - Input validation for configuration parameters
-/// - System information detection (CPU cores, memory, containers)
-/// - Statistical calculation utilities
-///
-/// ```rust
-/// # use ipc_benchmark::utils::*;
-/// # fn main() -> anyhow::Result<()> {
-/// // Validate a message size
-/// validate_message_size(1024)?; // OK
-/// assert!(validate_message_size(0).is_err()); // Error: Too small
-///
-/// // Validate concurrency
-/// validate_concurrency(4)?; // OK
-/// assert!(validate_concurrency(0).is_err()); // Error: Must be > 0
-/// # Ok(())
-/// # }
-/// ```
 pub mod utils;
 
 // Re-export key types for convenient library usage
@@ -160,8 +139,6 @@ pub use ipc::{IpcTransport, Message};
 ///
 /// Essential metrics types for collecting and analyzing benchmark results.
 /// These provide detailed latency and throughput measurements.
-///
-/// ```
 pub use metrics::{LatencyMetrics, ThroughputMetrics};
 
 /// Result collection and management
