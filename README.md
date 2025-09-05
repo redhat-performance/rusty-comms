@@ -435,7 +435,6 @@ This project uses GitHub Actions for continuous integration. The CI pipeline is 
 To help maintain branch quality and streamline development, the CI includes automation for pull requests:
 
 - **Stale PR Notifier**: If a pull request becomes out-of-date with the `main` branch, a bot will post a comment to notify the author. The comment will include a list of recent commits to `main` to provide context.
-- **/rebase Command**: Contributors with write access can comment `/rebase` on a pull request to trigger an automatic rebase of the PR branch onto the latest `main`. The bot will handle the rebase and push the changes, or it will comment back if there are merge conflicts that need to be resolved manually.
 
 ## Contributing
 
