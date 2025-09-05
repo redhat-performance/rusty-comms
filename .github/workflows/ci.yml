@@ -52,9 +52,17 @@ jobs:
           ${{ runner.os }}-cargo-build-target-
 
     - name: Check formatting
-      run: cargo fmt --all -- --check --emit=diff
+      run: |
+        if ! cargo fmt --all -- --check --emit=diff; then
+          echo "----------------------------------------------------------------"
+          echo "ERROR: Code formatting issues detected."
+          echo "Please run 'cargo fmt --all' locally and commit the changes."
+          echo "----------------------------------------------------------------"
+          exit 1
+        fi
 
     - name: Check with clippy
+      if: always()
       run: cargo clippy --all-targets --all-features -- -D warnings
 
   test:
