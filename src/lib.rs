@@ -64,7 +64,7 @@
 //! - **Comprehensive metrics** including percentiles, throughput, and error rates
 
 /// Core benchmarking functionality
-/// 
+///
 /// Contains the main `BenchmarkRunner` and `BenchmarkConfig` types that orchestrate
 /// performance testing. The benchmark module handles:
 /// - Test execution lifecycle (warmup, measurement, cleanup)
@@ -78,7 +78,7 @@ pub mod benchmark;
 /// Provides argument parsing using clap and converts user-friendly CLI options
 /// into internal configuration structures. Includes:
 /// - Comprehensive argument validation and type checking
-/// - Duration parsing with human-readable formats (e.g., "10s", "5m") 
+/// - Duration parsing with human-readable formats (e.g., "10s", "5m")
 /// - Mechanism selection with "all" expansion capability
 /// - Output file and streaming configuration
 pub mod cli;
@@ -118,7 +118,7 @@ pub mod utils;
 // These are the primary types that library users will interact with
 
 /// Main benchmark execution engine
-/// 
+///
 /// Re-exported from the benchmark module for easy access. The `BenchmarkRunner`
 /// is the primary interface for executing performance tests.
 pub use benchmark::{BenchmarkConfig, BenchmarkRunner};

@@ -24,6 +24,12 @@ pub struct TcpSocketTransport {
     buffer_size: usize,
 }
 
+impl Default for TcpSocketTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TcpSocketTransport {
     /// Create a new TCP Socket transport
     pub fn new() -> Self {
@@ -218,7 +224,10 @@ impl IpcTransport for TcpSocketTransport {
         if self.stream.is_none() && self.listener.is_some() {
             debug!("Server accepting connection on first send");
             let (stream, client_addr) = self.listener.as_ref().unwrap().accept().await?;
-            debug!("TCP Socket server accepted connection from: {}", client_addr);
+            debug!(
+                "TCP Socket server accepted connection from: {}",
+                client_addr
+            );
 
             // Configure socket options for low latency
             let std_stream = stream.into_std()?;
@@ -248,7 +257,10 @@ impl IpcTransport for TcpSocketTransport {
         if self.stream.is_none() && self.listener.is_some() {
             debug!("Server accepting connection on first receive");
             let (stream, client_addr) = self.listener.as_ref().unwrap().accept().await?;
-            debug!("TCP Socket server accepted connection from: {}", client_addr);
+            debug!(
+                "TCP Socket server accepted connection from: {}",
+                client_addr
+            );
 
             // Configure socket options for low latency
             let std_stream = stream.into_std()?;
@@ -343,8 +355,7 @@ impl IpcTransport for TcpSocketTransport {
 
                         // Configure socket options
                         if let Ok(std_stream) = stream.into_std() {
-                            let socket =
-                                socket2::Socket::try_from(std_stream.try_clone().unwrap()).unwrap();
+                            let socket = socket2::Socket::from(std_stream.try_clone().unwrap());
                             let _ = socket.set_nodelay(true);
                             let _ = socket.set_recv_buffer_size(buffer_size);
                             let _ = socket.set_send_buffer_size(buffer_size);

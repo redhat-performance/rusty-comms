@@ -77,7 +77,7 @@ pub enum LatencyType {
     /// by the destination. This provides baseline transmission performance
     /// without including response processing overhead.
     OneWay,
-    
+
     /// Round-trip request-response latency
     ///
     /// Measures the complete time from sending a request until receiving
@@ -110,30 +110,30 @@ pub enum LatencyType {
 pub struct LatencyMetrics {
     /// Type of latency measurement (one-way or round-trip)
     pub latency_type: LatencyType,
-    
+
     /// Minimum observed latency in nanoseconds
     pub min_ns: u64,
-    
+
     /// Maximum observed latency in nanoseconds
     pub max_ns: u64,
-    
+
     /// Mean (average) latency in nanoseconds
     pub mean_ns: f64,
-    
+
     /// Median (P50) latency in nanoseconds
     pub median_ns: f64,
-    
+
     /// Standard deviation of latency measurements in nanoseconds
     pub std_dev_ns: f64,
-    
+
     /// Calculated percentile values with their corresponding latencies
     pub percentiles: Vec<PercentileValue>,
-    
+
     /// Total number of latency samples collected
     pub total_samples: usize,
-    
+
     /// Raw histogram data for advanced analysis and visualization
-    /// 
+    ///
     /// This data can be used for creating latency distribution plots
     /// or performing custom statistical analysis beyond the provided metrics.
     pub histogram_data: Vec<u64>,
@@ -168,11 +168,11 @@ pub struct LatencyMetrics {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PercentileValue {
     /// Percentile level (0.0 to 100.0)
-    /// 
+    ///
     /// For example, 95.0 represents the 95th percentile (P95),
     /// meaning 95% of measurements were faster than this value.
     pub percentile: f64,
-    
+
     /// Latency value at this percentile in nanoseconds
     pub value_ns: u64,
 }
@@ -201,19 +201,19 @@ pub struct ThroughputMetrics {
     /// This metric is crucial for understanding the overhead per message
     /// and is particularly relevant for high-frequency, small-message scenarios.
     pub messages_per_second: f64,
-    
+
     /// Data transmission rate in bytes per second
     ///
     /// This metric is important for understanding bandwidth utilization
     /// and is particularly relevant for bulk data transfer scenarios.
     pub bytes_per_second: f64,
-    
+
     /// Total number of messages transmitted during measurement
     pub total_messages: usize,
-    
+
     /// Total number of bytes transmitted during measurement
     pub total_bytes: usize,
-    
+
     /// Total measurement duration in nanoseconds
     ///
     /// High-precision duration measurement ensures accurate rate calculations
@@ -241,10 +241,10 @@ pub struct ThroughputMetrics {
 pub struct PerformanceMetrics {
     /// Latency measurement results (None if latency measurement disabled)
     pub latency: Option<LatencyMetrics>,
-    
+
     /// Throughput measurement results (always present)
     pub throughput: ThroughputMetrics,
-    
+
     /// Timestamp when these metrics were collected
     ///
     /// Used for correlating results across multiple test runs and
@@ -277,16 +277,16 @@ pub struct LatencyCollector {
     /// Configured with 3 significant figures precision, providing
     /// a good balance between accuracy and memory usage.
     histogram: Histogram<u64>,
-    
+
     /// Type of latency being measured (one-way vs round-trip)
     latency_type: LatencyType,
-    
+
     /// When measurement collection started
     ///
     /// Used for calculating total measurement duration and
     /// correlating with other timing information.
     start_time: Instant,
-    
+
     /// Number of samples recorded in the histogram
     ///
     /// Tracked separately for validation and metadata purposes,
@@ -454,12 +454,18 @@ impl LatencyCollector {
 pub struct ThroughputCalculator {
     /// When throughput measurement started
     start_time: Instant,
-    
+
     /// Total number of messages processed
     message_count: usize,
-    
+
     /// Total number of bytes processed
     byte_count: usize,
+}
+
+impl Default for ThroughputCalculator {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ThroughputCalculator {
@@ -575,7 +581,7 @@ impl ThroughputCalculator {
 /// let mut collector = MetricsCollector::new(Some(LatencyType::OneWay), percentiles)?;
 /// let latency = Duration::from_micros(100);
 /// collector.record_message(1024, Some(latency))?;
-/// 
+///
 /// // For throughput-only measurement
 /// let mut collector = MetricsCollector::new(None, vec![])?;
 /// collector.record_message(1024, None)?;
@@ -585,10 +591,10 @@ impl ThroughputCalculator {
 pub struct MetricsCollector {
     /// Optional latency collector (None for throughput-only measurement)
     pub latency_collector: Option<LatencyCollector>,
-    
+
     /// Throughput calculator (always present)
     pub throughput_calculator: ThroughputCalculator,
-    
+
     /// Percentiles to calculate for latency analysis
     pub percentiles: Vec<f64>,
 }
@@ -958,7 +964,6 @@ impl MetricsCollector {
 /// and formatting operations. These utilities support both internal
 /// calculations and external analysis of benchmark results.
 pub mod utils {
-    use super::*;
 
     /// Calculate percentiles from raw latency data
     ///
@@ -978,8 +983,6 @@ pub mod utils {
     /// Uses linear interpolation between array elements for smooth
     /// percentile calculation, which provides more accurate results
     /// than simple index-based lookup.
-    ///
-    
     ///
     /// ## Parameters
     /// - `latency_ns`: Latency value in nanoseconds
@@ -1044,7 +1047,7 @@ pub mod utils {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{utils, LatencyCollector, LatencyType, ThroughputCalculator};
     use std::time::Duration;
 
     /// Test latency collector basic functionality

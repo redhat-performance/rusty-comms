@@ -3,15 +3,15 @@
 //! This is the main entry point for the IPC (Inter-Process Communication) benchmark suite.
 //! The application orchestrates performance testing of different IPC mechanisms including:
 //! - Unix Domain Sockets (UDS)
-//! - Shared Memory (SHM) 
+//! - Shared Memory (SHM)
 //! - TCP Sockets
 //! - POSIX Message Queues (PMQ)
 //!
 //! ## Architecture Overview
-//! 
+//!
 //! The main function performs these key operations:
 //! 1. **Initialize logging**: Sets up structured logging with tracing
-//! 2. **Parse arguments**: Processes command-line configuration 
+//! 2. **Parse arguments**: Processes command-line configuration
 //! 3. **Create benchmark config**: Converts CLI args to internal config
 //! 4. **Initialize results manager**: Sets up output handling and optional streaming
 //! 5. **Run benchmarks**: Executes tests for each specified IPC mechanism
@@ -31,6 +31,7 @@
 //! - Non-blocking I/O operations for all IPC mechanisms  
 //! - Resource cleanup between benchmark runs
 
+use anyhow::Result;
 use clap::Parser;
 use ipc_benchmark::{
     benchmark::{BenchmarkConfig, BenchmarkRunner},
@@ -38,15 +39,14 @@ use ipc_benchmark::{
     results::{BenchmarkResults, ResultsManager},
 };
 use tracing::{error, info};
+
 use tracing_subscriber::{filter::LevelFilter, prelude::*, Layer};
-use anyhow::Result;
-use tracing_appender;
 
 mod logging;
 use logging::ColorizedFormatter;
 
 /// Main application entry point
-/// 
+///
 /// This async function coordinates the entire benchmark execution lifecycle.
 /// It uses Tokio's multi-threaded runtime to handle async I/O operations
 /// required by the various IPC mechanisms being benchmarked.
@@ -83,7 +83,9 @@ async fn main() -> Result<()> {
         let file_appender = match args.log_file.as_deref() {
             Some(path_str) => {
                 let log_path = std::path::Path::new(path_str);
-                let log_dir = log_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+                let log_dir = log_path
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."));
                 let log_filename = log_path
                     .file_name()
                     .unwrap_or_else(|| std::ffi::OsStr::new("ipc_benchmark.log"));
@@ -141,12 +143,8 @@ async fn main() -> Result<()> {
     // the date suffix added by the rolling file appender.
     let log_file_for_manager = match args.log_file.as_deref() {
         Some("stderr") => Some("stderr".to_string()),
-        Some(path_str) => {
-            Some(format!("{}.{}", path_str, today))
-        }
-        None => {
-            Some(format!("ipc_benchmark.log.{}", today))
-        }
+        Some(path_str) => Some(format!("{}.{}", path_str, today)),
+        None => Some(format!("ipc_benchmark.log.{}", today)),
     };
 
     // Initialize results manager for handling output
@@ -158,11 +156,14 @@ async fn main() -> Result<()> {
     // Per-message streaming captures individual message latency values with
     // timestamps for real-time monitoring of latency characteristics during execution
     if let Some(ref streaming_file) = args.streaming_output_json {
-        info!("Enabling per-message latency streaming to: {:?}", streaming_file);
-        
+        info!(
+            "Enabling per-message latency streaming to: {:?}",
+            streaming_file
+        );
+
         // Check if both test types are enabled for combined streaming
         let both_tests_enabled = config.one_way && config.round_trip;
-        
+
         if both_tests_enabled {
             info!("Both one-way and round-trip tests enabled - using combined streaming mode");
             results_manager.enable_combined_streaming(streaming_file, true)?;
@@ -251,7 +252,7 @@ async fn main() -> Result<()> {
 ///
 /// ## Parameters
 /// - `config`: Benchmark configuration (message size, message count, etc.)
-/// - `mechanism`: The specific IPC mechanism to test 
+/// - `mechanism`: The specific IPC mechanism to test
 /// - `results_manager`: Manager for collecting and outputting results
 ///
 /// ## Returns
@@ -272,12 +273,12 @@ async fn run_benchmark_for_mechanism(
     // The runner encapsulates all the logic for setting up clients/servers,
     // running warmup iterations, executing tests, and collecting metrics
     let runner = BenchmarkRunner::new(config.clone(), *mechanism);
-    
+
     // Execute the benchmark and collect comprehensive results
     // This includes latency histograms, throughput measurements,
     // and statistical analysis (percentiles, mean, std dev, etc.)
     let results = runner.run(Some(results_manager)).await?;
-    
+
     // Add results to the manager for aggregation and output
     // The manager handles both immediate streaming (if enabled)
     // and final consolidated output formatting
