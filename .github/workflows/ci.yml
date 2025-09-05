@@ -174,21 +174,18 @@ jobs:
         github-token: ${{ secrets.GITHUB_TOKEN }}
         auto-push: true
 
-  docker:
-    name: Docker Build
+  podman:
+    name: Container Build
     runs-on: ubuntu-latest
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+    - name: Build container image
+      run: podman build -t ipc-benchmark -f Containerfile .
 
-    - name: Build Docker image
-      run: docker build -t ipc-benchmark .
-
-    - name: Test Docker image
-      run: docker run --rm ipc-benchmark --help
+    - name: Test container image
+      run: podman run --rm ipc-benchmark --help
 
   msrv:
     name: Minimum Supported Rust Version
