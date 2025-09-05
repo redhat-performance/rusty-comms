@@ -1,12 +1,13 @@
 use super::{ConnectionId, ConnectionRole, IpcTransport, Message, TransportConfig, TransportState};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use parking_lot::Mutex;
 use shared_memory::{Shmem, ShmemConf};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tracing::debug;
 
@@ -115,9 +116,9 @@ impl SharedMemoryRingBuffer {
 
         // Read length prefix
         let mut len_bytes = [0u8; 4];
-        for i in 0..4 {
+        for (i, byte) in len_bytes.iter_mut().enumerate() {
             unsafe {
-                len_bytes[i] = *data_ptr.add((read_pos + i) % capacity);
+                *byte = *data_ptr.add((read_pos + i) % capacity);
             }
         }
         let data_len = u32::from_le_bytes(len_bytes) as usize;
@@ -133,9 +134,9 @@ impl SharedMemoryRingBuffer {
 
         // Read data
         let mut data = vec![0u8; data_len];
-        for i in 0..data_len {
+        for (i, byte) in data.iter_mut().enumerate() {
             unsafe {
-                data[i] = *data_ptr.add((read_pos + 4 + i) % capacity);
+                *byte = *data_ptr.add((read_pos + 4 + i) % capacity);
             }
         }
 
@@ -146,17 +147,18 @@ impl SharedMemoryRingBuffer {
     }
 }
 
-/// Connection-specific shared memory segment
+#[derive(Clone)]
 struct SharedMemoryConnection {
     connection_id: ConnectionId,
     ring_buffer: *mut SharedMemoryRingBuffer,
     role: ConnectionRole,
-    _shmem: Arc<Shmem>,
+    _shmem: Arc<Mutex<Shmem>>,
 }
 
 unsafe impl Send for SharedMemoryConnection {}
 unsafe impl Sync for SharedMemoryConnection {}
 
+#[allow(clippy::arc_with_non_send_sync)]
 impl SharedMemoryConnection {
     fn new(
         connection_id: ConnectionId,
@@ -189,7 +191,7 @@ impl SharedMemoryConnection {
             connection_id,
             ring_buffer: ring_buffer_ptr,
             role,
-            _shmem: Arc::new(shmem),
+            _shmem: Arc::new(Mutex::new(shmem)),
         })
     }
 
@@ -303,6 +305,12 @@ pub struct SharedMemoryTransport {
 unsafe impl Send for SharedMemoryTransport {}
 unsafe impl Sync for SharedMemoryTransport {}
 
+impl Default for SharedMemoryTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SharedMemoryTransport {
     /// Create a new Shared Memory transport
     pub fn new() -> Self {
@@ -333,7 +341,7 @@ impl SharedMemoryTransport {
                 }
                 ConnectionRole::Client => {
                     debug!("Establishing shared memory connection as client");
-                    
+
                     // Connect to existing shared memory segment with retry logic
                     let mut attempts = 0;
                     let max_attempts = 30;
@@ -352,7 +360,13 @@ impl SharedMemoryTransport {
                                 sleep(Duration::from_millis(100)).await;
                                 continue;
                             }
-                            Err(e) => return Err(anyhow!("Failed to open shared memory segment after {} attempts: {}", attempts + 1, e)),
+                            Err(e) => {
+                                return Err(anyhow!(
+                                    "Failed to open shared memory segment after {} attempts: {}",
+                                    attempts + 1,
+                                    e
+                                ))
+                            }
                         }
                     };
 
@@ -369,7 +383,7 @@ impl SharedMemoryTransport {
         } else {
             return Err(anyhow!("Role not set"));
         }
-        
+
         Ok(())
     }
 
@@ -396,20 +410,17 @@ impl SharedMemoryTransport {
 
         // Add to active connections
         {
-            let mut conns = connections.lock().await;
+            let mut conns = connections.lock();
             conns.insert(connection_id, connection);
         }
 
         // Get the connection back for receiving messages
-        let _conn = {
-            let conns = connections.lock().await;
+        {
+            let conns = connections.lock();
             if let Some(_conn) = conns.get(&connection_id) {
                 // We can't easily clone the connection, so we'll work with the one in the map
                 // This is a limitation of the current design - we'd need a more sophisticated
                 // approach for true concurrent access
-                return;
-            } else {
-                return;
             }
         };
     }
@@ -499,7 +510,7 @@ impl IpcTransport for SharedMemoryTransport {
 
         // Close all connections
         {
-            let mut conns = self.connections.lock().await;
+            let mut conns = self.connections.lock();
             conns.clear();
         }
 
@@ -611,9 +622,12 @@ impl IpcTransport for SharedMemoryTransport {
         connection_id: ConnectionId,
         message: &Message,
     ) -> Result<()> {
-        let conns = self.connections.lock().await;
+        let connection = {
+            let conns = self.connections.lock();
+            conns.get(&connection_id).cloned() // Clone the connection to release the lock
+        };
 
-        if let Some(connection) = conns.get(&connection_id) {
+        if let Some(connection) = connection {
             connection.send_message(message).await?;
             debug!(
                 "Sent message {} to shared memory connection {}",
@@ -627,15 +641,15 @@ impl IpcTransport for SharedMemoryTransport {
 
     fn get_active_connections(&self) -> Vec<ConnectionId> {
         // Note: This is a blocking operation, should be called from async context with care
-        let conns = match self.connections.try_lock() {
-            Ok(conns) => conns,
-            Err(_) => return vec![], // Return empty if locked
-        };
-        conns.keys().copied().collect()
+        if let Some(conns) = self.connections.try_lock() {
+            conns.keys().copied().collect()
+        } else {
+            vec![] // Return empty if locked
+        }
     }
 
     async fn close_connection(&mut self, connection_id: ConnectionId) -> Result<()> {
-        let mut conns = self.connections.lock().await;
+        let mut conns = self.connections.lock();
 
         if conns.remove(&connection_id).is_some() {
             debug!("Closed shared memory connection {}", connection_id);

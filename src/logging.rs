@@ -38,8 +38,8 @@ use colored::*;
 use std::cell::RefCell;
 use std::fmt;
 use tracing::{Event, Level, Subscriber};
-use tracing_subscriber::fmt::FmtContext;
 use tracing_subscriber::fmt::format::{FormatEvent, FormatFields, Writer};
+use tracing_subscriber::fmt::FmtContext;
 use tracing_subscriber::registry::LookupSpan;
 
 // A thread-local buffer for formatting log messages to avoid allocations on every event.

@@ -21,7 +21,6 @@
 //! - **Performance**: Minimal overhead for frequently called functions
 //! - **Extensibility**: Easy to add new formatters and validators
 
-use anyhow::Result;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Get current timestamp as nanoseconds since Unix epoch
@@ -56,4 +55,3 @@ pub fn current_timestamp_ns() -> u64 {
         .unwrap_or_default()
         .as_nanos() as u64
 }
-

@@ -568,6 +568,7 @@ dependencies = [
  "hdrhistogram",
  "nix 0.27.1",
  "num_cpus",
+ "parking_lot",
  "rand",
  "serde",
  "serde_json",

@@ -37,7 +37,10 @@
 //! - **Output and Logging**: Result file paths and streaming options
 //! - **Advanced**: Buffer sizes, network settings, percentiles
 
-use clap::{builder::styling::{AnsiColor, Styles}, Parser, ValueEnum};
+use clap::{
+    builder::styling::{AnsiColor, Styles},
+    Parser, ValueEnum,
+};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::PathBuf;
@@ -66,7 +69,6 @@ use std::time::Duration;
 ///
 /// Both test types provide comprehensive statistics including percentiles,
 /// standard deviation, and throughput measurements.
-
 /// Defines the styles for the help message to replicate clap v3's appearance.
 fn styles() -> Styles {
     Styles::styled()
@@ -327,7 +329,7 @@ impl IpcMechanism {
     /// ## Example
     /// ```rust
     /// use ipc_benchmark::cli::IpcMechanism;
-    /// 
+    ///
     /// let input = vec![IpcMechanism::All];
     /// let expanded = IpcMechanism::expand_all(input);
     /// assert_eq!(expanded.len(), 4); // All concrete mechanisms
@@ -336,7 +338,7 @@ impl IpcMechanism {
         if mechanisms.contains(&IpcMechanism::All) {
             // Return all concrete mechanisms in a logical order:
             // - UDS first (most commonly used for local IPC)
-            // - SHM second (highest performance)  
+            // - SHM second (highest performance)
             // - TCP third (network-capable)
             // - PMQ last (most constrained)
             vec![
@@ -368,37 +370,37 @@ impl IpcMechanism {
 pub struct BenchmarkConfiguration {
     /// List of mechanisms to test (with "all" expanded)
     pub mechanisms: Vec<IpcMechanism>,
-    
+
     /// Size of message payloads in bytes
     pub message_size: usize,
-    
+
     /// Number of messages (None if duration-based)
     pub msg_count: Option<usize>,
-    
+
     /// Test duration (takes precedence over message count)
     pub duration: Option<Duration>,
-    
+
     /// Number of concurrent workers
     pub concurrency: usize,
-    
+
     /// Whether to run one-way latency tests
     pub one_way: bool,
-    
+
     /// Whether to run round-trip latency tests
     pub round_trip: bool,
-    
+
     /// Number of warmup iterations before measurement
     pub warmup_iterations: usize,
-    
+
     /// Percentiles to calculate for latency analysis
     pub percentiles: Vec<f64>,
-    
+
     /// Buffer size for internal data structures
     pub buffer_size: usize,
-    
+
     /// Host address for network-based mechanisms
     pub host: String,
-    
+
     /// Port number for network-based mechanisms
     pub port: u16,
 }
@@ -424,9 +426,9 @@ impl From<&Args> for BenchmarkConfiguration {
         Self {
             // Expand "all" mechanism to concrete list
             mechanisms: IpcMechanism::expand_all(args.mechanisms.clone()),
-            
+
             message_size: args.message_size,
-            
+
             // Duration takes precedence over message count
             // If duration is specified, we ignore the message count
             msg_count: if args.duration.is_some() {
@@ -434,7 +436,7 @@ impl From<&Args> for BenchmarkConfiguration {
             } else {
                 Some(args.msg_count)
             },
-            
+
             duration: args.duration,
             concurrency: args.concurrency,
             one_way,
@@ -457,7 +459,7 @@ impl From<&Args> for BenchmarkConfiguration {
 /// ## Supported Formats
 /// - **Milliseconds**: "500ms", "1000ms"
 /// - **Seconds**: "10s", "30s", or just "10" (seconds assumed)
-/// - **Minutes**: "5m", "30m" 
+/// - **Minutes**: "5m", "30m"
 /// - **Hours**: "1h", "2h"
 ///
 /// ## Parameters
@@ -531,7 +533,7 @@ mod tests {
         assert_eq!(parse_duration("5m").unwrap(), Duration::from_secs(300));
         assert_eq!(parse_duration("1h").unwrap(), Duration::from_secs(3600));
         assert_eq!(parse_duration("500ms").unwrap(), Duration::from_millis(500));
-        
+
         // Test default unit (seconds)
         assert_eq!(parse_duration("10").unwrap(), Duration::from_secs(10));
 
@@ -550,7 +552,10 @@ mod tests {
         );
         assert_eq!(IpcMechanism::SharedMemory.to_string(), "Shared Memory");
         assert_eq!(IpcMechanism::TcpSocket.to_string(), "TCP Socket");
-        assert_eq!(IpcMechanism::PosixMessageQueue.to_string(), "POSIX Message Queue");
+        assert_eq!(
+            IpcMechanism::PosixMessageQueue.to_string(),
+            "POSIX Message Queue"
+        );
         assert_eq!(IpcMechanism::All.to_string(), "All Mechanisms");
     }
 
@@ -563,19 +568,19 @@ mod tests {
             IpcMechanism::TcpSocket,
             IpcMechanism::PosixMessageQueue,
         ];
-        
+
         // Test "all" expansion
         assert_eq!(
             IpcMechanism::expand_all(vec![IpcMechanism::All]),
             all_mechanisms
         );
-        
+
         // Test specific mechanism preservation
         assert_eq!(
             IpcMechanism::expand_all(vec![IpcMechanism::UnixDomainSocket]),
             vec![IpcMechanism::UnixDomainSocket]
         );
-        
+
         // Test "all" expansion when mixed with other mechanisms
         assert_eq!(
             IpcMechanism::expand_all(vec![IpcMechanism::UnixDomainSocket, IpcMechanism::All]),
@@ -617,7 +622,10 @@ impl fmt::Display for Args {
 
         // Write the formatted configuration summary.
         writeln!(f, "\nBenchmark Configuration:")?;
-        writeln!(f, "-----------------------------------------------------------------")?;
+        writeln!(
+            f,
+            "-----------------------------------------------------------------"
+        )?;
         // Format the list of mechanisms into a user-friendly, comma-separated string.
         // This is the idiomatic way to format a Vec of items that implement Display.
         let mechanisms_str = mechanisms
@@ -654,6 +662,9 @@ impl fmt::Display for Args {
             writeln!(f, "  Streaming CSV Output:    {}", path.display())?;
         }
         writeln!(f, "  Continue on Error:  {}", self.continue_on_error)?;
-        write!(f, "-----------------------------------------------------------------")
+        write!(
+            f,
+            "-----------------------------------------------------------------"
+        )
     }
 }

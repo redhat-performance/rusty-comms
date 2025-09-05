@@ -65,71 +65,71 @@ use uuid::Uuid;
 #[derive(Clone, Debug)]
 pub struct BenchmarkConfig {
     /// The specific IPC mechanism being tested
-    /// 
+    ///
     /// This determines which transport implementation will be used
     /// and affects various performance optimizations and limitations
     pub mechanism: IpcMechanism,
-    
+
     /// Size of message payloads in bytes
     ///
     /// Larger messages test throughput characteristics while smaller
     /// messages focus on latency. Affects buffer sizing and timeout calculations.
     pub message_size: usize,
-    
+
     /// Number of messages to run (None for duration-based tests)
     ///
     /// When specified, the test runs for exactly this many message exchanges.
     /// Mutually exclusive with duration-based testing.
     pub msg_count: Option<usize>,
-    
+
     /// Duration to run tests (takes precedence over message count)
     ///
     /// When specified, tests run for this time period regardless of message count.
     /// Provides more consistent test timing across different mechanisms.
     pub duration: Option<Duration>,
-    
+
     /// Number of concurrent workers
     ///
     /// Controls parallelism level. Some mechanisms may override this
     /// (e.g., shared memory forces concurrency=1 to avoid race conditions).
     pub concurrency: usize,
-    
+
     /// Whether to execute one-way latency tests
     ///
     /// One-way tests measure the time to send a message from client to server
     /// without waiting for a response, testing pure transmission latency.
     pub one_way: bool,
-    
+
     /// Whether to execute round-trip latency tests
     ///
     /// Round-trip tests measure request-response cycles, providing insights
     /// into full communication round-trip performance including response processing.
     pub round_trip: bool,
-    
+
     /// Number of warmup iterations before measurement begins
     ///
     /// Warmup iterations help stabilize performance by allowing caches to fill,
     /// connections to establish, and JIT compilation to optimize hot paths.
     pub warmup_iterations: usize,
-    
+
     /// Percentiles to calculate for latency distribution analysis
     ///
     /// Common values include P50 (median), P95, P99, and P99.9.
     /// Used by the metrics collector to provide detailed latency analysis.
     pub percentiles: Vec<f64>,
-    
+
     /// Buffer size for transport-specific data structures
     ///
     /// Controls internal buffer sizes for shared memory ring buffers,
     /// socket buffers, and message queue depths. Affects memory usage and throughput.
     pub buffer_size: usize,
-    
+
     /// Host address for network-based transports (TCP sockets)
     ///
     /// Specifies the network interface for TCP socket communication.
     /// Ignored by local-only mechanisms (UDS, shared memory, PMQ).
     pub host: String,
-    
+
     /// Port number for network-based transports (TCP sockets)
     ///
     /// Base port number that will be modified to ensure uniqueness
@@ -166,7 +166,7 @@ impl BenchmarkConfig {
         Ok(Self {
             mechanism: IpcMechanism::UnixDomainSocket, // Will be overridden per test
             message_size: args.message_size,
-            
+
             // Duration takes precedence over message count
             // This provides more predictable test timing
             msg_count: if args.duration.is_some() {
@@ -174,7 +174,7 @@ impl BenchmarkConfig {
             } else {
                 Some(args.msg_count)
             },
-            
+
             duration: args.duration,
             concurrency: args.concurrency,
             one_way,
@@ -240,7 +240,7 @@ impl BenchmarkConfig {
 pub struct BenchmarkRunner {
     /// Benchmark configuration parameters
     config: BenchmarkConfig,
-    
+
     /// The specific IPC mechanism being tested
     mechanism: IpcMechanism,
 }
@@ -281,7 +281,10 @@ impl BenchmarkRunner {
     /// ## Returns
     /// - `Ok(BenchmarkResults)`: Complete test results with metrics
     /// - `Err(anyhow::Error)`: Test execution failure with diagnostic information
-    pub async fn run(&self, mut results_manager: Option<&mut crate::results::ResultsManager>) -> Result<BenchmarkResults> {
+    pub async fn run(
+        &self,
+        mut results_manager: Option<&mut crate::results::ResultsManager>,
+    ) -> Result<BenchmarkResults> {
         info!("Starting benchmark for {} mechanism", self.mechanism);
 
         // Initialize results structure with test configuration
@@ -315,7 +318,9 @@ impl BenchmarkRunner {
 
         if combined_streaming && self.config.one_way && self.config.round_trip {
             info!("Running combined one-way and round-trip test for streaming");
-            let combined_results = self.run_combined_test(results_manager.as_deref_mut()).await?;
+            let combined_results = self
+                .run_combined_test(results_manager.as_deref_mut())
+                .await?;
             results.add_one_way_results(combined_results.0);
             results.add_round_trip_results(combined_results.1);
         } else {
@@ -324,7 +329,9 @@ impl BenchmarkRunner {
             // waiting for responses, providing baseline performance metrics
             if self.config.one_way {
                 info!("Running one-way latency test");
-                let one_way_results = self.run_one_way_test(results_manager.as_deref_mut()).await?;
+                let one_way_results = self
+                    .run_one_way_test(results_manager.as_deref_mut())
+                    .await?;
                 results.add_one_way_results(one_way_results);
             }
 
@@ -333,7 +340,7 @@ impl BenchmarkRunner {
             // providing insights into interactive communication patterns
             if self.config.round_trip {
                 info!("Running round-trip latency test");
-                let round_trip_results = self.run_round_trip_test(results_manager.as_deref_mut()).await?;
+                let round_trip_results = self.run_round_trip_test(results_manager).await?;
                 results.add_round_trip_results(round_trip_results);
             }
         }
@@ -377,7 +384,7 @@ impl BenchmarkRunner {
             tokio::spawn(async move {
                 let mut transport = TransportFactory::create(&mechanism)?;
                 transport.start_server(&config).await?;
-                
+
                 // Signal that server is ready to accept connections
                 server_ready_clone.wait().await;
                 debug!("Server signaled ready for warmup");
@@ -435,7 +442,10 @@ impl BenchmarkRunner {
     /// ## Returns
     /// - `Ok(PerformanceMetrics)`: Comprehensive latency and throughput metrics
     /// - `Err(anyhow::Error)`: Test execution failure
-    async fn run_one_way_test(&self, results_manager: Option<&mut crate::results::ResultsManager>) -> Result<PerformanceMetrics> {
+    async fn run_one_way_test(
+        &self,
+        results_manager: Option<&mut crate::results::ResultsManager>,
+    ) -> Result<PerformanceMetrics> {
         let transport_config = self.create_transport_config()?;
         let mut metrics_collector =
             MetricsCollector::new(Some(LatencyType::OneWay), self.config.percentiles.clone())?;
@@ -448,14 +458,26 @@ impl BenchmarkRunner {
                 "Shared memory with concurrency > 1 has race conditions. Forcing concurrency = 1."
             );
             // Run single-threaded instead
-            self.run_single_threaded_one_way(&transport_config, &mut metrics_collector, results_manager)
-                .await?;
+            self.run_single_threaded_one_way(
+                &transport_config,
+                &mut metrics_collector,
+                results_manager,
+            )
+            .await?;
         } else if self.config.concurrency == 1 {
-            self.run_single_threaded_one_way(&transport_config, &mut metrics_collector, results_manager)
-                .await?;
+            self.run_single_threaded_one_way(
+                &transport_config,
+                &mut metrics_collector,
+                results_manager,
+            )
+            .await?;
         } else {
-            self.run_multi_threaded_one_way(&transport_config, &mut metrics_collector, results_manager)
-                .await?;
+            self.run_multi_threaded_one_way(
+                &transport_config,
+                &mut metrics_collector,
+                results_manager,
+            )
+            .await?;
         }
 
         Ok(metrics_collector.get_metrics())
@@ -482,7 +504,10 @@ impl BenchmarkRunner {
     /// ## Returns
     /// - `Ok(PerformanceMetrics)`: Round-trip latency and throughput metrics
     /// - `Err(anyhow::Error)`: Test execution failure
-    async fn run_round_trip_test(&self, results_manager: Option<&mut crate::results::ResultsManager>) -> Result<PerformanceMetrics> {
+    async fn run_round_trip_test(
+        &self,
+        results_manager: Option<&mut crate::results::ResultsManager>,
+    ) -> Result<PerformanceMetrics> {
         let transport_config = self.create_transport_config()?;
         let mut metrics_collector = MetricsCollector::new(
             Some(LatencyType::RoundTrip),
@@ -495,14 +520,26 @@ impl BenchmarkRunner {
                 "Shared memory with concurrency > 1 has race conditions. Forcing concurrency = 1."
             );
             // Run single-threaded instead
-            self.run_single_threaded_round_trip(&transport_config, &mut metrics_collector, results_manager)
-                .await?;
+            self.run_single_threaded_round_trip(
+                &transport_config,
+                &mut metrics_collector,
+                results_manager,
+            )
+            .await?;
         } else if self.config.concurrency == 1 {
-            self.run_single_threaded_round_trip(&transport_config, &mut metrics_collector, results_manager)
-                .await?;
+            self.run_single_threaded_round_trip(
+                &transport_config,
+                &mut metrics_collector,
+                results_manager,
+            )
+            .await?;
         } else {
-            self.run_multi_threaded_round_trip(&transport_config, &mut metrics_collector, results_manager)
-                .await?;
+            self.run_multi_threaded_round_trip(
+                &transport_config,
+                &mut metrics_collector,
+                results_manager,
+            )
+            .await?;
         }
 
         Ok(metrics_collector.get_metrics())
@@ -555,7 +592,7 @@ impl BenchmarkRunner {
             tokio::spawn(async move {
                 let mut transport = TransportFactory::create(&mechanism)?;
                 transport.start_server(&config).await?;
-                
+
                 // Signal that server is ready
                 server_ready_clone.wait().await;
                 debug!("Server signaled ready for one-way test");
@@ -625,7 +662,7 @@ impl BenchmarkRunner {
                         let latency = send_time.elapsed();
                         metrics_collector
                             .record_message(self.config.message_size, Some(latency))?;
-                        
+
                         // Stream individual latency record if enabled
                         if let Some(ref mut manager) = results_manager {
                             let record = crate::results::MessageLatencyRecord::new(
@@ -637,7 +674,7 @@ impl BenchmarkRunner {
                             );
                             manager.stream_latency_record(&record).await?;
                         }
-                        
+
                         i += 1;
                     }
                     Ok(Err(_)) => break, // Transport error
@@ -659,7 +696,7 @@ impl BenchmarkRunner {
 
                 let latency = send_time.elapsed();
                 metrics_collector.record_message(self.config.message_size, Some(latency))?;
-                
+
                 // Stream individual latency record if enabled
                 if let Some(ref mut manager) = results_manager {
                     let record = crate::results::MessageLatencyRecord::new(
@@ -721,7 +758,7 @@ impl BenchmarkRunner {
             tokio::spawn(async move {
                 let mut transport = TransportFactory::create(&mechanism)?;
                 transport.start_server(&config).await?;
-                
+
                 // Signal that server is ready
                 server_ready_clone.wait().await;
                 debug!("Server signaled ready for round-trip test");
@@ -750,7 +787,7 @@ impl BenchmarkRunner {
                                 request.payload,
                                 MessageType::Response,
                             );
-                            if let Err(_) = transport.send(&response).await {
+                            if (transport.send(&response).await).is_err() {
                                 break; // Client disconnected
                             }
                         }
@@ -799,7 +836,7 @@ impl BenchmarkRunner {
                     Ok(Ok(())) => {
                         // Send succeeded - increment counter immediately to ensure unique message IDs
                         i += 1;
-                        
+
                         // Try to receive response with timeout
                         match tokio::time::timeout(
                             Duration::from_millis(50),
@@ -811,7 +848,7 @@ impl BenchmarkRunner {
                                 let latency = send_time.elapsed();
                                 metrics_collector
                                     .record_message(self.config.message_size, Some(latency))?;
-                                
+
                                 // Stream individual latency record if enabled
                                 if let Some(ref mut manager) = results_manager {
                                     let record = crate::results::MessageLatencyRecord::new(
@@ -853,7 +890,7 @@ impl BenchmarkRunner {
                 let _ = client_transport.receive().await?;
                 let latency = send_time.elapsed();
                 metrics_collector.record_message(self.config.message_size, Some(latency))?;
-                
+
                 // Stream individual latency record if enabled
                 if let Some(ref mut manager) = results_manager {
                     let record = crate::results::MessageLatencyRecord::new(
@@ -1038,18 +1075,31 @@ impl BenchmarkRunner {
         let transport_config = self.create_transport_config()?;
         let mut one_way_metrics =
             MetricsCollector::new(Some(LatencyType::OneWay), self.config.percentiles.clone())?;
-        let mut round_trip_metrics =
-            MetricsCollector::new(Some(LatencyType::RoundTrip), self.config.percentiles.clone())?;
+        let mut round_trip_metrics = MetricsCollector::new(
+            Some(LatencyType::RoundTrip),
+            self.config.percentiles.clone(),
+        )?;
 
         // Check for problematic configurations and adapt automatically
         if self.mechanism == IpcMechanism::SharedMemory && self.config.concurrency > 1 {
-            warn!("Shared memory with concurrency > 1 has race conditions. Forcing concurrency = 1.");
+            warn!(
+                "Shared memory with concurrency > 1 has race conditions. Forcing concurrency = 1."
+            );
         }
 
         // For combined testing, we always use single-threaded to ensure synchronized message IDs
-        self.run_single_threaded_combined(&transport_config, &mut one_way_metrics, &mut round_trip_metrics, results_manager).await?;
+        self.run_single_threaded_combined(
+            &transport_config,
+            &mut one_way_metrics,
+            &mut round_trip_metrics,
+            results_manager,
+        )
+        .await?;
 
-        Ok((one_way_metrics.get_metrics(), round_trip_metrics.get_metrics()))
+        Ok((
+            one_way_metrics.get_metrics(),
+            round_trip_metrics.get_metrics(),
+        ))
     }
 
     /// Run single-threaded combined test measuring both latencies for each message
@@ -1070,7 +1120,7 @@ impl BenchmarkRunner {
         let server_ready = Arc::new(Barrier::new(2));
         let server_ready_clone = Arc::clone(&server_ready);
 
-        // Start server in background task  
+        // Start server in background task
         let server_handle = {
             let config = transport_config.clone();
             let mechanism = self.mechanism;
@@ -1080,7 +1130,7 @@ impl BenchmarkRunner {
             tokio::spawn(async move {
                 let mut transport = TransportFactory::create(&mechanism)?;
                 transport.start_server(&config).await?;
-                
+
                 // Signal that server is ready
                 server_ready_clone.wait().await;
                 debug!("Server signaled ready for combined test");
@@ -1147,19 +1197,35 @@ impl BenchmarkRunner {
                 let message = Message::new(i, payload.clone(), MessageType::Request);
 
                 // Send message and measure one-way latency
-                match tokio::time::timeout(Duration::from_millis(50), client_transport.send(&message)).await {
+                match tokio::time::timeout(
+                    Duration::from_millis(50),
+                    client_transport.send(&message),
+                )
+                .await
+                {
                     Ok(Ok(())) => {
                         let one_way_latency = send_start.elapsed();
-                        
+
                         // Try to receive response and measure round-trip latency
-                        match tokio::time::timeout(Duration::from_millis(50), client_transport.receive()).await {
+                        match tokio::time::timeout(
+                            Duration::from_millis(50),
+                            client_transport.receive(),
+                        )
+                        .await
+                        {
                             Ok(Ok(_)) => {
                                 let round_trip_latency = send_start.elapsed();
-                                
+
                                 // Record both metrics
-                                one_way_metrics.record_message(self.config.message_size, Some(one_way_latency))?;
-                                round_trip_metrics.record_message(self.config.message_size, Some(round_trip_latency))?;
-                                
+                                one_way_metrics.record_message(
+                                    self.config.message_size,
+                                    Some(one_way_latency),
+                                )?;
+                                round_trip_metrics.record_message(
+                                    self.config.message_size,
+                                    Some(round_trip_latency),
+                                )?;
+
                                 // Stream combined record if enabled
                                 if let Some(ref mut manager) = results_manager {
                                     let record = crate::results::MessageLatencyRecord::new_combined(
@@ -1171,7 +1237,7 @@ impl BenchmarkRunner {
                                     );
                                     manager.write_streaming_record_direct(&record).await?;
                                 }
-                                
+
                                 i += 1;
                             }
                             Ok(Err(_)) => break, // Transport error
@@ -1197,17 +1263,18 @@ impl BenchmarkRunner {
             for i in 0..msg_count {
                 let send_start = Instant::now();
                 let message = Message::new(i as u64, payload.clone(), MessageType::Request);
-                
+
                 client_transport.send(&message).await?;
                 let one_way_latency = send_start.elapsed();
-                
+
                 let _ = client_transport.receive().await?;
                 let round_trip_latency = send_start.elapsed();
-                
+
                 // Record both metrics
                 one_way_metrics.record_message(self.config.message_size, Some(one_way_latency))?;
-                round_trip_metrics.record_message(self.config.message_size, Some(round_trip_latency))?;
-                
+                round_trip_metrics
+                    .record_message(self.config.message_size, Some(round_trip_latency))?;
+
                 // Stream combined record if enabled
                 if let Some(ref mut manager) = results_manager {
                     let record = crate::results::MessageLatencyRecord::new_combined(
@@ -1273,7 +1340,7 @@ impl BenchmarkRunner {
         // Conservative queue depth for PMQ - most systems have very low limits (often just 10)
         let adaptive_queue_depth = if self.mechanism == IpcMechanism::PosixMessageQueue {
             let msg_count = self.get_msg_count();
-            
+
             // Warn about PMQ limitations for high-throughput tests
             if msg_count > 10000 {
                 warn!(
@@ -1282,12 +1349,15 @@ impl BenchmarkRunner {
                     msg_count
                 );
             }
-            
+
             // Use conservative values that work within typical system limits
             // Most systems default to msg_max=10, so we'll stay at that limit
             let queue_depth = 10; // Always use system default
-            
-            debug!("PMQ using conservative queue depth: {} messages -> depth {}", msg_count, queue_depth);
+
+            debug!(
+                "PMQ using conservative queue depth: {} messages -> depth {}",
+                msg_count, queue_depth
+            );
             queue_depth
         } else {
             10 // Default for other mechanisms
