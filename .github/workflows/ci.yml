@@ -52,9 +52,26 @@ jobs:
           ${{ runner.os }}-cargo-build-target-
 
     - name: Check formatting
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
       run: |
         if ! cargo fmt --all -- --check; then
-          echo "::error ::ERROR: Code formatting issues detected. Please run 'cargo fmt --all' locally and commit the changes."
+          # Only comment on Pull Request events
+          if [ -n "$PR_NUMBER" ]; then
+            MARKER="<!-- gemini-fmt-error -->"
+            BODY="$MARKER
+⚠️ **ERROR:** Code formatting issues detected. Please run `cargo fmt --all` locally and commit the changes."
+            
+            # Check if a comment with our marker already exists to avoid spamming
+            existing_comment=$(gh pr view "$PR_NUMBER" --json comments -q ".comments[] | select(.body | contains(\"$MARKER\")) | .id")
+            
+            if [ -z "$existing_comment" ]; then
+              gh pr comment "$PR_NUMBER" --body "$BODY"
+            else
+              echo "A formatting error comment already exists. Skipping."
+            fi
+          fi
           exit 1
         fi
 
