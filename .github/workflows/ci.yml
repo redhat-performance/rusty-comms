@@ -54,16 +54,15 @@ jobs:
     - name: Check formatting
       run: |
         if ! cargo fmt --all -- --check; then
-          echo "----------------------------------------------------------------"
-          echo "ERROR: Code formatting issues detected."
-          echo "Please run 'cargo fmt --all' locally and commit the changes."
-          echo "----------------------------------------------------------------"
+          echo "::error ::ERROR: Code formatting issues detected. Please run 'cargo fmt --all' locally and commit the changes."
           exit 1
         fi
 
     - name: Check with clippy
       if: always()
-      run: cargo clippy --all-targets --all-features -- -D warnings
+      run: |
+        set -o pipefail
+        cargo clippy --all-targets --all-features --message-format=json -- -D warnings | jq -r 'select(.reason == "compiler-message" and .message.spans[0].is_primary) | .message | "::warning file=\(.spans[0].file_name),line=\(.spans[0].line_start)::\(.message)"'
 
   test:
     name: Test
