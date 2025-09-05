@@ -420,6 +420,23 @@ perf record --call-graph dwarf target/release/ipc-benchmark
 perf report
 ```
 
+## CI/CD
+
+This project uses GitHub Actions for continuous integration. The CI pipeline is defined in `.github/workflows/` and includes the following checks:
+
+- **Linting and Formatting**: Ensures code style and quality using `cargo fmt` and `cargo clippy`.
+- **Testing**: Runs the full test suite on stable, beta, and MSRV Rust across Linux, Windows, and macOS.
+- **Code Coverage**: Generates a code coverage report using `cargo-tarpaulin` and uploads it to Codecov.
+- **Security Audit**: Scans for vulnerabilities using `cargo audit`.
+- **Docker Build**: Validates that the Docker image can be built and run successfully.
+
+### Pull Request Automation
+
+To help maintain branch quality and streamline development, the CI includes automation for pull requests:
+
+- **Stale PR Notifier**: If a pull request becomes out-of-date with the `main` branch, a bot will post a comment to notify the author. The comment will include a list of recent commits to `main` to provide context.
+- **/rebase Command**: Contributors with write access can comment `/rebase` on a pull request to trigger an automatic rebase of the PR branch onto the latest `main`. The bot will handle the rebase and push the changes, or it will comment back if there are merge conflicts that need to be resolved manually.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed contribution guidelines.
