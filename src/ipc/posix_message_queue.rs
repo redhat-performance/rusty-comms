@@ -188,6 +188,7 @@ impl PosixMessageQueueTransport {
     /// - Insufficient system resources
     /// - Permission denied
     /// - System queue limits exceeded
+    #[allow(dead_code)]
     fn open_queue(&self, queue_name: &str, create: bool) -> Result<MqdT> {
         let flags = if create {
             MQ_OFlag::O_CREAT | MQ_OFlag::O_RDWR

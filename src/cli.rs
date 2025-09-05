@@ -40,7 +40,7 @@
 use clap::{builder::styling::{AnsiColor, Styles}, Parser, ValueEnum};
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// IPC Benchmark Suite - A comprehensive tool for measuring IPC performance
