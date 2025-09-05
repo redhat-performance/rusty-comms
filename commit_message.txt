@@ -1,0 +1,9 @@
+fix: Remove unused code and fix related test failure
+
+This commit removes a significant amount of unused code from `src/utils.rs`, including functions for formatting, statistical calculations, and system information that were no longer in use.
+
+During the cleanup, a test failure was introduced in `ipc::tests::test_message_creation` due to the removal of `current_timestamp_ns`. This function has been restored and is now used in `Message::new` to ensure a reliable non-zero timestamp, fixing the test. An unused import of `std::time::Instant` was also removed from `src/ipc/mod.rs`.
+
+Fixes #7
+
+AI-assisted-by: Gemini

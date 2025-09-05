@@ -22,6 +22,12 @@ pub struct UnixDomainSocketTransport {
     message_receiver: Option<mpsc::Receiver<(ConnectionId, Message)>>,
 }
 
+impl Default for UnixDomainSocketTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl UnixDomainSocketTransport {
     /// Create a new Unix Domain Socket transport
     pub fn new() -> Self {

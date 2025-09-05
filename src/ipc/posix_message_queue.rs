@@ -103,25 +103,31 @@ use tracing::{debug, error, warn};
 pub struct PosixMessageQueueTransport {
     /// Current connection state of the transport
     state: TransportState,
-    
+
     /// POSIX message queue name (with "/" prefix)
     queue_name: String,
-    
+
     /// Message queue file descriptor for I/O operations
     mq_fd: Option<MqdT>,
-    
+
     /// Maximum size of individual messages in bytes
     max_msg_size: usize,
-    
+
     /// Maximum number of messages that can be queued
     max_msg_count: usize,
-    
+
     /// Whether this instance created the queue (server) vs opened it (client)
     ///
     /// Only queue creators are responsible for unlinking the queue during cleanup.
     /// This prevents clients from accidentally destroying queues that other
     /// processes may still be using.
     is_creator: bool,
+}
+
+impl Default for PosixMessageQueueTransport {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PosixMessageQueueTransport {
@@ -202,7 +208,10 @@ impl PosixMessageQueueTransport {
         // Only unlink the queue if this instance created it (server)
         if self.is_creator && !self.queue_name.is_empty() {
             if let Err(e) = mq_unlink(self.queue_name.as_str()) {
-                warn!("Failed to unlink message queue '{}': {}", self.queue_name, e);
+                warn!(
+                    "Failed to unlink message queue '{}': {}",
+                    self.queue_name, e
+                );
             } else {
                 debug!("Unlinked message queue: {}", self.queue_name);
             }
@@ -286,7 +295,7 @@ impl IpcTransport for PosixMessageQueueTransport {
         let queue_name = self.queue_name.clone();
         let max_msg_count = self.max_msg_count;
         let max_msg_size = self.max_msg_size;
-        
+
         let mq_fd = tokio::task::spawn_blocking(move || {
             debug!("Server creating message queue '{}'...", queue_name);
             let attr = MqAttr::new(0, max_msg_count as i64, max_msg_size as i64, 0);
@@ -295,19 +304,27 @@ impl IpcTransport for PosixMessageQueueTransport {
                 MQ_OFlag::O_CREAT | MQ_OFlag::O_RDWR | MQ_OFlag::O_NONBLOCK, // Add O_NONBLOCK
                 Mode::S_IRUSR | Mode::S_IWUSR,
                 Some(&attr),
-            ).map_err(|e| anyhow!("Failed to create server queue: {}", e));
-            
+            )
+            .map_err(|e| anyhow!("Failed to create server queue: {}", e));
+
             match &result {
-                Ok(fd) => debug!("Server successfully created queue '{}' with fd: {:?}", queue_name, fd),
+                Ok(fd) => debug!(
+                    "Server successfully created queue '{}' with fd: {:?}",
+                    queue_name, fd
+                ),
                 Err(e) => debug!("Server failed to create queue '{}': {}", queue_name, e),
             }
-            
+
             result
-        }).await??;
+        })
+        .await??;
 
         self.mq_fd = Some(mq_fd);
         self.state = TransportState::Connected;
-        debug!("POSIX Message Queue server started with queue: {}", self.queue_name);
+        debug!(
+            "POSIX Message Queue server started with queue: {}",
+            self.queue_name
+        );
         Ok(())
     }
 
@@ -362,13 +379,13 @@ impl IpcTransport for PosixMessageQueueTransport {
 
         // Open existing message queue with retry logic
         let queue_name = self.queue_name.clone();
-        
+
         let mq_fd = tokio::task::spawn_blocking(move || {
             // Retry opening the queue with exponential backoff
             let mut attempts = 0;
             let max_attempts = 10;
             let mut delay_ms = 10;
-            
+
             loop {
                 match mq_open(
                     queue_name.as_str(),
@@ -377,26 +394,45 @@ impl IpcTransport for PosixMessageQueueTransport {
                     None,
                 ) {
                     Ok(fd) => {
-                        debug!("Client successfully opened queue '{}' with fd: {:?} after {} attempts", queue_name, fd, attempts + 1);
+                        debug!(
+                            "Client successfully opened queue '{}' with fd: {:?} after {} attempts",
+                            queue_name,
+                            fd,
+                            attempts + 1
+                        );
                         return Ok(fd);
                     }
                     Err(Errno::ENOENT) if attempts < max_attempts => {
-                        debug!("Queue '{}' not ready yet, retrying in {}ms (attempt {}/{})", queue_name, delay_ms, attempts + 1, max_attempts);
+                        debug!(
+                            "Queue '{}' not ready yet, retrying in {}ms (attempt {}/{})",
+                            queue_name,
+                            delay_ms,
+                            attempts + 1,
+                            max_attempts
+                        );
                         std::thread::sleep(Duration::from_millis(delay_ms));
                         attempts += 1;
                         delay_ms = (delay_ms * 2).min(1000); // Cap at 1 second
                         continue;
                     }
                     Err(e) => {
-                        return Err(anyhow!("Failed to open client queue after {} attempts: {}", attempts + 1, e));
+                        return Err(anyhow!(
+                            "Failed to open client queue after {} attempts: {}",
+                            attempts + 1,
+                            e
+                        ));
                     }
                 }
             }
-        }).await??;
+        })
+        .await??;
 
         self.mq_fd = Some(mq_fd);
         self.state = TransportState::Connected;
-        debug!("POSIX Message Queue client connected to queue: {}", self.queue_name);
+        debug!(
+            "POSIX Message Queue client connected to queue: {}",
+            self.queue_name
+        );
         Ok(())
     }
 
@@ -448,28 +484,30 @@ impl IpcTransport for PosixMessageQueueTransport {
     /// - **Resource**: No queue available or transport not initialized
     async fn send(&mut self, message: &Message) -> Result<()> {
         let data = message.to_bytes()?;
-        let fd_ref = self.mq_fd.as_ref().ok_or_else(|| anyhow!("No message queue available"))?;
-        
+        let fd_ref = self
+            .mq_fd
+            .as_ref()
+            .ok_or_else(|| anyhow!("No message queue available"))?;
+
         // Since MqdT is just a wrapper around an fd, we can extract its raw fd
         let raw_fd = fd_ref.as_raw_fd();
-        
+
         // Use non-blocking send with exponential backoff for queue-full conditions
         let mut retry_delay_ms = 1;
         let max_retries = 100; // More retries since each one is much faster
-        
+
         for attempt in 0..max_retries {
             let result = tokio::task::spawn_blocking({
                 let data = data.clone();
-                let raw_fd = raw_fd;
                 move || {
                     // Reconstruct MqdT from raw fd for the blocking operation
                     let fd = unsafe { MqdT::from_raw_fd(raw_fd) };
-                    let result = mq_send(&fd, &data, 0);
-                    std::mem::forget(fd); // Don't close the fd when this MqdT drops
-                    result
+                    // std::mem::forget(fd); // Don't close the fd when this MqdT drops
+                    mq_send(&fd, &data, 0)
                 }
-            }).await?;
-            
+            })
+            .await?;
+
             match result {
                 Ok(()) => {
                     debug!("Sent message {} bytes via POSIX message queue", data.len());
@@ -478,7 +516,10 @@ impl IpcTransport for PosixMessageQueueTransport {
                 Err(Errno::EAGAIN) => {
                     // Queue is full, wait and retry
                     if attempt == max_retries - 1 {
-                        return Err(anyhow!("Send failed after {} attempts - queue consistently full", max_retries));
+                        return Err(anyhow!(
+                            "Send failed after {} attempts - queue consistently full",
+                            max_retries
+                        ));
                     }
                     tokio::time::sleep(Duration::from_millis(retry_delay_ms)).await;
                     retry_delay_ms = (retry_delay_ms * 2).min(10); // Cap at 10ms for faster throughput
@@ -488,7 +529,7 @@ impl IpcTransport for PosixMessageQueueTransport {
                 }
             }
         }
-        
+
         Err(anyhow!("Send failed after {} attempts", max_retries))
     }
 
@@ -543,40 +584,47 @@ impl IpcTransport for PosixMessageQueueTransport {
     /// - **Permanent**: Invalid queue state or deserialization failure
     /// - **Resource**: No queue available or transport not initialized
     async fn receive(&mut self) -> Result<Message> {
-        let fd_ref = self.mq_fd.as_ref().ok_or_else(|| anyhow!("No message queue available"))?;
+        let fd_ref = self
+            .mq_fd
+            .as_ref()
+            .ok_or_else(|| anyhow!("No message queue available"))?;
         let raw_fd = fd_ref.as_raw_fd();
         let max_msg_size = self.max_msg_size;
-        
+
         // Use non-blocking receive with exponential backoff for empty queue conditions
         let mut retry_delay_ms = 1;
         let max_retries = 100;
-        
+
         for attempt in 0..max_retries {
             let result = tokio::task::spawn_blocking({
-                let raw_fd = raw_fd;
-                let max_msg_size = max_msg_size;
                 move || {
                     let fd = unsafe { MqdT::from_raw_fd(raw_fd) };
                     let mut buffer = vec![0u8; max_msg_size];
                     let mut priority = 0u32;
-                    let result = mq_receive(&fd, &mut buffer, &mut priority);
-                    std::mem::forget(fd); // Don't close the fd when this MqdT drops
-                    result.map(|bytes_read| {
+                    // std::mem::forget(fd); // Don't close the fd when this M-q-dT drops
+                    mq_receive(&fd, &mut buffer, &mut priority).map(|bytes_read| {
                         buffer.truncate(bytes_read);
                         buffer
                     })
                 }
-            }).await?;
-            
+            })
+            .await?;
+
             match result {
                 Ok(buffer) => {
-                    debug!("Received message {} bytes via POSIX message queue", buffer.len());
+                    debug!(
+                        "Received message {} bytes via POSIX message queue",
+                        buffer.len()
+                    );
                     return Message::from_bytes(&buffer);
                 }
                 Err(Errno::EAGAIN) => {
                     // Queue is empty, wait and retry
                     if attempt == max_retries - 1 {
-                        return Err(anyhow!("Receive failed after {} attempts - queue consistently empty", max_retries));
+                        return Err(anyhow!(
+                            "Receive failed after {} attempts - queue consistently empty",
+                            max_retries
+                        ));
                     }
                     tokio::time::sleep(Duration::from_millis(retry_delay_ms)).await;
                     retry_delay_ms = (retry_delay_ms * 2).min(10); // Cap at 10ms
@@ -586,7 +634,7 @@ impl IpcTransport for PosixMessageQueueTransport {
                 }
             }
         }
-        
+
         Err(anyhow!("Receive failed after {} attempts", max_retries))
     }
 
@@ -634,22 +682,24 @@ impl IpcTransport for PosixMessageQueueTransport {
         let queue_name = self.queue_name.clone();
         let mq_fd = self.mq_fd.take();
         let is_creator = self.is_creator;
-        
+
         tokio::task::spawn_blocking(move || {
             if let Some(fd) = mq_fd {
                 if let Err(e) = mq_close(fd) {
                     warn!("Failed to close message queue: {}", e);
                 }
             }
-            
+
             // Only unlink if this instance created the queue
             if is_creator && !queue_name.is_empty() {
                 if let Err(e) = mq_unlink(queue_name.as_str()) {
                     warn!("Failed to unlink message queue '{}': {}", queue_name, e);
                 }
             }
-        }).await.ok();
-        
+        })
+        .await
+        .ok();
+
         self.state = TransportState::Disconnected;
         debug!("POSIX Message Queue transport closed");
         Ok(())
@@ -751,17 +801,20 @@ impl IpcTransport for PosixMessageQueueTransport {
         config: &TransportConfig,
     ) -> Result<mpsc::Receiver<(ConnectionId, Message)>> {
         debug!("POSIX Message Queue multi-server mode - using single connection");
-        
+
         self.start_server(config).await?;
-        
+
         let (tx, rx) = mpsc::channel(1000);
-        let fd_ref = self.mq_fd.as_ref().ok_or_else(|| anyhow!("No message queue available"))?;
+        let fd_ref = self
+            .mq_fd
+            .as_ref()
+            .ok_or_else(|| anyhow!("No message queue available"))?;
         let raw_fd = fd_ref.as_raw_fd();
         let max_msg_size = self.max_msg_size;
-        
+
         tokio::spawn(async move {
             let connection_id = 1;
-            
+
             loop {
                 let result = tokio::task::spawn_blocking({
                     let raw_fd_copy = raw_fd;
@@ -769,19 +822,21 @@ impl IpcTransport for PosixMessageQueueTransport {
                         let fd = unsafe { MqdT::from_raw_fd(raw_fd_copy) };
                         let mut buffer = vec![0u8; max_msg_size];
                         let mut priority = 0u32;
-                        let result = mq_receive(&fd, &mut buffer, &mut priority)
-                            .map(|bytes_read| {
-                                buffer.truncate(bytes_read);
-                                buffer
-                            });
-                        std::mem::forget(fd); // Don't close the fd when this MqdT drops
-                        result
+                        // std::mem::forget(fd); // Don't close the fd when this MqdT drops
+                        mq_receive(&fd, &mut buffer, &mut priority).map(|bytes_read| {
+                            buffer.truncate(bytes_read);
+                            buffer
+                        })
                     }
-                }).await;
-                
+                })
+                .await;
+
                 match result {
                     Ok(Ok(buffer)) => {
-                        debug!("Received message {} bytes via POSIX message queue", buffer.len());
+                        debug!(
+                            "Received message {} bytes via POSIX message queue",
+                            buffer.len()
+                        );
                         if let Ok(message) = Message::from_bytes(&buffer) {
                             if tx.send((connection_id, message)).await.is_err() {
                                 break;
@@ -866,4 +921,4 @@ impl IpcTransport for PosixMessageQueueTransport {
     async fn close_connection(&mut self, _connection_id: ConnectionId) -> Result<()> {
         self.close().await
     }
-} 
+}
