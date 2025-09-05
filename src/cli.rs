@@ -521,74 +521,6 @@ pub fn parse_duration(s: &str) -> Result<Duration, String> {
     Ok(duration)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Test duration parsing with various valid formats
-    #[test]
-    fn test_parse_duration() {
-        // Test basic time units
-        assert_eq!(parse_duration("10s").unwrap(), Duration::from_secs(10));
-        assert_eq!(parse_duration("5m").unwrap(), Duration::from_secs(300));
-        assert_eq!(parse_duration("1h").unwrap(), Duration::from_secs(3600));
-        assert_eq!(parse_duration("500ms").unwrap(), Duration::from_millis(500));
-
-        // Test default unit (seconds)
-        assert_eq!(parse_duration("10").unwrap(), Duration::from_secs(10));
-
-        // Test error cases
-        assert!(parse_duration("").is_err());
-        assert!(parse_duration("invalid").is_err());
-        assert!(parse_duration("-5s").is_err());
-    }
-
-    /// Test IPC mechanism display formatting
-    #[test]
-    fn test_ipc_mechanism_display() {
-        assert_eq!(
-            IpcMechanism::UnixDomainSocket.to_string(),
-            "Unix Domain Socket"
-        );
-        assert_eq!(IpcMechanism::SharedMemory.to_string(), "Shared Memory");
-        assert_eq!(IpcMechanism::TcpSocket.to_string(), "TCP Socket");
-        assert_eq!(
-            IpcMechanism::PosixMessageQueue.to_string(),
-            "POSIX Message Queue"
-        );
-        assert_eq!(IpcMechanism::All.to_string(), "All Mechanisms");
-    }
-
-    /// Test mechanism expansion logic
-    #[test]
-    fn test_ipc_mechanism_expand_all() {
-        let all_mechanisms = vec![
-            IpcMechanism::UnixDomainSocket,
-            IpcMechanism::SharedMemory,
-            IpcMechanism::TcpSocket,
-            IpcMechanism::PosixMessageQueue,
-        ];
-
-        // Test "all" expansion
-        assert_eq!(
-            IpcMechanism::expand_all(vec![IpcMechanism::All]),
-            all_mechanisms
-        );
-
-        // Test specific mechanism preservation
-        assert_eq!(
-            IpcMechanism::expand_all(vec![IpcMechanism::UnixDomainSocket]),
-            vec![IpcMechanism::UnixDomainSocket]
-        );
-
-        // Test "all" expansion when mixed with other mechanisms
-        assert_eq!(
-            IpcMechanism::expand_all(vec![IpcMechanism::UnixDomainSocket, IpcMechanism::All]),
-            all_mechanisms
-        );
-    }
-}
-
 /// Provides a user-friendly, formatted summary of the benchmark configuration.
 ///
 /// This implementation is used to display the settings at the start of a benchmark run,
@@ -666,5 +598,73 @@ impl fmt::Display for Args {
             f,
             "-----------------------------------------------------------------"
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test duration parsing with various valid formats
+    #[test]
+    fn test_parse_duration() {
+        // Test basic time units
+        assert_eq!(parse_duration("10s").unwrap(), Duration::from_secs(10));
+        assert_eq!(parse_duration("5m").unwrap(), Duration::from_secs(300));
+        assert_eq!(parse_duration("1h").unwrap(), Duration::from_secs(3600));
+        assert_eq!(parse_duration("500ms").unwrap(), Duration::from_millis(500));
+
+        // Test default unit (seconds)
+        assert_eq!(parse_duration("10").unwrap(), Duration::from_secs(10));
+
+        // Test error cases
+        assert!(parse_duration("").is_err());
+        assert!(parse_duration("invalid").is_err());
+        assert!(parse_duration("-5s").is_err());
+    }
+
+    /// Test IPC mechanism display formatting
+    #[test]
+    fn test_ipc_mechanism_display() {
+        assert_eq!(
+            IpcMechanism::UnixDomainSocket.to_string(),
+            "Unix Domain Socket"
+        );
+        assert_eq!(IpcMechanism::SharedMemory.to_string(), "Shared Memory");
+        assert_eq!(IpcMechanism::TcpSocket.to_string(), "TCP Socket");
+        assert_eq!(
+            IpcMechanism::PosixMessageQueue.to_string(),
+            "POSIX Message Queue"
+        );
+        assert_eq!(IpcMechanism::All.to_string(), "All Mechanisms");
+    }
+
+    /// Test mechanism expansion logic
+    #[test]
+    fn test_ipc_mechanism_expand_all() {
+        let all_mechanisms = vec![
+            IpcMechanism::UnixDomainSocket,
+            IpcMechanism::SharedMemory,
+            IpcMechanism::TcpSocket,
+            IpcMechanism::PosixMessageQueue,
+        ];
+
+        // Test "all" expansion
+        assert_eq!(
+            IpcMechanism::expand_all(vec![IpcMechanism::All]),
+            all_mechanisms
+        );
+
+        // Test specific mechanism preservation
+        assert_eq!(
+            IpcMechanism::expand_all(vec![IpcMechanism::UnixDomainSocket]),
+            vec![IpcMechanism::UnixDomainSocket]
+        );
+
+        // Test "all" expansion when mixed with other mechanisms
+        assert_eq!(
+            IpcMechanism::expand_all(vec![IpcMechanism::UnixDomainSocket, IpcMechanism::All]),
+            all_mechanisms
+        );
     }
 }
