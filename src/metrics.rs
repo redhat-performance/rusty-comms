@@ -1047,7 +1047,7 @@ pub mod utils {
 
 #[cfg(test)]
 mod tests {
-    use super::{LatencyCollector, LatencyType, ThroughputCalculator, utils};
+    use super::{utils, LatencyCollector, LatencyType, ThroughputCalculator};
     use std::time::Duration;
 
     /// Test latency collector basic functionality
