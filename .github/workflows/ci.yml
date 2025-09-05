@@ -197,18 +197,18 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Install MSRV Rust (1.70.0)
+    - name: Install MSRV Rust (1.74)
       uses: dtolnay/rust-toolchain@v1
       with:
-        toolchain: 1.70.0
+        toolchain: 1.74
 
     - name: Install Linux dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y build-essential pkg-config
 
-    - name: Update lockfile for old toolchain
-      run: cargo update
+    - name: Remove lockfile to allow old Cargo to resolve deps
+      run: rm Cargo.lock
 
     - name: Check if project builds with MSRV
       run: cargo build --verbose
