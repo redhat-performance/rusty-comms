@@ -46,17 +46,17 @@ jobs:
 main
  branch.**
 
-The base branch has been updated with new changes.
+                The base branch has been updated with new changes.
 
-**Recent commits to 
+                **Recent commits to 
 main**:
-```
-$COMMITS
-```
+                ```
+                $COMMITS
+                ```
 
-To ensure a clean merge, please update your branch. You can rebase your branch manually and push the changes, or for an automated attempt, please comment 
-/rebase
- on this PR."
+                To ensure a clean merge, please rebase your branch on top of the latest 
+main
+ and push your changes."
               else
                 echo "A stale comment already exists on PR #$pr_number. Skipping."
               fi
