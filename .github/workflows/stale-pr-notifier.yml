@@ -29,17 +29,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COMMITS: ${{ steps.get_commits.outputs.commits }}
-          COMMENT_BODY: |
-            ⚠️ **This PR is out-of-date with the `main` branch.**
-
-            The base branch has been updated with new changes.
-
-            **Recent commits to `main`:**
-            ```
-            $COMMITS
-            ```
-
-            To ensure a clean merge, please rebase your branch on top of the latest `main` and push your changes.
         run: |
           for pr_number in $(gh pr list --state open --json number -q '.[].number'); do
             echo "Checking PR number $pr_number"
@@ -56,7 +45,24 @@ jobs:
               existing_comment=$(gh pr view $pr_number --json comments -q '.comments[] | select(.body | contains("This PR is out-of-date")) | .id')
               
               if [ -z "$existing_comment" ]; then
-                gh pr comment "$pr_number" --body "$COMMENT_BODY"
+                # Define the multiline body inside the script to ensure $COMMITS is expanded
+                BODY="⚠️ **This PR is out-of-date with the 
+main
+ branch.**
+
+                The base branch has been updated with new changes.
+
+                **Recent commits to 
+main
+:**
+                ```
+                $COMMITS
+                ```
+
+                To ensure a clean merge, please rebase your branch on top of the latest 
+main
+ and push your changes."
+                gh pr comment "$pr_number" --body "$BODY"
               else
                 echo "A stale comment already exists on PR #$pr_number. Skipping."
               fi
