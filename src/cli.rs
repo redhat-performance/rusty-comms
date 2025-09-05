@@ -40,7 +40,7 @@
 use clap::{builder::styling::{AnsiColor, Styles}, Parser, ValueEnum};
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// IPC Benchmark Suite - A comprehensive tool for measuring IPC performance
@@ -475,7 +475,7 @@ impl From<&Args> for BenchmarkConfiguration {
 /// assert_eq!(parse_duration("5m").unwrap(), Duration::from_secs(300));
 /// assert_eq!(parse_duration("1h").unwrap(), Duration::from_secs(3600));
 /// ```
-fn parse_duration(s: &str) -> Result<Duration, String> {
+pub fn parse_duration(s: &str) -> Result<Duration, String> {
     let s = s.trim();
 
     // Check for empty input

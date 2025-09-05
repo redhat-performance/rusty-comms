@@ -15,7 +15,7 @@
 //!
 //! ## Transport Architecture
 //!
-//! ```
+//! ```text
 //! ┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
 //! │   Application   │───▶│  IpcTransport    │───▶│   Specific      │
 //! │   Benchmark     │    │     Trait        │    │ Implementation  │
@@ -49,7 +49,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::time::Instant;
 use tokio::sync::mpsc;
 
@@ -606,7 +605,7 @@ pub trait IpcTransport: Send + Sync {
         self.start_server(config).await?;
 
         // Create a channel for forwarding messages
-        let (tx, rx) = mpsc::channel(1000);
+        let (_tx, rx) = mpsc::channel(1000);
 
         // For single-connection transports, we'll assign connection ID 0
         tokio::spawn(async move {
@@ -637,7 +636,7 @@ pub trait IpcTransport: Send + Sync {
     /// suitable for single-connection transports.
     async fn send_to_connection(
         &mut self,
-        connection_id: ConnectionId,
+        _connection_id: ConnectionId,
         message: &Message,
     ) -> Result<()> {
         // Default implementation ignores connection_id and uses legacy send
@@ -677,7 +676,7 @@ pub trait IpcTransport: Send + Sync {
     ///
     /// Closes all connections since single-connection transports
     /// can only have one active connection.
-    async fn close_connection(&mut self, connection_id: ConnectionId) -> Result<()> {
+    async fn close_connection(&mut self, _connection_id: ConnectionId) -> Result<()> {
         // Default implementation closes all connections
         self.close().await
     }
@@ -718,7 +717,7 @@ pub enum ConnectionRole {
 ///
 /// ## State Transitions
 ///
-/// ```
+/// ```text
 /// Uninitialized → Initializing → Connected
 ///       ↓              ↓            ↓
 ///    Error ←────────────┴────────→ Disconnected
@@ -848,6 +847,7 @@ mod tests {
     #[test]
     fn test_message_creation() {
         let payload = vec![1, 2, 3, 4, 5];
+        std::thread::sleep(std::time::Duration::from_nanos(1));
         let message = Message::new(1, payload.clone(), MessageType::OneWay);
 
         assert_eq!(message.id, 1);

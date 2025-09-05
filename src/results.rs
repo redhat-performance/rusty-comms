@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{debug, info};
 
@@ -1693,7 +1693,7 @@ mod tests {
     fn test_results_manager_creation() {
         let temp_file = NamedTempFile::new().unwrap();
         let path = temp_file.path().to_path_buf();
-        let manager = ResultsManager::new(&Some(path.clone()), &None).unwrap();
+        let manager = ResultsManager::new(Some(path.clone()).as_deref(), None).unwrap();
 
         assert_eq!(manager.output_file, Some(path));
         assert!(!manager.streaming_enabled);

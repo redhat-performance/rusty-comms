@@ -19,8 +19,8 @@
 //! POSIX Message Queues operate as named system objects that can be accessed by
 //! multiple processes. The kernel manages message storage, ordering, and delivery:
 //!
-//! ```
-//! ┌─────────────┐    ┌─────────────────┐    ┌─────────────┐
+//! ```text
+//! ┌─────────────┐    ┌─────────────────┐    ┌────────���────┐
 //! │   Client    │───▶│  Kernel Queue   │───▶│   Server    │
 //! │  Process    │    │   (FIFO with    │    │  Process    │
 //! │             │◀───│   priorities)   │◀───│             │
@@ -143,9 +143,15 @@ impl PosixMessageQueueTransport {
     ///
     /// ## Usage Pattern
     ///
-    /// ```rust
+    /// ```rust,no_run
+    /// # use ipc_benchmark::ipc::{posix_message_queue::PosixMessageQueueTransport, TransportConfig, IpcTransport};
+    /// # #[tokio::main]
+    /// # async fn main() -> anyhow::Result<()> {
     /// let mut transport = PosixMessageQueueTransport::new();
+    /// let config = TransportConfig::default();
     /// transport.start_server(&config).await?; // or start_client()
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn new() -> Self {
         Self {
@@ -156,60 +162,6 @@ impl PosixMessageQueueTransport {
             max_msg_count: 10,
             is_creator: false,
         }
-    }
-
-    /// Open a message queue with specified parameters
-    ///
-    /// This internal method handles the low-level POSIX message queue opening
-    /// operations, including queue creation for servers and connection for clients.
-    ///
-    /// ## Parameters
-    /// - `queue_name`: Name of the queue to open (must start with "/")
-    /// - `create`: Whether to create the queue if it doesn't exist
-    ///
-    /// ## Returns
-    /// - `Ok(MqdT)`: Message queue file descriptor ready for I/O
-    /// - `Err(anyhow::Error)`: Queue opening failed
-    ///
-    /// ## Queue Creation vs. Opening
-    ///
-    /// - **Create Mode**: Used by servers to create new queues with specific attributes
-    /// - **Open Mode**: Used by clients to connect to existing queues
-    ///
-    /// ## Flags and Permissions
-    ///
-    /// - **O_CREAT**: Create queue if it doesn't exist (server only)
-    /// - **O_RDWR**: Read/write access for bidirectional communication
-    /// - **User R/W**: Owner read/write permissions for security
-    ///
-    /// ## Error Conditions
-    ///
-    /// - Queue name conflicts or invalid names
-    /// - Insufficient system resources
-    /// - Permission denied
-    /// - System queue limits exceeded
-    fn open_queue(&self, queue_name: &str, create: bool) -> Result<MqdT> {
-        let flags = if create {
-            MQ_OFlag::O_CREAT | MQ_OFlag::O_RDWR
-        } else {
-            MQ_OFlag::O_RDWR
-        };
-        
-        let attr = if create {
-            Some(MqAttr::new(0, self.max_msg_count as i64, self.max_msg_size as i64, 0))
-        } else {
-            None
-        };
-        
-        let mq_fd = mq_open(
-            queue_name,
-            flags,
-            Mode::S_IRUSR | Mode::S_IWUSR,
-            attr.as_ref(),
-        ).map_err(|e| anyhow!("Failed to open queue '{}': {}", queue_name, e))?;
-
-        debug!("Opened message queue '{}' with fd: {:?}", queue_name, mq_fd);
-        Ok(mq_fd)
     }
 
     /// Clean up message queue resources

@@ -32,9 +32,10 @@
 //! ## Usage Examples
 //!
 //! ```rust
-//! use ipc_benchmark::metrics::{MetricsCollector, LatencyType};
-//! use std::time::Duration;
-//!
+//! # use ipc_benchmark::metrics::{MetricsCollector, LatencyType};
+//! # use std::time::Duration;
+//! #
+//! # fn main() -> anyhow::Result<()> {
 //! // Create collector for one-way latency measurement
 //! let mut collector = MetricsCollector::new(
 //!     Some(LatencyType::OneWay),
@@ -46,6 +47,8 @@
 //!
 //! // Get comprehensive metrics
 //! let metrics = collector.get_metrics();
+//! # Ok(())
+//! # }
 //! ```
 
 use anyhow::Result;
@@ -146,6 +149,18 @@ pub struct LatencyMetrics {
 ///
 /// Percentile values are typically used to understand latency distribution:
 /// ```rust
+/// # use ipc_benchmark::metrics::{LatencyMetrics, LatencyType, PercentileValue};
+/// # let metrics = LatencyMetrics {
+/// #     latency_type: LatencyType::OneWay,
+/// #     min_ns: 0,
+/// #     max_ns: 0,
+/// #     mean_ns: 0.0,
+/// #     median_ns: 0.0,
+/// #     std_dev_ns: 0.0,
+/// #     percentiles: vec![PercentileValue { percentile: 50.0, value_ns: 1000 }],
+/// #     total_samples: 1,
+/// #     histogram_data: vec![],
+/// # };
 /// for percentile in &metrics.percentiles {
 ///     println!("P{}: {}μs", percentile.percentile, percentile.value_ns / 1000);
 /// }
@@ -552,13 +567,20 @@ impl ThroughputCalculator {
 /// ## Usage Patterns
 ///
 /// ```rust
+/// # use ipc_benchmark::metrics::{MetricsCollector, LatencyType};
+/// # use std::time::Duration;
+/// # fn main() -> anyhow::Result<()> {
 /// // For latency + throughput measurement
+/// let percentiles = vec![50.0, 95.0, 99.0];
 /// let mut collector = MetricsCollector::new(Some(LatencyType::OneWay), percentiles)?;
+/// let latency = Duration::from_micros(100);
 /// collector.record_message(1024, Some(latency))?;
 /// 
 /// // For throughput-only measurement
 /// let mut collector = MetricsCollector::new(None, vec![])?;
 /// collector.record_message(1024, None)?;
+/// # Ok(())
+/// # }
 /// ```
 pub struct MetricsCollector {
     /// Optional latency collector (None for throughput-only measurement)
