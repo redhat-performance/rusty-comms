@@ -63,8 +63,8 @@ jobs:
           # Only comment on Pull Request events
           if [ -n "$PR_NUMBER" ]; then
             MARKER="<!-- gemini-fmt-error -->"
-            BODY="$MARKER\n⚠️ **ERROR:** Code formatting issues detected. Please run \`cargo fmt 
-     --all\` locally and commit the changes."
+            BODY="$MARKER
+            ⚠️ **ERROR:** Code formatting issues detected. Please run \`cargo fmt --all\` locally and commit the changes."
             
             # Check if a comment with our marker already exists to avoid spamming
             existing_comment=$(gh pr view "$PR_NUMBER" --json comments -q ".comments[] | select(.body | contains(\"$MARKER\")) | .id")
