@@ -2,6 +2,8 @@
 name = "ipc-benchmark"
 version = "0.1.0"
 edition = "2021"
+# MSRV is set to 1.70 to maintain compatibility with the Rust toolset in RHEL 9.
+rust-version = "1.70"
 authors = ["IPC Benchmark Contributors"]
 description = "A comprehensive interprocess communication benchmark suite"
 license = "Apache-2.0"
@@ -17,7 +19,7 @@ colored = "2.1.0"
 tokio = { version = "1.38.0", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = ">=4.4.18, <4.5.0", features = ["derive"] }
 crossbeam = "0.8"
 shared_memory = "0.12"
 nix = { version = "0.27", features = ["mqueue", "fs"] }
@@ -33,6 +35,7 @@ bincode = "1.3"
 async-trait = "0.1"
 socket2 = "0.5"
 tracing-appender = "0.2.3"
+time = ">=0.3.34, <0.3.36" # Pinned to a compatible range for MSRV 1.70
 
 [dev-dependencies]
 criterion = "0.5"

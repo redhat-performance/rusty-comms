@@ -49,7 +49,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-
+use time::OffsetDateTime;
 use tokio::sync::mpsc;
 
 // Public module exports for specific transport implementations
@@ -60,7 +60,7 @@ pub mod unix_domain_socket;
 
 // Re-export transport implementations for convenient access
 pub use posix_message_queue::PosixMessageQueueTransport;
-pub use shared_memory::SharedMemoryTransport;
+pub use self::shared_memory::SharedMemoryTransport;
 pub use tcp_socket::TcpSocketTransport;
 pub use unix_domain_socket::UnixDomainSocketTransport;
 
@@ -203,7 +203,7 @@ impl Message {
     pub fn new(id: u64, payload: Vec<u8>, message_type: MessageType) -> Self {
         Self {
             id,
-            timestamp: crate::utils::current_timestamp_ns(),
+            timestamp: OffsetDateTime::now_utc().unix_timestamp_nanos() as u64,
             payload,
             message_type,
         }

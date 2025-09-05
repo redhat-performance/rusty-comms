@@ -231,10 +231,16 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Install MSRV Rust (1.70.0)
+    - name: Read MSRV from Cargo.toml
+      id: read_msrv
+      run: |
+        msrv=$(awk -F '"' '/rust-version/ {print $2}' Cargo.toml)
+        echo "msrv=$msrv" >> $GITHUB_OUTPUT
+
+    - name: Install MSRV Rust (${{ steps.read_msrv.outputs.msrv }})
       uses: dtolnay/rust-toolchain@v1
       with:
-        toolchain: 1.70.0
+        toolchain: ${{ steps.read_msrv.outputs.msrv }}
 
     - name: Install Linux dependencies
       run: |
