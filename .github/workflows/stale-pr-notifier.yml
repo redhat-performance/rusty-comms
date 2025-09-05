@@ -12,7 +12,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Fetch all history for all branches and tags
+          fetch-depth: 0
 
       - name: Get recent commits from main
         id: get_commits
@@ -32,31 +32,25 @@ jobs:
             pr_branch=$(gh pr view $pr_number --json headRefName -q '.headRefName')
             git fetch origin $pr_branch
             
-            # Check if main is an ancestor of the PR branch. If it is, the PR is up to date.
             if git merge-base --is-ancestor origin/main "origin/$pr_branch"; then
               echo "PR #$pr_number is up to date."
             else
               echo "PR #$pr_number is stale. Commenting."
               
-              # Check if a "stale" comment already exists to avoid spamming
               existing_comment=$(gh pr view $pr_number --json comments -q '.comments[] | select(.body | contains("This PR is out-of-date")) | .id')
               
               if [ -z "$existing_comment" ]; then
-                gh pr comment "$pr_number" --body "⚠️ **This PR is out-of-date with the 
-main
- branch.**
+                BODY="⚠️ **This PR is out-of-date with the `main` branch.**
 
                 The base branch has been updated with new changes.
 
-                **Recent commits to 
-main**:
+                **Recent commits to `main`:**
                 ```
                 $COMMITS
                 ```
 
-                To ensure a clean merge, please rebase your branch on top of the latest 
-main
- and push your changes."
+                To ensure a clean merge, please rebase your branch on top of the latest `main` and push your changes."
+                gh pr comment "$pr_number" --body "$BODY"
               else
                 echo "A stale comment already exists on PR #$pr_number. Skipping."
               fi

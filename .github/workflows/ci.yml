@@ -94,6 +94,8 @@ jobs:
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@v1
+      with:
+        toolchain: stable
 
     - name: Install Linux dependencies
       run: |
@@ -121,6 +123,8 @@ jobs:
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@v1
+      with:
+        toolchain: stable
 
     - name: Install cargo-audit
       run: cargo install cargo-audit
@@ -139,6 +143,8 @@ jobs:
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@v1
+      with:
+        toolchain: stable
 
     - name: Install Linux dependencies
       run: |
@@ -200,6 +206,9 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y build-essential pkg-config
+
+    - name: Update lockfile for old toolchain
+      run: cargo update
 
     - name: Check if project builds with MSRV
       run: cargo build --verbose
