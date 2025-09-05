@@ -64,7 +64,8 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD ipc-benchmark --help || exit 1
 
 # Default command
-CMD ["ipc-benchmark", "--help"]
+ENTRYPOINT ["ipc-benchmark"]
+CMD ["--help"]
 
 # Labels for better container management
 LABEL maintainer="IPC Benchmark Contributors"
