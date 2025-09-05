@@ -47,17 +47,17 @@ jobs:
               if [ -z "$existing_comment" ]; then
                 # Define the multiline body using a here document to ensure proper expansion and formatting
                 read -r -d '' BODY <<EOF
-⚠️ **This PR is out-of-date with the `main` branch.**
-
-The base branch has been updated with new changes.
-
-**Recent commits to `main`:**
-```
-$COMMITS
-```
-
-To ensure a clean merge, please rebase your branch on top of the latest `main` and push your changes.
-EOF
+          ⚠️ **This PR is out-of-date with the `main` branch.**
+          
+          The base branch has been updated with new changes.
+          
+          **Recent commits to `main`:**
+          ```
+          $COMMITS
+          ```
+          
+          To ensure a clean merge, please rebase your branch on top of the latest `main` and push your changes.
+          EOF
                 gh pr comment "$pr_number" --body "$BODY"
               else
                 echo "A stale comment already exists on PR #$pr_number. Skipping."
