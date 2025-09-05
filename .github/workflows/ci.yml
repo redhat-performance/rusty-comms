@@ -53,7 +53,7 @@ jobs:
 
     - name: Check formatting
       run: |
-        if ! cargo fmt --all -- --check --emit=diff; then
+        if ! cargo fmt --all -- --check; then
           echo "----------------------------------------------------------------"
           echo "ERROR: Code formatting issues detected."
           echo "Please run 'cargo fmt --all' locally and commit the changes."
