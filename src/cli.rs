@@ -284,6 +284,7 @@ pub enum IpcMechanism {
     /// System-level message queues that preserve message boundaries and support
     /// priority-based delivery. Integrated with OS scheduling but limited by
     /// system-imposed queue depth restrictions (typically 10 messages).
+    #[cfg(not(windows))]
     #[value(name = "pmq")]
     PosixMessageQueue,
 
@@ -336,17 +337,23 @@ impl IpcMechanism {
     /// ```
     pub fn expand_all(mechanisms: Vec<IpcMechanism>) -> Vec<IpcMechanism> {
         if mechanisms.contains(&IpcMechanism::All) {
-            // Return all concrete mechanisms in a logical order:
-            // - UDS first (most commonly used for local IPC)
-            // - SHM second (highest performance)
-            // - TCP third (network-capable)
-            // - PMQ last (most constrained)
-            vec![
+            // Start with a base list of mechanisms that work on all platforms,
+            // in a logical order.
+            let mut all = vec![
+                // UDS first (most commonly used for local IPC)
                 IpcMechanism::UnixDomainSocket,
+                // SHM second (highest performance)
                 IpcMechanism::SharedMemory,
+                // TCP third (network-capable)
                 IpcMechanism::TcpSocket,
-                IpcMechanism::PosixMessageQueue,
-            ]
+            ];
+
+            // Conditionally add POSIX Message Queues on non-Windows platforms
+            // PMQ last (most constrained)
+            #[cfg(not(windows))]
+            all.push(IpcMechanism::PosixMessageQueue);
+
+            all
         } else {
             mechanisms
         }

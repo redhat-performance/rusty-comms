@@ -53,6 +53,7 @@ use time::OffsetDateTime;
 use tokio::sync::mpsc;
 
 // Public module exports for specific transport implementations
+#[cfg(not(windows))]
 pub mod posix_message_queue;
 pub mod shared_memory;
 pub mod tcp_socket;
@@ -60,6 +61,7 @@ pub mod unix_domain_socket;
 
 // Re-export transport implementations for convenient access
 pub use self::shared_memory::SharedMemoryTransport;
+#[cfg(not(windows))]
 pub use posix_message_queue::PosixMessageQueueTransport;
 pub use tcp_socket::TcpSocketTransport;
 pub use unix_domain_socket::UnixDomainSocketTransport;
@@ -799,6 +801,7 @@ impl TransportFactory {
             IpcMechanism::UnixDomainSocket => Ok(Box::new(UnixDomainSocketTransport::new())),
             IpcMechanism::SharedMemory => Ok(Box::new(SharedMemoryTransport::new())),
             IpcMechanism::TcpSocket => Ok(Box::new(TcpSocketTransport::new())),
+            #[cfg(not(windows))]
             IpcMechanism::PosixMessageQueue => Ok(Box::new(PosixMessageQueueTransport::new())),
             IpcMechanism::All => Err(anyhow::anyhow!(
                 "'All' mechanism should be expanded before transport creation"
