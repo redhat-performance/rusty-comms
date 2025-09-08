@@ -84,9 +84,60 @@ jobs:
         set -o pipefail
         cargo clippy --all-targets --all-features --message-format=json -- -D warnings | jq -r 'select(.reason == "compiler-message" and .message.spans[0].is_primary) | .message | "::warning file=\(.spans[0].file_name),line=\(.spans[0].line_start)::\(.message)"'
 
-  test:
-    name: Test
-    needs: lint_and_format
+  security_audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@v1
+      with:
+        toolchain: stable
+
+    - name: Install cargo-audit
+      run: cargo install cargo-audit
+
+    - name: Run security audit
+      run: cargo audit
+
+  msrv:
+    name: Minimum Supported Rust Version
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Read MSRV from Cargo.toml
+      id: read_msrv
+      run: |
+        msrv=$(awk -F '"' '/rust-version/ {print $2}' Cargo.toml)
+        echo "msrv=$msrv" >> $GITHUB_OUTPUT
+
+    - name: Install MSRV Rust (${{ steps.read_msrv.outputs.msrv }})
+      uses: dtolnay/rust-toolchain@v1
+      with:
+        toolchain: ${{ steps.read_msrv.outputs.msrv }}
+
+    - name: Install Linux dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential pkg-config
+
+    - name: Remove lockfile to allow old Cargo to resolve deps
+      run: rm Cargo.lock
+
+    - name: Check if project builds with MSRV
+      run: cargo build --verbose
+
+  build_and_test:
+    name: Cross-Platform Project Build and Test
+    needs:
+      - lint_and_format
+      - security_audit
+      - msrv
+    continue-on-error: true
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -147,10 +198,32 @@ jobs:
     - name: Run benchmark (dry run)
       run: cargo run --release -- --help
 
+  build_status_check:
+    name: Check Status of Cross-Plaform Builds
+    runs-on: ubuntu-latest
+    needs: build_and_test
+    # 'if: always()' ensures this job runs even if the 'test' job is considered 
+    #  "successful" due to continue-on-error
+    if: always()
+
+    steps:
+      - name: Check Platform Test Results
+        # The 'needs' context contains the results of the jobs it depends on.
+        # If any job in the 'test' matrix failed, the overall 'result' will be 
+        # 'failure'.
+        run: |
+          if [ "${{ needs.build_and_test.result }}" == "failure" ]; then
+            echo "One or more platform tests failed."
+            exit 1
+          else
+            echo "All platform tests passed."
+          fi
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build_and_test
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request')
 
     steps:
     - name: Checkout code
@@ -177,24 +250,6 @@ jobs:
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         fail_ci_if_error: false
-
-  security_audit:
-    name: Security Audit
-    runs-on: ubuntu-latest
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@v1
-      with:
-        toolchain: stable
-
-    - name: Install cargo-audit
-      run: cargo install cargo-audit
-
-    - name: Run security audit
-      run: cargo audit
 
   benchmarks:
     name: Performance Benchmarks
@@ -251,31 +306,3 @@ jobs:
     - name: Test container image
       run: podman run --rm ipc-benchmark --help
 
-  msrv:
-    name: Minimum Supported Rust Version
-    runs-on: ubuntu-latest
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Read MSRV from Cargo.toml
-      id: read_msrv
-      run: |
-        msrv=$(awk -F '"' '/rust-version/ {print $2}' Cargo.toml)
-        echo "msrv=$msrv" >> $GITHUB_OUTPUT
-
-    - name: Install MSRV Rust (${{ steps.read_msrv.outputs.msrv }})
-      uses: dtolnay/rust-toolchain@v1
-      with:
-        toolchain: ${{ steps.read_msrv.outputs.msrv }}
-
-    - name: Install Linux dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential pkg-config
-
-    - name: Remove lockfile to allow old Cargo to resolve deps
-      run: rm Cargo.lock
-
-    - name: Check if project builds with MSRV
-      run: cargo build --verbose
