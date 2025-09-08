@@ -251,14 +251,6 @@ jobs:
           --output-dir ./coverage-reports \
           | tee ./coverage-reports/coverage-summary.txt
 
-    - name: Archive coverage report
-      uses: actions/upload-artifact@v4
-      with:
-        name: coverage-report
-        path: |
-          ./coverage-reports/
-        retention-days: 1
-
     - name: Post detailed coverage summary to Job Summary
       run: |
         echo "### Code Coverage Report" >> $GITHUB_STEP_SUMMARY
@@ -321,6 +313,14 @@ jobs:
       run: |
         cat ./coverage-reports/coverage-summary.md >> $GITHUB_STEP_SUMMARY
 
+    - name: Archive coverage report
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-reports
+        path: |
+          ./coverage-reports/
+        retention-days: 1
+
   coverage_pr_comment:
     name: Post PR Coverage Comment
     runs-on: ubuntu-latest
@@ -331,8 +331,8 @@ jobs:
       - name: Download coverage report artifact
         uses: actions/download-artifact@v4
         with:
-          name: coverage-report
-          path: .
+          name: coverage-reports
+          path: ./coverage-reports/
 
       - name: Post Coverage Comment
         env:
