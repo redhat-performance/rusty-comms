@@ -215,13 +215,18 @@ jobs:
 
     steps:
       - name: Check Platform Test Results
-        # The 'needs' context contains the outputs of all matrix jobs it depends on.
-        # We check the 'outcome' output from each matrix job. If any of them are not
-        # 'success', we fail this job to provide an accurate overall workflow status.
+        # The 'needs' context provides an object containing the 'outputs' of all matrix jobs.
+        # We use jq to process this object. The filter does the following:
+        # 1. `map(.outcome)`: Creates an array of the 'outcome' value from each job's output.
+        #    e.g., ["success", "failure", "success"]
+        # 2. `any(. != "success")`: Checks if any item in that array is not "success".
+        # 3. The `-e` flag sets jq's exit code: 0 if the result is `true`, 1 if `false`.
         run: |
-          echo '${{ toJSON(needs.build_and_test.outputs) }}'
-          if echo '${{ toJSON(needs.build_and_test.outputs) }}' | jq 'any(.[]; .outcome != "success")' | grep -q true; then
-            echo "One or more platform tests failed, were cancelled, or were skipped."
+          outputs_json='${{ toJSON(needs.build_and_test.outputs) }}'
+          echo "Matrix job outputs:"
+          echo "$outputs_json"
+          if echo "$outputs_json" | jq -e 'map(.outcome) | any(. != "success")'; then
+            echo "One or more platform tests failed."
             exit 1
           else
             echo "All platform tests passed."
