@@ -246,6 +246,7 @@ jobs:
           --branch \
           --timeout 120 \
           --out Xml \
+          --color never \
           --output-dir ./coverage-reports \
           | tee ./coverage-reports/coverage-summary.txt
 
@@ -254,8 +255,7 @@ jobs:
       with:
         name: coverage-report
         path: |
-          ./coverage-reports/cobertura.xml
-          ./coverage-reports/coverage-summary.txt
+          ./coverage-reports/
         retention-days: 1
 
     - name: Post detailed coverage summary to Job Summary
@@ -265,11 +265,60 @@ jobs:
         echo '<details><summary>Click to expand for a detailed, per-file coverage report</summary>' >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo '```text' >> $GITHUB_STEP_SUMMARY
-        # The text report from tarpaulin has color codes, so we remove them with sed
-        sed 's/\[0-9;]*m//g' ./coverage-reports/coverage-summary.txt >> $GITHUB_STEP_SUMMARY
+        cat ./coverage-reports/coverage-summary.txt >> $GITHUB_STEP_SUMMARY
         echo '```' >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo '</details>' >> $GITHUB_STEP_SUMMARY
+
+    - name: Generate Markdown Summary Table
+      run: |
+        python3 -c '
+        import xml.etree.ElementTree as ET
+        import os
+
+        tree = ET.parse("./coverage-reports/cobertura.xml")
+        root = tree.getroot()
+        line_rate = float(root.attrib["line-rate"]) * 100
+        branch_rate = float(root.attrib["branch-rate"]) * 100
+
+        with open("./coverage-reports/coverage-summary.md", "w") as f:
+            f.write("### 📊 Code Coverage Summary\n\n")
+            f.write("| File | Line Coverage | Branch Coverage | Uncovered Lines |\n")
+            f.write("|------|---------------|-----------------|-----------------|")
+
+            packages = root.find("packages")
+            all_classes = []
+            if packages is not None:
+                for package in packages.findall("package"):
+                    classes = package.find("classes")
+                    if classes is not None:
+                        for klass in classes.findall("class"):
+                            all_classes.append(klass)
+            
+            all_classes.sort(key=lambda x: x.attrib["filename"])
+
+            for klass in all_classes:
+                filename = klass.attrib["filename"]
+                if "target/debug/build" in filename:
+                    continue
+                line_rate_class = float(klass.attrib["line-rate"]) * 100
+                branch_rate_class = float(klass.attrib["branch-rate"]) * 100
+                
+                uncovered_lines = []
+                lines = klass.find("lines")
+                if lines is not None:
+                    for line in lines.findall("line"):
+                        if line.attrib["hits"] == "0":
+                            uncovered_lines.append(line.attrib["number"])
+                
+                uncovered_lines_str = ", ".join(uncovered_lines)
+                f.write(f"| `{filename}` | {line_rate_class:.2f}% | {branch_rate_class:.2f}% | `{uncovered_lines_str}` |\n")
+
+            f.write(f"| **Total** | **{line_rate:.2f}%** | **{branch_rate:.2f}%** | | \n")
+        '
+    - name: Add Markdown summary table to Job Summary
+      run: |
+        cat ./coverage-reports/coverage-summary.md >> $GITHUB_STEP_SUMMARY
 
   coverage_pr_comment:
     name: Post PR Coverage Comment
@@ -282,19 +331,18 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: coverage-report
-          path: ./coverage-reports
+          path: .
 
-      - name: Post coverage comment
-        uses: MADHEAD/cobertura-report-action@v2
-        with:
-          path: ./coverage-reports/cobertura.xml
-          threshold: 0 # We only post the report, not fail the job
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          skip_covered: true
-          show_missing: true
-          show_branch: true
-          minimum_coverage: 70 # This is for display only
-          report_name: 'Code Coverage Report'
+      - name: Post Coverage Comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          MARKER="<!-- gemini-coverage-comment -->"
+          BODY=$(cat ./coverage-reports/coverage-summary.md)
+          COMMENT_BODY="$MARKER
+          $BODY"
+          gh pr comment "$PR_NUMBER" --body "$COMMENT_BODY"
 
   benchmarks:
     name: Performance Benchmarks
