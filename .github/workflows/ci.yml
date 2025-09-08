@@ -147,8 +147,12 @@ jobs:
         include:
           # Run jobs both on the Ubuntu host and in a CentOS container
           - os: ubuntu-latest
-            container: ['quay.io/centos/centos:stream9', '']
-            rust: [stable, beta]
+            container: ''
+          - os: ubuntu-latest
+            container: ''
+            rust: beta
+          - os: ubuntu-latest
+            container: 'quay.io/centos/centos:stream9'
 
     steps:
     - name: Checkout code
