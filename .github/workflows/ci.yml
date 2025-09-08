@@ -137,20 +137,18 @@ jobs:
       - lint_and_format
       - security_audit
       - msrv
-    continue-on-error: true
     runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macOS-latest]
-        rust: [stable, beta]
-        exclude:
-          # Skip beta on Windows and macOS to reduce CI time
-          - os: windows-latest
-            rust: beta
-          - os: macOS-latest
-            rust: beta
-    outputs:
-      outcome: ${{ steps.check_status.outputs.outcome }}
+        rust: stable
+        include:
+          # Run jobs both on the Ubuntu host and in a CentOS container
+          - os: ubuntu-latest
+            container: ['quay.io/centos/centos:stream9', '']
+            rust: [stable, beta]
 
     steps:
     - name: Checkout code
@@ -185,11 +183,16 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-cargo-build-target-
 
-    - name: Install Linux dependencies
-      if: matrix.os == 'ubuntu-latest'
+    - name: Install Ubuntu dependencies
+      if: matrix.os == 'ubuntu-latest' && !matrix.container
       run: |
         sudo apt-get update
         sudo apt-get install -y build-essential pkg-config
+
+    - name: Install CentOS dependencies
+      if: matrix.container
+      run: |
+        dnf install -y gcc pkgconf-pkg-config
 
     - name: Run tests
       run: cargo test --verbose --all-features
@@ -200,42 +203,10 @@ jobs:
     - name: Run benchmark (dry run)
       run: cargo run --release -- --help
 
-    - name: Check Job Status
-      id: check_status
-      if: always()
-      run: echo "outcome=${{ job.status }}" >> $GITHUB_OUTPUT
-
-  build_status_check:
-    name: Build Status Checks
-    runs-on: ubuntu-latest
-    needs: build_and_test
-    # 'if: always()' ensures this job runs even if the parent 'build_and_test' job
-    # is considered "successful" due to the continue-on-error strategy.
-    if: always()
-
-    steps:
-      - name: Check Platform Test Results
-        # The 'needs' context provides an object containing the 'outputs' of all matrix jobs.
-        # We use jq to process this object. The filter does the following:
-        # 1. `map(.outcome)`: Creates an array of the 'outcome' value from each job's output.
-        #    e.g., ["success", "failure", "success"]
-        # 2. `any(. != "success")`: Checks if any item in that array is not "success".
-        # 3. The `-e` flag sets jq's exit code: 0 if the result is `true`, 1 if `false`.
-        run: |
-          outputs_json='${{ toJSON(needs.build_and_test.outputs) }}'
-          echo "Matrix job outputs:"
-          echo "$outputs_json"
-          if echo "$outputs_json" | jq -e 'map(.outcome) | any(. != "success")'; then
-            echo "One or more platform tests failed."
-            exit 1
-          else
-            echo "All platform tests passed."
-          fi
-
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
-    needs: build_status_check
+    needs: build_and_test
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request')
 
     steps:
@@ -292,6 +263,31 @@ jobs:
         echo "" >> $GITHUB_STEP_SUMMARY
         echo '</details>' >> $GITHUB_STEP_SUMMARY
 
+  coverage_pr_comment:
+    name: Post PR Coverage Comment
+    runs-on: ubuntu-latest
+    needs: coverage
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Download coverage report artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-report
+          path: ./coverage-reports
+
+      - name: Post coverage comment
+        uses: MADHEAD/cobertura-report-action@v2
+        with:
+          path: ./coverage-reports/cobertura.xml
+          threshold: 0 # We only post the report, not fail the job
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          skip_covered: true
+          show_missing: true
+          show_branch: true
+          minimum_coverage: 70 # This is for display only
+          report_name: 'Code Coverage Report'
+
   benchmarks:
     name: Performance Benchmarks
     runs-on: ubuntu-latest
@@ -346,29 +342,4 @@ jobs:
 
     - name: Test container image
       run: podman run --rm ipc-benchmark --help
-
-  coverage_pr_comment:
-    name: Post PR Coverage Comment
-    runs-on: ubuntu-latest
-    needs: coverage
-    if: github.event_name == 'pull_request'
-
-    steps:
-      - name: Download coverage report artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: coverage-report
-          path: ./coverage-reports
-
-      - name: Post coverage comment
-        uses: MADHEAD/cobertura-report-action@v2
-        with:
-          path: ./coverage-reports/cobertura.xml
-          threshold: 0 # We only post the report, not fail the job
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          skip_covered: true
-          show_missing: true
-          show_branch: true
-          minimum_coverage: 70 # This is for display only
-          report_name: 'Code Coverage Report'
 
