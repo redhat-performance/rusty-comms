@@ -149,6 +149,8 @@ jobs:
             rust: beta
           - os: macOS-latest
             rust: beta
+    outputs:
+      outcome: ${{ steps.check_status.outputs.outcome }}
 
     steps:
     - name: Checkout code
@@ -198,22 +200,28 @@ jobs:
     - name: Run benchmark (dry run)
       run: cargo run --release -- --help
 
+    - name: Check Job Status
+      id: check_status
+      if: always()
+      run: echo "outcome=${{ job.status }}" >> $GITHUB_OUTPUT
+
   build_status_check:
     name: Build Status Checks
     runs-on: ubuntu-latest
     needs: build_and_test
-    # 'if: always()' ensures this job runs even if the 'test' job is considered 
-    #  "successful" due to continue-on-error
+    # 'if: always()' ensures this job runs even if the parent 'build_and_test' job
+    # is considered "successful" due to the continue-on-error strategy.
     if: always()
 
     steps:
       - name: Check Platform Test Results
-        # The 'needs' context contains the results of the jobs it depends on.
-        # If any job in the 'test' matrix failed, the overall 'result' will be 
-        # 'failure'.
+        # The 'needs' context contains the outputs of all matrix jobs it depends on.
+        # We check the 'outcome' output from each matrix job. If any of them are not
+        # 'success', we fail this job to provide an accurate overall workflow status.
         run: |
-          if [ "${{ needs.build_and_test.result }}" == "failure" ]; then
-            echo "One or more platform tests failed."
+          echo '${{ toJSON(needs.build_and_test.outputs) }}'
+          if echo '${{ toJSON(needs.build_and_test.outputs) }}' | jq 'any(.[]; .outcome != "success")' | grep -q true; then
+            echo "One or more platform tests failed, were cancelled, or were skipped."
             exit 1
           else
             echo "All platform tests passed."
