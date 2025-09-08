@@ -255,9 +255,7 @@ jobs:
       with:
         name: coverage-report
         path: |
-          ./coverage-reports/cobertura.xml
-          ./coverage-reports/coverage-summary.txt
-          coverage-summary.md
+          ./coverage-reports/
         retention-days: 1
 
     - name: Post detailed coverage summary to Job Summary
@@ -283,7 +281,7 @@ jobs:
         line_rate = float(root.attrib["line-rate"]) * 100
         branch_rate = float(root.attrib["branch-rate"]) * 100
 
-        with open("coverage-summary.md", "w") as f:
+        with open("./coverage-reports/coverage-summary.md", "w") as f:
             f.write("### 📊 Code Coverage Summary\n\n")
             f.write("| File | Line Coverage | Branch Coverage | Uncovered Lines |\n")
             f.write("|------|---------------|-----------------|-----------------|")
@@ -320,7 +318,7 @@ jobs:
         '
     - name: Add Markdown summary table to Job Summary
       run: |
-        cat coverage-summary.md >> $GITHUB_STEP_SUMMARY
+        cat ./coverage-reports/coverage-summary.md >> $GITHUB_STEP_SUMMARY
 
   coverage_pr_comment:
     name: Post PR Coverage Comment
@@ -341,7 +339,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           MARKER="<!-- gemini-coverage-comment -->"
-          BODY=$(cat coverage-summary.md)
+          BODY=$(cat ./coverage-reports/coverage-summary.md)
           COMMENT_BODY="$MARKER
           $BODY"
           gh pr comment "$PR_NUMBER" --body "$COMMENT_BODY"
