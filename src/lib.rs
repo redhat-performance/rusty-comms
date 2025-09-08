@@ -30,25 +30,28 @@
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
-//!     let config = BenchmarkConfig {
-//!         mechanism: IpcMechanism::UnixDomainSocket,
-//!         message_size: 1024,
-//!         msg_count: Some(10000),
-//!         duration: None,
-//!         concurrency: 1,
-//!         one_way: true,
-//!         round_trip: false,
-//!         warmup_iterations: 100,
-//!         percentiles: vec![50.0, 95.0, 99.0],
-//!         buffer_size: 8192,
-//!         host: "127.0.0.1".to_string(),
-//!         port: 8080,
-//!     };
+//!     #[cfg(unix)]
+//!     {
+//!         let config = BenchmarkConfig {
+//!             mechanism: IpcMechanism::UnixDomainSocket,
+//!             message_size: 1024,
+//!             msg_count: Some(10000),
+//!             duration: None,
+//!             concurrency: 1,
+//!             one_way: true,
+//!             round_trip: false,
+//!             warmup_iterations: 100,
+//!             percentiles: vec![50.0, 95.0, 99.0],
+//!             buffer_size: 8192,
+//!             host: "127.0.0.1".to_string(),
+//!             port: 8080,
+//!         };
 //!     
-//!     let runner = BenchmarkRunner::new(config, IpcMechanism::UnixDomainSocket);
-//!     let results = runner.run(None).await?;
+//!         let runner = BenchmarkRunner::new(config, IpcMechanism::UnixDomainSocket);
+//!         let results = runner.run(None).await?;
 //!     
-//!     println!("Average latency: {:?}", results.summary.average_latency_ns);
+//!         println!("Average latency: {:?}", results.summary.average_latency_ns);
+//!     }
 //!     Ok(())
 //! }
 //! ```

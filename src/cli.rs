@@ -84,6 +84,22 @@ const CONCURRENCY: &str = "Concurrency";
 const OUTPUT_AND_LOGGING: &str = "Output and Logging";
 const ADVANCED: &str = "Advanced";
 
+/// Returns the default IPC mechanism based on the target OS.
+///
+/// On non-Windows platforms, this defaults to `UnixDomainSocket`, which is the
+/// most common and performant local IPC mechanism. On Windows, it defaults to
+/// `SharedMemory` as the best available non-network option.
+fn get_default_ipc_mechanism() -> Vec<IpcMechanism> {
+    #[cfg(unix)]
+    {
+        vec![IpcMechanism::UnixDomainSocket]
+    }
+    #[cfg(windows)]
+    {
+        vec![IpcMechanism::SharedMemory]
+    }
+}
+
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None, styles = styles())]
 pub struct Args {
@@ -92,7 +108,7 @@ pub struct Args {
     /// Multiple mechanisms can be specified to run sequential tests.
     /// The "all" option expands to all available mechanisms for comprehensive testing.
     /// Each mechanism is tested independently with proper resource cleanup between runs.
-    #[arg(short = 'm', value_enum, default_values_t = vec![IpcMechanism::UnixDomainSocket], num_args = 1..)]
+    #[arg(short = 'm', value_enum, default_values_t = get_default_ipc_mechanism(), num_args = 1..)]
     pub mechanisms: Vec<IpcMechanism>,
 
     /// Message size in bytes
@@ -260,6 +276,7 @@ pub enum IpcMechanism {
     /// High-performance local sockets that provide reliable, ordered communication
     /// between processes on the same machine. Supports full-duplex communication
     /// and multiple concurrent clients. Ideal for local service architectures.
+    #[cfg(unix)]
     #[value(name = "uds")]
     UnixDomainSocket,
 
@@ -284,7 +301,7 @@ pub enum IpcMechanism {
     /// System-level message queues that preserve message boundaries and support
     /// priority-based delivery. Integrated with OS scheduling but limited by
     /// system-imposed queue depth restrictions (typically 10 messages).
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     #[value(name = "pmq")]
     PosixMessageQueue,
 
@@ -304,11 +321,15 @@ impl std::fmt::Display for IpcMechanism {
     /// names rather than the internal enum variant names.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            #[cfg(unix)]
             IpcMechanism::UnixDomainSocket => write!(f, "Unix Domain Socket"),
             IpcMechanism::SharedMemory => write!(f, "Shared Memory"),
             IpcMechanism::TcpSocket => write!(f, "TCP Socket"),
+            #[cfg(target_os = "linux")]
             IpcMechanism::PosixMessageQueue => write!(f, "POSIX Message Queue"),
             IpcMechanism::All => write!(f, "All Mechanisms"),
+            #[allow(unreachable_patterns)]
+            _ => unreachable!(),
         }
     }
 }
@@ -327,21 +348,46 @@ impl IpcMechanism {
     /// ## Returns
     /// Vector of concrete mechanisms with "All" expanded if present
     ///
-    /// ## Example
+    /// ## Example (Linux)
     /// ```rust
-    /// use ipc_benchmark::cli::IpcMechanism;
+    /// # use ipc_benchmark::cli::IpcMechanism;
+    /// // On Linux, all mechanisms are available
+    /// #[cfg(target_os = "linux")]
+    /// {
+    ///     let input = vec![IpcMechanism::All];
+    ///     let expanded = IpcMechanism::expand_all(input);
+    ///     assert_eq!(expanded.len(), 4);
+    /// }
+    /// ```
     ///
-    /// let input = vec![IpcMechanism::All];
-    /// let expanded = IpcMechanism::expand_all(input);
-    /// assert_eq!(expanded.len(), 4); // All concrete mechanisms
+    /// ## Example (macOS/BSD)
+    /// ```rust
+    /// # use ipc_benchmark::cli::IpcMechanism;
+    /// // On non-Linux Unix, PMQ is not available
+    /// #[cfg(all(unix, not(target_os = "linux")))]
+    /// {
+    ///     let input = vec![IpcMechanism::All];
+    ///     let expanded = IpcMechanism::expand_all(input);
+    ///     assert_eq!(expanded.len(), 3);
+    /// }
+    /// ```
+    ///
+    /// ## Example (Windows)
+    /// ```rust
+    /// # use ipc_benchmark::cli::IpcMechanism;
+    /// // On Windows, only SHM and TCP are available
+    /// #[cfg(windows)]
+    /// {
+    ///     let input = vec![IpcMechanism::All];
+    ///     let expanded = IpcMechanism::expand_all(input);
+    ///     assert_eq!(expanded.len(), 2);
+    /// }
     /// ```
     pub fn expand_all(mechanisms: Vec<IpcMechanism>) -> Vec<IpcMechanism> {
         if mechanisms.contains(&IpcMechanism::All) {
             // Start with a base list of mechanisms that work on all platforms,
             // in a logical order.
             let mut all = vec![
-                // UDS first (most commonly used for local IPC)
-                IpcMechanism::UnixDomainSocket,
                 // SHM second (highest performance)
                 IpcMechanism::SharedMemory,
                 // TCP third (network-capable)
@@ -349,8 +395,11 @@ impl IpcMechanism {
             ];
 
             // Conditionally add POSIX Message Queues on non-Windows platforms
-            // PMQ last (most constrained)
-            #[cfg(not(windows))]
+            // UDS first (most commonly used for local IPC)
+            #[cfg(unix)]
+            all.insert(0, IpcMechanism::UnixDomainSocket);
+            // PMQ last (most constrained), and only on Linux
+            #[cfg(target_os = "linux")]
             all.push(IpcMechanism::PosixMessageQueue);
 
             all
@@ -633,12 +682,14 @@ mod tests {
     /// Test IPC mechanism display formatting
     #[test]
     fn test_ipc_mechanism_display() {
+        #[cfg(unix)]
         assert_eq!(
             IpcMechanism::UnixDomainSocket.to_string(),
             "Unix Domain Socket"
         );
         assert_eq!(IpcMechanism::SharedMemory.to_string(), "Shared Memory");
         assert_eq!(IpcMechanism::TcpSocket.to_string(), "TCP Socket");
+        #[cfg(target_os = "linux")]
         assert_eq!(
             IpcMechanism::PosixMessageQueue.to_string(),
             "POSIX Message Queue"
@@ -648,6 +699,7 @@ mod tests {
 
     /// Test mechanism expansion logic
     #[test]
+    #[cfg(target_os = "linux")]
     fn test_ipc_mechanism_expand_all() {
         let all_mechanisms = vec![
             IpcMechanism::UnixDomainSocket,

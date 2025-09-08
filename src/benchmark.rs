@@ -164,7 +164,16 @@ impl BenchmarkConfig {
         };
 
         Ok(Self {
-            mechanism: IpcMechanism::UnixDomainSocket, // Will be overridden per test
+            mechanism: {
+                #[cfg(unix)]
+                {
+                    IpcMechanism::UnixDomainSocket
+                }
+                #[cfg(not(unix))]
+                {
+                    IpcMechanism::SharedMemory
+                }
+            }, // Will be overridden per test
             message_size: args.message_size,
 
             // Duration takes precedence over message count
@@ -232,8 +241,11 @@ impl BenchmarkConfig {
 /// #     streaming_output_csv: None,
 /// # };
 /// let config = BenchmarkConfig::from_args(&args)?;
-/// let runner = BenchmarkRunner::new(config, IpcMechanism::UnixDomainSocket);
-/// let results = runner.run(None).await?;
+/// #[cfg(unix)]
+/// {
+///     let runner = BenchmarkRunner::new(config, IpcMechanism::UnixDomainSocket);
+///     let results = runner.run(None).await?;
+/// }
 /// # Ok(())
 /// # }
 /// ```
@@ -1338,6 +1350,7 @@ impl BenchmarkRunner {
         }
 
         // Conservative queue depth for PMQ - most systems have very low limits (often just 10)
+        #[cfg(target_os = "linux")]
         let adaptive_queue_depth = if self.mechanism == IpcMechanism::PosixMessageQueue {
             let msg_count = self.get_msg_count();
 
@@ -1362,6 +1375,8 @@ impl BenchmarkRunner {
         } else {
             10 // Default for other mechanisms
         };
+        #[cfg(not(target_os = "linux"))]
+        let adaptive_queue_depth = 10;
 
         Ok(TransportConfig {
             buffer_size: adaptive_buffer_size,
@@ -1445,6 +1460,7 @@ mod tests {
 
     /// Test benchmark configuration creation from default values
     #[test]
+    #[cfg(unix)]
     fn test_benchmark_config_creation() {
         let config = BenchmarkConfig {
             mechanism: IpcMechanism::UnixDomainSocket,
@@ -1470,6 +1486,7 @@ mod tests {
 
     /// Test benchmark runner creation with various mechanisms
     #[tokio::test]
+    #[cfg(unix)]
     async fn test_benchmark_runner_creation() {
         let config = BenchmarkConfig {
             mechanism: IpcMechanism::UnixDomainSocket,

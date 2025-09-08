@@ -1681,6 +1681,7 @@ mod tests {
 
     /// Test benchmark results creation with various configurations
     #[test]
+    #[cfg(unix)]
     fn test_benchmark_results_creation() {
         let results =
             BenchmarkResults::new(IpcMechanism::UnixDomainSocket, 1024, 1, Some(1000), None);

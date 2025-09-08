@@ -668,7 +668,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_shared_memory_communication() {
-        let shared_memory_name = format!("test_shm_{}", Uuid::new_v4());
+        // Using a shorter name for shared memory to support macOS and Windows
+        let shared_memory_name = format!("test-{}", &Uuid::new_v4().as_simple().to_string()[..18]);
         let config = TransportConfig {
             shared_memory_name: shared_memory_name.clone(),
             buffer_size: 8192,

@@ -53,17 +53,19 @@ use time::OffsetDateTime;
 use tokio::sync::mpsc;
 
 // Public module exports for specific transport implementations
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 pub mod posix_message_queue;
 pub mod shared_memory;
 pub mod tcp_socket;
+#[cfg(unix)]
 pub mod unix_domain_socket;
 
 // Re-export transport implementations for convenient access
 pub use self::shared_memory::SharedMemoryTransport;
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 pub use posix_message_queue::PosixMessageQueueTransport;
 pub use tcp_socket::TcpSocketTransport;
+#[cfg(unix)]
 pub use unix_domain_socket::UnixDomainSocketTransport;
 
 /// Connection identifier for tracking multiple client connections
@@ -798,10 +800,11 @@ impl TransportFactory {
         use crate::cli::IpcMechanism;
 
         match mechanism {
+            #[cfg(unix)]
             IpcMechanism::UnixDomainSocket => Ok(Box::new(UnixDomainSocketTransport::new())),
             IpcMechanism::SharedMemory => Ok(Box::new(SharedMemoryTransport::new())),
             IpcMechanism::TcpSocket => Ok(Box::new(TcpSocketTransport::new())),
-            #[cfg(not(windows))]
+            #[cfg(target_os = "linux")]
             IpcMechanism::PosixMessageQueue => Ok(Box::new(PosixMessageQueueTransport::new())),
             IpcMechanism::All => Err(anyhow::anyhow!(
                 "'All' mechanism should be expanded before transport creation"
