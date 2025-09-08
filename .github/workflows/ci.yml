@@ -87,20 +87,21 @@ jobs:
   security_audit:
     name: Security Audit
     runs-on: ubuntu-latest
+    container: rust:latest
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@v1
+    - name: Cache cargo-audit
+      uses: actions/cache@v4
       with:
-        toolchain: stable
-
-    - name: Install cargo-audit
-      run: cargo install cargo-audit
-
+        path: /usr/local/cargo/bin/cargo-audit
+        key: ${{ runner.os }}-cargo-audit
     - name: Run security audit
-      run: cargo audit
+      run: |
+        if [ ! -f "/usr/local/cargo/bin/cargo-audit" ]; then
+          cargo install cargo-audit
+        fi
+        cargo audit
 
   msrv:
     name: Minimum Supported Rust Version
@@ -142,17 +143,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macOS-latest]
+        os: [windows-latest, macOS-latest]
         rust: [stable]
         include:
           # Run jobs both on the Ubuntu host and in a CentOS container
           - os: ubuntu-latest
             container: ''
+            rust: stable
           - os: ubuntu-latest
             container: ''
             rust: beta
           - os: ubuntu-latest
             container: 'quay.io/centos/centos:stream9'
+            rust: stable
 
     steps:
     - name: Checkout code
