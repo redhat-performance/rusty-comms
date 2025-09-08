@@ -132,7 +132,7 @@ jobs:
       run: cargo build --verbose
 
   build_and_test:
-    name: Cross-Platform Project Build and Test
+    name: Build and Test
     needs:
       - lint_and_format
       - security_audit
@@ -199,7 +199,7 @@ jobs:
       run: cargo run --release -- --help
 
   build_status_check:
-    name: Check Status of Cross-Plaform Builds
+    name: Build Status Checks
     runs-on: ubuntu-latest
     needs: build_and_test
     # 'if: always()' ensures this job runs even if the 'test' job is considered 
