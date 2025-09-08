@@ -231,6 +231,7 @@ jobs:
 
     - name: Generate coverage report
       run: |
+        mkdir -p ./coverage-reports
         cargo tarpaulin \
           --verbose \
           --all-features \
