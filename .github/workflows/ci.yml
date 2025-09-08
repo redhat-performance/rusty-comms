@@ -284,7 +284,7 @@ jobs:
         with open("./coverage-reports/coverage-summary.md", "w") as f:
             f.write("### 📊 Code Coverage Summary\n\n")
             f.write("| File | Line Coverage | Branch Coverage | Uncovered Lines |\n")
-            f.write("|------|---------------|-----------------|-----------------|")
+            f.write("|------|---------------|-----------------|-----------------|\n")
 
             packages = root.find("packages")
             all_classes = []
@@ -331,7 +331,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: coverage-report
-          path: .
+          path: ./coverage-reports
 
       - name: Post Coverage Comment
         env:
