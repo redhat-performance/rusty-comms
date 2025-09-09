@@ -388,7 +388,6 @@ impl SharedMemoryTransport {
     }
 
     /// Handle a client connection in multi-server mode
-    #[allow(unreachable_code)]
     async fn handle_connection(
         connection_id: ConnectionId,
         connection: SharedMemoryConnection,
@@ -706,9 +705,6 @@ mod tests {
         let message = Message::new(1, vec![1, 2, 3, 4, 5], MessageType::Request);
         client.send(&message).await.unwrap();
         sleep(Duration::from_millis(100)).await;
-
-        // Give server a brief moment to process the request and write the response
-        sleep(Duration::from_millis(50)).await;
 
         let response = client.receive().await.unwrap();
         assert_eq!(response.id, 2);
