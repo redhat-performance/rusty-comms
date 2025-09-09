@@ -23,7 +23,7 @@
 //! individual message latency measurements as they occur, while final output
 //! provides aggregated statistics and cross-mechanism comparisons.
 
-use crate::metrics::{LatencyType, PerformanceMetrics};
+use crate::metrics::{LatencyMetrics, LatencyType, PerformanceMetrics};
 use crate::IpcMechanism;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -302,6 +302,9 @@ pub struct TestConfiguration {
     /// Size of message payloads in bytes
     pub message_size: usize,
 
+    /// Buffer size used for the test
+    pub buffer_size: usize,
+
     /// Number of concurrent workers used
     pub concurrency: usize,
 
@@ -322,9 +325,6 @@ pub struct TestConfiguration {
 
     /// Percentiles calculated for latency analysis
     pub percentiles: Vec<f64>,
-
-    /// Buffer size used for transport mechanisms
-    pub buffer_size: usize,
 }
 
 /// Summary of benchmark results
@@ -1193,10 +1193,11 @@ impl ResultsManager {
             for result in &self.results {
                 println!("Mechanism: {}", result.mechanism);
                 println!("  Message Size: {} bytes", result.test_config.message_size);
+                println!("  Buffer Size:  {} bytes", result.test_config.buffer_size);
 
                 match &result.status {
                     BenchmarkStatus::Success => {
-                        Self::print_summary_details(&result.summary, "  ");
+                        Self::print_summary_details(result, "  ");
                     }
                     BenchmarkStatus::Failure(error_msg) => {
                         println!("  Status: FAILED");
@@ -1211,41 +1212,60 @@ impl ResultsManager {
         Ok(())
     }
 
-    /// Helper function to format and print the details from a BenchmarkSummary.
-    fn print_summary_details(summary: &BenchmarkSummary, indent: &str) {
-        if summary.average_latency_ns.is_some() {
-            println!("{}Latency:", indent);
-            println!(
-                "{}{:<8} Mean: {}, P95: {}, P99: {}",
-                indent,
-                "  ",
-                summary
-                    .average_latency_ns
-                    .map(|v| format_latency(v as u64))
-                    .unwrap_or_else(|| "N/A".to_string()),
-                summary
-                    .p95_latency_ns
-                    .map(format_latency)
-                    .unwrap_or_else(|| "N/A".to_string()),
-                summary
-                    .p99_latency_ns
-                    .map(format_latency)
-                    .unwrap_or_else(|| "N/A".to_string())
-            );
-            println!(
-                "{}{:<8} Min:  {}, Max: {}",
-                indent,
-                "  ",
-                summary
-                    .min_latency_ns
-                    .map(format_latency)
-                    .unwrap_or_else(|| "N/A".to_string()),
-                summary
-                    .max_latency_ns
-                    .map(format_latency)
-                    .unwrap_or_else(|| "N/A".to_string())
-            );
+    /// Helper function to format and print the details from LatencyMetrics.
+    ///
+    /// This function takes latency metrics and prints a formatted summary,
+    /// including mean, P95, P99, min, and max values. It's used to create
+    /// separate, clearly labeled sections for one-way and round-trip latencies.
+    fn print_latency_details(latency: &LatencyMetrics, indent: &str, title: &str) {
+        let mut p95 = None;
+        let mut p99 = None;
+        for percentile in &latency.percentiles {
+            if (percentile.percentile - 95.0).abs() < 0.1 {
+                p95 = Some(percentile.value_ns);
+            }
+            if (percentile.percentile - 99.0).abs() < 0.1 {
+                p99 = Some(percentile.value_ns);
+            }
         }
+
+        println!("{}{}:", indent, title);
+        println!(
+            "{}{:<8} Mean: {}, P95: {}, P99: {}",
+            indent,
+            "  ",
+            format_latency(latency.mean_ns as u64),
+            p95.map(format_latency).unwrap_or_else(|| "N/A".to_string()),
+            p99.map(format_latency).unwrap_or_else(|| "N/A".to_string())
+        );
+        println!(
+            "{}{:<8} Min:  {}, Max: {}",
+            indent,
+            "  ",
+            format_latency(latency.min_ns),
+            format_latency(latency.max_ns)
+        );
+    }
+
+    /// Helper function to format and print the details from a BenchmarkResults struct.
+    ///
+    /// This function now prints separate, clearly labeled sections for one-way and
+    /// round-trip latencies if they are present in the results. Throughput and
+    /// total data transfer are printed in their own sections.
+    fn print_summary_details(result: &BenchmarkResults, indent: &str) {
+        if let Some(one_way) = &result.one_way_results {
+            if let Some(latency) = &one_way.latency {
+                Self::print_latency_details(latency, indent, "One-Way Latency");
+            }
+        }
+
+        if let Some(round_trip) = &result.round_trip_results {
+            if let Some(latency) = &round_trip.latency {
+                Self::print_latency_details(latency, indent, "Round-Trip Latency");
+            }
+        }
+
+        let summary = &result.summary;
 
         println!("{}Throughput:", indent);
         // Note: The summary field is named _mbps, but the calculation in update_summary
@@ -1430,12 +1450,14 @@ impl BenchmarkResults {
     pub fn new(
         mechanism: IpcMechanism,
         message_size: usize,
+        buffer_size: usize,
         concurrency: usize,
         msg_count: Option<usize>,
         duration: Option<Duration>,
     ) -> Self {
         let test_config = TestConfiguration {
             message_size,
+            buffer_size,
             concurrency,
             msg_count,
             duration,
@@ -1443,7 +1465,6 @@ impl BenchmarkResults {
             round_trip_enabled: false,
             warmup_iterations: 0,
             percentiles: vec![50.0, 95.0, 99.0, 99.9],
-            buffer_size: 8192,
         };
 
         Self {
@@ -1752,8 +1773,14 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn test_benchmark_results_creation() {
-        let results =
-            BenchmarkResults::new(IpcMechanism::UnixDomainSocket, 1024, 1, Some(1000), None);
+        let results = BenchmarkResults::new(
+            IpcMechanism::UnixDomainSocket,
+            1024,
+            8192,
+            1,
+            Some(1000),
+            None,
+        );
 
         assert_eq!(results.mechanism, IpcMechanism::UnixDomainSocket);
         assert_eq!(results.test_config.message_size, 1024);
