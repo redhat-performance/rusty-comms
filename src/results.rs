@@ -23,8 +23,8 @@
 //! individual message latency measurements as they occur, while final output
 //! provides aggregated statistics and cross-mechanism comparisons.
 
-use crate::IpcMechanism;
 use crate::metrics::{LatencyType, PerformanceMetrics};
+use crate::IpcMechanism;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -76,20 +76,20 @@ pub enum BenchmarkStatus {
 pub struct MessageLatencyRecord {
     /// Unix timestamp in nanoseconds when the measurement was taken
     pub timestamp_ns: u64,
-    
+
     /// Unique identifier for the message within the test
     pub message_id: u64,
-    
+
     /// IPC mechanism being tested
     pub mechanism: IpcMechanism,
-    
+
     /// Size of the message payload in bytes
     pub message_size: usize,
-    
+
     /// One-way latency in nanoseconds (send to receive)
     /// None if this measurement is for round-trip only
     pub one_way_latency_ns: Option<u64>,
-    
+
     /// Round-trip latency in nanoseconds (send to response received)
     /// None if this measurement is for one-way only
     pub round_trip_latency_ns: Option<u64>,
@@ -121,7 +121,7 @@ impl MessageLatencyRecord {
     /// Convert the record to a CSV record string
     pub fn to_csv_record(&self) -> String {
         use std::fmt::Write;
-        // A capacity of 256 should be sufficient for most records, avoiding reallocations, 
+        // A capacity of 256 should be sufficient for most records, avoiding reallocations,
         // even for a test running for an hour or longer. Capacity is per-record, and a
         // worst-case record with all fields filled is unlikely to exceed even 125 bytes.
         let mut s = String::with_capacity(256);
@@ -166,13 +166,13 @@ impl MessageLatencyRecord {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos() as u64;
-        
+
         let latency_ns = latency.as_nanos() as u64;
         let (one_way_latency_ns, round_trip_latency_ns) = match latency_type {
             LatencyType::OneWay => (Some(latency_ns), None),
             LatencyType::RoundTrip => (None, Some(latency_ns)),
         };
-        
+
         Self {
             timestamp_ns,
             message_id,
@@ -205,7 +205,7 @@ impl MessageLatencyRecord {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos() as u64;
-        
+
         Self {
             timestamp_ns,
             message_id,
@@ -217,7 +217,7 @@ impl MessageLatencyRecord {
     }
 
     /// Merge another record into this one, combining latency measurements
-    /// 
+    ///
     /// This is used when aggregating separate one-way and round-trip records
     /// for the same message ID into a single combined record.
     pub fn merge(&mut self, other: &MessageLatencyRecord) {
@@ -259,28 +259,28 @@ impl MessageLatencyRecord {
 pub struct BenchmarkResults {
     /// The IPC mechanism that was tested
     pub mechanism: IpcMechanism,
-    
+
     /// The outcome of the benchmark test
     pub status: BenchmarkStatus,
-    
+
     /// Configuration parameters used for this test
     pub test_config: TestConfiguration,
-    
+
     /// Results from one-way latency testing (if enabled)
     pub one_way_results: Option<PerformanceMetrics>,
-    
+
     /// Results from round-trip latency testing (if enabled)
     pub round_trip_results: Option<PerformanceMetrics>,
-    
+
     /// Derived summary statistics and key metrics
     pub summary: BenchmarkSummary,
-    
+
     /// When this benchmark was executed
     pub timestamp: chrono::DateTime<chrono::Utc>,
-    
+
     /// Total duration of the benchmark execution
     pub test_duration: Duration,
-    
+
     /// System information for reproducibility
     pub system_info: SystemInfo,
 }
@@ -301,28 +301,28 @@ pub struct BenchmarkResults {
 pub struct TestConfiguration {
     /// Size of message payloads in bytes
     pub message_size: usize,
-    
+
     /// Number of concurrent workers used
     pub concurrency: usize,
-    
+
     /// Number of messages run (None for duration-based tests)
     pub msg_count: Option<usize>,
-    
+
     /// Test duration (None for message-count-based tests)
     pub duration: Option<Duration>,
-    
+
     /// Whether one-way latency testing was enabled
     pub one_way_enabled: bool,
-    
+
     /// Whether round-trip latency testing was enabled
     pub round_trip_enabled: bool,
-    
+
     /// Number of warmup iterations executed
     pub warmup_iterations: usize,
-    
+
     /// Percentiles calculated for latency analysis
     pub percentiles: Vec<f64>,
-    
+
     /// Buffer size used for transport mechanisms
     pub buffer_size: usize,
 }
@@ -349,31 +349,31 @@ pub struct TestConfiguration {
 pub struct BenchmarkSummary {
     /// Total number of messages sent during all tests
     pub total_messages_sent: usize,
-    
+
     /// Total number of bytes transferred during all tests
     pub total_bytes_transferred: usize,
-    
+
     /// Average throughput across all tests in megabits per second
     pub average_throughput_mbps: f64,
-    
+
     /// Peak throughput observed in any single test in megabits per second
     pub peak_throughput_mbps: f64,
-    
+
     /// Average latency across all latency measurements (if any)
     pub average_latency_ns: Option<f64>,
-    
+
     /// Minimum latency observed across all tests
     pub min_latency_ns: Option<u64>,
-    
+
     /// Maximum latency observed across all tests
     pub max_latency_ns: Option<u64>,
-    
+
     /// 95th percentile latency (95% of requests faster than this)
     pub p95_latency_ns: Option<u64>,
-    
+
     /// 99th percentile latency (99% of requests faster than this)
     pub p99_latency_ns: Option<u64>,
-    
+
     /// Number of errors encountered during testing
     pub error_count: usize,
 }
@@ -402,19 +402,19 @@ pub struct BenchmarkSummary {
 pub struct SystemInfo {
     /// Operating system name (e.g., "linux", "windows", "macos")
     pub os: String,
-    
+
     /// System architecture (e.g., "x86_64", "aarch64")
     pub architecture: String,
-    
+
     /// Number of CPU cores available
     pub cpu_cores: usize,
-    
+
     /// Available system memory in gigabytes
     pub memory_gb: f64,
-    
+
     /// Rust compiler version used to build the benchmark
     pub rust_version: String,
-    
+
     /// Benchmark suite version
     pub benchmark_version: String,
 }
@@ -450,22 +450,22 @@ pub struct ResultsManager {
 
     /// Optional path for streaming results output
     streaming_file: Option<std::path::PathBuf>,
-    
+
     /// Optional path for streaming CSV results output
     streaming_csv_file: Option<std::path::PathBuf>,
 
     /// Accumulated results from all benchmark runs
     results: Vec<BenchmarkResults>,
-    
+
     /// Whether streaming is enabled
     streaming_enabled: bool,
-    
+
     /// Whether CSV streaming is enabled
     csv_streaming_enabled: bool,
 
     /// Whether to stream per-message latency records instead of final results
     per_message_streaming: bool,
-    
+
     /// Counter for tracking if this is the first record being streamed
     first_record_streamed: bool,
 
@@ -533,8 +533,6 @@ impl ResultsManager {
     ///   ...
     /// ]
     /// ```
-    ///
-    
     /// latency monitoring for analysis and debugging.
     ///
     /// ## Parameters
@@ -578,7 +576,7 @@ impl ResultsManager {
             .create(true)
             .write(true)
             .truncate(true)
-            .open(&self.streaming_file.as_ref().unwrap())?;
+            .open(self.streaming_file.as_ref().unwrap())?;
 
         // Write JSON object opening and headings array
         writeln!(file, "{{")?;
@@ -586,7 +584,10 @@ impl ResultsManager {
         writeln!(file, "  \"headings\": {},", headings_json)?;
         write!(file, "  \"data\": [")?;
 
-        debug!("Enabled per-message streaming to: {:?}", self.streaming_file);
+        debug!(
+            "Enabled per-message streaming to: {:?}",
+            self.streaming_file
+        );
         Ok(())
     }
 
@@ -602,11 +603,18 @@ impl ResultsManager {
     /// ## Returns
     /// - `Ok(())`: Combined streaming enabled successfully
     /// - `Err(anyhow::Error)`: File creation or write permission error
-    pub fn enable_combined_streaming(&mut self, streaming_file: &Path, both_tests_enabled: bool) -> Result<()> {
+    pub fn enable_combined_streaming(
+        &mut self,
+        streaming_file: &Path,
+        both_tests_enabled: bool,
+    ) -> Result<()> {
         self.enable_per_message_streaming(streaming_file)?;
         self.both_tests_enabled = both_tests_enabled;
-        
-        debug!("Enabled combined streaming mode: both_tests={}", both_tests_enabled);
+
+        debug!(
+            "Enabled combined streaming mode: both_tests={}",
+            both_tests_enabled
+        );
         Ok(())
     }
 
@@ -643,7 +651,7 @@ impl ResultsManager {
             .create(true)
             .write(true)
             .truncate(true)
-            .open(&self.streaming_csv_file.as_ref().unwrap())?;
+            .open(self.streaming_csv_file.as_ref().unwrap())?;
 
         // Write CSV header
         let header = MessageLatencyRecord::HEADINGS.join(",");
@@ -694,9 +702,11 @@ impl ResultsManager {
         if let Some(existing_record) = self.pending_records.get_mut(&message_id) {
             // We have a pending record for this message ID - merge and write
             existing_record.merge(record);
-            
+
             // Check if we now have both latency types
-            if existing_record.one_way_latency_ns.is_some() && existing_record.round_trip_latency_ns.is_some() {
+            if existing_record.one_way_latency_ns.is_some()
+                && existing_record.round_trip_latency_ns.is_some()
+            {
                 // Both latencies available - write combined record and remove from pending
                 let combined_record = existing_record.clone();
                 self.pending_records.remove(&message_id);
@@ -730,7 +740,7 @@ impl ResultsManager {
             let json = serde_json::to_string(&values)?;
             write!(file, "    {}", json)?; // Indent for readability
             file.flush()?;
-            
+
             self.first_record_streamed = false;
         }
 
@@ -752,7 +762,10 @@ impl ResultsManager {
     /// This method writes records directly to the streaming file without
     /// aggregation, used for combined tests where both latencies are measured
     /// for the same message simultaneously.
-    pub async fn write_streaming_record_direct(&mut self, record: &MessageLatencyRecord) -> Result<()> {
+    pub async fn write_streaming_record_direct(
+        &mut self,
+        record: &MessageLatencyRecord,
+    ) -> Result<()> {
         if !self.streaming_enabled || !self.per_message_streaming {
             return Ok(());
         }
@@ -912,18 +925,22 @@ impl ResultsManager {
     /// file before finalization.
     pub async fn flush_pending_records(&mut self) -> Result<()> {
         if self.both_tests_enabled && !self.pending_records.is_empty() {
-            debug!("Flushing {} pending streaming records", self.pending_records.len());
-            
+            debug!(
+                "Flushing {} pending streaming records",
+                self.pending_records.len()
+            );
+
             // Collect records to write to avoid borrowing issues
-            let records_to_write: Vec<MessageLatencyRecord> = self.pending_records.values().cloned().collect();
-            
+            let records_to_write: Vec<MessageLatencyRecord> =
+                self.pending_records.values().cloned().collect();
+
             for record in records_to_write {
                 self.write_streaming_record(&record).await?;
             }
-            
+
             self.pending_records.clear();
         }
-        
+
         Ok(())
     }
 
@@ -1202,16 +1219,31 @@ impl ResultsManager {
                 "{}{:<8} Mean: {}, P95: {}, P99: {}",
                 indent,
                 "  ",
-                summary.average_latency_ns.map(|v| format_latency(v as u64)).unwrap_or_else(|| "N/A".to_string()),
-                summary.p95_latency_ns.map(format_latency).unwrap_or_else(|| "N/A".to_string()),
-                summary.p99_latency_ns.map(format_latency).unwrap_or_else(|| "N/A".to_string())
+                summary
+                    .average_latency_ns
+                    .map(|v| format_latency(v as u64))
+                    .unwrap_or_else(|| "N/A".to_string()),
+                summary
+                    .p95_latency_ns
+                    .map(format_latency)
+                    .unwrap_or_else(|| "N/A".to_string()),
+                summary
+                    .p99_latency_ns
+                    .map(format_latency)
+                    .unwrap_or_else(|| "N/A".to_string())
             );
             println!(
                 "{}{:<8} Min:  {}, Max: {}",
                 indent,
                 "  ",
-                summary.min_latency_ns.map(format_latency).unwrap_or_else(|| "N/A".to_string()),
-                summary.max_latency_ns.map(format_latency).unwrap_or_else(|| "N/A".to_string())
+                summary
+                    .min_latency_ns
+                    .map(format_latency)
+                    .unwrap_or_else(|| "N/A".to_string()),
+                summary
+                    .max_latency_ns
+                    .map(format_latency)
+                    .unwrap_or_else(|| "N/A".to_string())
             );
         }
 
@@ -1220,10 +1252,7 @@ impl ResultsManager {
         // produces MB/s (Megabytes per second). The label reflects the calculation.
         println!(
             "{}{:<8} Average: {:.2} MB/s, Peak: {:.2} MB/s",
-            indent,
-            "  ",
-            summary.average_throughput_mbps,
-            summary.peak_throughput_mbps
+            indent, "  ", summary.average_throughput_mbps, summary.peak_throughput_mbps
         );
 
         println!("{}Totals:", indent);
@@ -1269,10 +1298,10 @@ fn format_latency(ns: u64) -> String {
 pub struct FinalBenchmarkResults {
     /// Metadata about the benchmark execution
     pub metadata: BenchmarkMetadata,
-    
+
     /// Individual results for each mechanism tested
     pub results: Vec<BenchmarkResults>,
-    
+
     /// Cross-mechanism summary and analysis
     pub summary: OverallSummary,
 }
@@ -1292,13 +1321,13 @@ pub struct FinalBenchmarkResults {
 pub struct BenchmarkMetadata {
     /// Benchmark suite version
     pub version: String,
-    
+
     /// When the benchmark suite was executed
     pub timestamp: chrono::DateTime<chrono::Utc>,
-    
+
     /// Total number of mechanism tests performed
     pub total_tests: usize,
-    
+
     /// System information for reproducibility
     pub system_info: SystemInfo,
 }
@@ -1326,19 +1355,19 @@ pub struct BenchmarkMetadata {
 pub struct OverallSummary {
     /// Total messages sent across all mechanisms
     pub total_messages: usize,
-    
+
     /// Total bytes transferred across all mechanisms
     pub total_bytes: usize,
-    
+
     /// Total errors encountered across all tests
     pub total_errors: usize,
-    
+
     /// Individual mechanism performance summaries
     pub mechanisms: HashMap<String, MechanismSummary>,
-    
+
     /// Name of the mechanism with highest throughput
     pub fastest_mechanism: Option<String>,
-    
+
     /// Name of the mechanism with lowest latency
     pub lowest_latency_mechanism: Option<String>,
 }
@@ -1363,16 +1392,16 @@ pub struct OverallSummary {
 pub struct MechanismSummary {
     /// The IPC mechanism this summary describes
     pub mechanism: IpcMechanism,
-    
+
     /// Average throughput performance in megabits per second
     pub average_throughput_mbps: f64,
-    
+
     /// 95th percentile latency (if latency was measured)
     pub p95_latency_ns: Option<u64>,
-    
+
     /// 99th percentile latency (if latency was measured)
     pub p99_latency_ns: Option<u64>,
-    
+
     /// Total number of messages processed by this mechanism
     pub total_messages: usize,
 }
@@ -1502,7 +1531,7 @@ impl BenchmarkResults {
             throughput_values.push(results.throughput.bytes_per_second);
 
             if let Some(ref latency) = results.latency {
-                latency_values.push(latency.mean_ns as f64);
+                latency_values.push(latency.mean_ns);
             }
         }
 
@@ -1513,7 +1542,7 @@ impl BenchmarkResults {
             throughput_values.push(results.throughput.bytes_per_second);
 
             if let Some(ref latency) = results.latency {
-                latency_values.push(latency.mean_ns as f64);
+                latency_values.push(latency.mean_ns);
             }
         }
 
@@ -1579,9 +1608,9 @@ impl BenchmarkResults {
             if let Some(ref latency) = results.latency {
                 // Update global minimum and maximum
                 min_latency =
-                    Some(min_latency.map_or(latency.min_ns as u64, |min: u64| min.min(latency.min_ns as u64)));
+                    Some(min_latency.map_or(latency.min_ns, |min: u64| min.min(latency.min_ns)));
                 max_latency =
-                    Some(max_latency.map_or(latency.max_ns as u64, |max: u64| max.max(latency.max_ns as u64)));
+                    Some(max_latency.map_or(latency.max_ns, |max: u64| max.max(latency.max_ns)));
 
                 // Find P95 and P99 values from percentile data
                 for percentile in &latency.percentiles {
@@ -1652,6 +1681,7 @@ mod tests {
 
     /// Test benchmark results creation with various configurations
     #[test]
+    #[cfg(unix)]
     fn test_benchmark_results_creation() {
         let results =
             BenchmarkResults::new(IpcMechanism::UnixDomainSocket, 1024, 1, Some(1000), None);

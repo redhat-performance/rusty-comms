@@ -37,7 +37,10 @@
 //! - **Output and Logging**: Result file paths and streaming options
 //! - **Advanced**: Buffer sizes, network settings, percentiles
 
-use clap::{builder::styling::{AnsiColor, Styles}, Parser, ValueEnum};
+use clap::{
+    builder::styling::{AnsiColor, Styles},
+    Parser, ValueEnum,
+};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::PathBuf;
@@ -66,7 +69,6 @@ use std::time::Duration;
 ///
 /// Both test types provide comprehensive statistics including percentiles,
 /// standard deviation, and throughput measurements.
-
 /// Defines the styles for the help message to replicate clap v3's appearance.
 fn styles() -> Styles {
     Styles::styled()
@@ -82,6 +84,22 @@ const CONCURRENCY: &str = "Concurrency";
 const OUTPUT_AND_LOGGING: &str = "Output and Logging";
 const ADVANCED: &str = "Advanced";
 
+/// Returns the default IPC mechanism based on the target OS.
+///
+/// On non-Windows platforms, this defaults to `UnixDomainSocket`, which is the
+/// most common and performant local IPC mechanism. On Windows, it defaults to
+/// `SharedMemory` as the best available non-network option.
+fn get_default_ipc_mechanism() -> Vec<IpcMechanism> {
+    #[cfg(unix)]
+    {
+        vec![IpcMechanism::UnixDomainSocket]
+    }
+    #[cfg(windows)]
+    {
+        vec![IpcMechanism::SharedMemory]
+    }
+}
+
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None, styles = styles())]
 pub struct Args {
@@ -90,7 +108,7 @@ pub struct Args {
     /// Multiple mechanisms can be specified to run sequential tests.
     /// The "all" option expands to all available mechanisms for comprehensive testing.
     /// Each mechanism is tested independently with proper resource cleanup between runs.
-    #[arg(short = 'm', value_enum, default_values_t = vec![IpcMechanism::UnixDomainSocket], num_args = 1..)]
+    #[arg(short = 'm', value_enum, default_values_t = get_default_ipc_mechanism(), num_args = 1..)]
     pub mechanisms: Vec<IpcMechanism>,
 
     /// Message size in bytes
@@ -258,6 +276,7 @@ pub enum IpcMechanism {
     /// High-performance local sockets that provide reliable, ordered communication
     /// between processes on the same machine. Supports full-duplex communication
     /// and multiple concurrent clients. Ideal for local service architectures.
+    #[cfg(unix)]
     #[value(name = "uds")]
     UnixDomainSocket,
 
@@ -282,6 +301,7 @@ pub enum IpcMechanism {
     /// System-level message queues that preserve message boundaries and support
     /// priority-based delivery. Integrated with OS scheduling but limited by
     /// system-imposed queue depth restrictions (typically 10 messages).
+    #[cfg(target_os = "linux")]
     #[value(name = "pmq")]
     PosixMessageQueue,
 
@@ -301,11 +321,15 @@ impl std::fmt::Display for IpcMechanism {
     /// names rather than the internal enum variant names.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            #[cfg(unix)]
             IpcMechanism::UnixDomainSocket => write!(f, "Unix Domain Socket"),
             IpcMechanism::SharedMemory => write!(f, "Shared Memory"),
             IpcMechanism::TcpSocket => write!(f, "TCP Socket"),
+            #[cfg(target_os = "linux")]
             IpcMechanism::PosixMessageQueue => write!(f, "POSIX Message Queue"),
             IpcMechanism::All => write!(f, "All Mechanisms"),
+            #[allow(unreachable_patterns)]
+            _ => unreachable!(),
         }
     }
 }
@@ -324,27 +348,61 @@ impl IpcMechanism {
     /// ## Returns
     /// Vector of concrete mechanisms with "All" expanded if present
     ///
-    /// ## Example
+    /// ## Example (Linux)
     /// ```rust
-    /// use ipc_benchmark::cli::IpcMechanism;
-    /// 
-    /// let input = vec![IpcMechanism::All];
-    /// let expanded = IpcMechanism::expand_all(input);
-    /// assert_eq!(expanded.len(), 4); // All concrete mechanisms
+    /// # use ipc_benchmark::cli::IpcMechanism;
+    /// // On Linux, all mechanisms are available
+    /// #[cfg(target_os = "linux")]
+    /// {
+    ///     let input = vec![IpcMechanism::All];
+    ///     let expanded = IpcMechanism::expand_all(input);
+    ///     assert_eq!(expanded.len(), 4);
+    /// }
+    /// ```
+    ///
+    /// ## Example (macOS/BSD)
+    /// ```rust
+    /// # use ipc_benchmark::cli::IpcMechanism;
+    /// // On non-Linux Unix, PMQ is not available
+    /// #[cfg(all(unix, not(target_os = "linux")))]
+    /// {
+    ///     let input = vec![IpcMechanism::All];
+    ///     let expanded = IpcMechanism::expand_all(input);
+    ///     assert_eq!(expanded.len(), 3);
+    /// }
+    /// ```
+    ///
+    /// ## Example (Windows)
+    /// ```rust
+    /// # use ipc_benchmark::cli::IpcMechanism;
+    /// // On Windows, only SHM and TCP are available
+    /// #[cfg(windows)]
+    /// {
+    ///     let input = vec![IpcMechanism::All];
+    ///     let expanded = IpcMechanism::expand_all(input);
+    ///     assert_eq!(expanded.len(), 2);
+    /// }
     /// ```
     pub fn expand_all(mechanisms: Vec<IpcMechanism>) -> Vec<IpcMechanism> {
         if mechanisms.contains(&IpcMechanism::All) {
-            // Return all concrete mechanisms in a logical order:
-            // - UDS first (most commonly used for local IPC)
-            // - SHM second (highest performance)  
-            // - TCP third (network-capable)
-            // - PMQ last (most constrained)
-            vec![
-                IpcMechanism::UnixDomainSocket,
+            // Start with a base list of mechanisms that work on all platforms,
+            // in a logical order.
+            let mut all = vec![
+                // SHM second (highest performance)
                 IpcMechanism::SharedMemory,
+                // TCP third (network-capable)
                 IpcMechanism::TcpSocket,
-                IpcMechanism::PosixMessageQueue,
-            ]
+            ];
+
+            // Conditionally add POSIX Message Queues on non-Windows platforms
+            // UDS first (most commonly used for local IPC)
+            #[cfg(unix)]
+            all.insert(0, IpcMechanism::UnixDomainSocket);
+            // PMQ last (most constrained), and only on Linux
+            #[cfg(target_os = "linux")]
+            all.push(IpcMechanism::PosixMessageQueue);
+
+            all
         } else {
             mechanisms
         }
@@ -368,37 +426,37 @@ impl IpcMechanism {
 pub struct BenchmarkConfiguration {
     /// List of mechanisms to test (with "all" expanded)
     pub mechanisms: Vec<IpcMechanism>,
-    
+
     /// Size of message payloads in bytes
     pub message_size: usize,
-    
+
     /// Number of messages (None if duration-based)
     pub msg_count: Option<usize>,
-    
+
     /// Test duration (takes precedence over message count)
     pub duration: Option<Duration>,
-    
+
     /// Number of concurrent workers
     pub concurrency: usize,
-    
+
     /// Whether to run one-way latency tests
     pub one_way: bool,
-    
+
     /// Whether to run round-trip latency tests
     pub round_trip: bool,
-    
+
     /// Number of warmup iterations before measurement
     pub warmup_iterations: usize,
-    
+
     /// Percentiles to calculate for latency analysis
     pub percentiles: Vec<f64>,
-    
+
     /// Buffer size for internal data structures
     pub buffer_size: usize,
-    
+
     /// Host address for network-based mechanisms
     pub host: String,
-    
+
     /// Port number for network-based mechanisms
     pub port: u16,
 }
@@ -424,9 +482,9 @@ impl From<&Args> for BenchmarkConfiguration {
         Self {
             // Expand "all" mechanism to concrete list
             mechanisms: IpcMechanism::expand_all(args.mechanisms.clone()),
-            
+
             message_size: args.message_size,
-            
+
             // Duration takes precedence over message count
             // If duration is specified, we ignore the message count
             msg_count: if args.duration.is_some() {
@@ -434,7 +492,7 @@ impl From<&Args> for BenchmarkConfiguration {
             } else {
                 Some(args.msg_count)
             },
-            
+
             duration: args.duration,
             concurrency: args.concurrency,
             one_way,
@@ -457,7 +515,7 @@ impl From<&Args> for BenchmarkConfiguration {
 /// ## Supported Formats
 /// - **Milliseconds**: "500ms", "1000ms"
 /// - **Seconds**: "10s", "30s", or just "10" (seconds assumed)
-/// - **Minutes**: "5m", "30m" 
+/// - **Minutes**: "5m", "30m"
 /// - **Hours**: "1h", "2h"
 ///
 /// ## Parameters
@@ -519,71 +577,6 @@ pub fn parse_duration(s: &str) -> Result<Duration, String> {
     Ok(duration)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Test duration parsing with various valid formats
-    #[test]
-    fn test_parse_duration() {
-        // Test basic time units
-        assert_eq!(parse_duration("10s").unwrap(), Duration::from_secs(10));
-        assert_eq!(parse_duration("5m").unwrap(), Duration::from_secs(300));
-        assert_eq!(parse_duration("1h").unwrap(), Duration::from_secs(3600));
-        assert_eq!(parse_duration("500ms").unwrap(), Duration::from_millis(500));
-        
-        // Test default unit (seconds)
-        assert_eq!(parse_duration("10").unwrap(), Duration::from_secs(10));
-
-        // Test error cases
-        assert!(parse_duration("").is_err());
-        assert!(parse_duration("invalid").is_err());
-        assert!(parse_duration("-5s").is_err());
-    }
-
-    /// Test IPC mechanism display formatting
-    #[test]
-    fn test_ipc_mechanism_display() {
-        assert_eq!(
-            IpcMechanism::UnixDomainSocket.to_string(),
-            "Unix Domain Socket"
-        );
-        assert_eq!(IpcMechanism::SharedMemory.to_string(), "Shared Memory");
-        assert_eq!(IpcMechanism::TcpSocket.to_string(), "TCP Socket");
-        assert_eq!(IpcMechanism::PosixMessageQueue.to_string(), "POSIX Message Queue");
-        assert_eq!(IpcMechanism::All.to_string(), "All Mechanisms");
-    }
-
-    /// Test mechanism expansion logic
-    #[test]
-    fn test_ipc_mechanism_expand_all() {
-        let all_mechanisms = vec![
-            IpcMechanism::UnixDomainSocket,
-            IpcMechanism::SharedMemory,
-            IpcMechanism::TcpSocket,
-            IpcMechanism::PosixMessageQueue,
-        ];
-        
-        // Test "all" expansion
-        assert_eq!(
-            IpcMechanism::expand_all(vec![IpcMechanism::All]),
-            all_mechanisms
-        );
-        
-        // Test specific mechanism preservation
-        assert_eq!(
-            IpcMechanism::expand_all(vec![IpcMechanism::UnixDomainSocket]),
-            vec![IpcMechanism::UnixDomainSocket]
-        );
-        
-        // Test "all" expansion when mixed with other mechanisms
-        assert_eq!(
-            IpcMechanism::expand_all(vec![IpcMechanism::UnixDomainSocket, IpcMechanism::All]),
-            all_mechanisms
-        );
-    }
-}
-
 /// Provides a user-friendly, formatted summary of the benchmark configuration.
 ///
 /// This implementation is used to display the settings at the start of a benchmark run,
@@ -617,7 +610,10 @@ impl fmt::Display for Args {
 
         // Write the formatted configuration summary.
         writeln!(f, "\nBenchmark Configuration:")?;
-        writeln!(f, "-----------------------------------------------------------------")?;
+        writeln!(
+            f,
+            "-----------------------------------------------------------------"
+        )?;
         // Format the list of mechanisms into a user-friendly, comma-separated string.
         // This is the idiomatic way to format a Vec of items that implement Display.
         let mechanisms_str = mechanisms
@@ -654,6 +650,80 @@ impl fmt::Display for Args {
             writeln!(f, "  Streaming CSV Output:    {}", path.display())?;
         }
         writeln!(f, "  Continue on Error:  {}", self.continue_on_error)?;
-        write!(f, "-----------------------------------------------------------------")
+        write!(
+            f,
+            "-----------------------------------------------------------------"
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test duration parsing with various valid formats
+    #[test]
+    fn test_parse_duration() {
+        // Test basic time units
+        assert_eq!(parse_duration("10s").unwrap(), Duration::from_secs(10));
+        assert_eq!(parse_duration("5m").unwrap(), Duration::from_secs(300));
+        assert_eq!(parse_duration("1h").unwrap(), Duration::from_secs(3600));
+        assert_eq!(parse_duration("500ms").unwrap(), Duration::from_millis(500));
+
+        // Test default unit (seconds)
+        assert_eq!(parse_duration("10").unwrap(), Duration::from_secs(10));
+
+        // Test error cases
+        assert!(parse_duration("").is_err());
+        assert!(parse_duration("invalid").is_err());
+        assert!(parse_duration("-5s").is_err());
+    }
+
+    /// Test IPC mechanism display formatting
+    #[test]
+    fn test_ipc_mechanism_display() {
+        #[cfg(unix)]
+        assert_eq!(
+            IpcMechanism::UnixDomainSocket.to_string(),
+            "Unix Domain Socket"
+        );
+        assert_eq!(IpcMechanism::SharedMemory.to_string(), "Shared Memory");
+        assert_eq!(IpcMechanism::TcpSocket.to_string(), "TCP Socket");
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            IpcMechanism::PosixMessageQueue.to_string(),
+            "POSIX Message Queue"
+        );
+        assert_eq!(IpcMechanism::All.to_string(), "All Mechanisms");
+    }
+
+    /// Test mechanism expansion logic
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_ipc_mechanism_expand_all() {
+        let all_mechanisms = vec![
+            IpcMechanism::UnixDomainSocket,
+            IpcMechanism::SharedMemory,
+            IpcMechanism::TcpSocket,
+            IpcMechanism::PosixMessageQueue,
+        ];
+
+        // Test "all" expansion
+        assert_eq!(
+            IpcMechanism::expand_all(vec![IpcMechanism::All]),
+            all_mechanisms
+        );
+
+        // Test specific mechanism preservation
+        assert_eq!(
+            IpcMechanism::expand_all(vec![IpcMechanism::UnixDomainSocket]),
+            vec![IpcMechanism::UnixDomainSocket]
+        );
+
+        // Test "all" expansion when mixed with other mechanisms
+        assert_eq!(
+            IpcMechanism::expand_all(vec![IpcMechanism::UnixDomainSocket, IpcMechanism::All]),
+            all_mechanisms
+        );
     }
 }

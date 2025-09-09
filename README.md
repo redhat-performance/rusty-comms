@@ -530,3 +530,4 @@ Common issues and solutions:
 - **Single-threaded** (`-c 1`): Most accurate latency measurements
 - **Simulated concurrency** (`-c 2+`): Good for throughput scaling analysis
 - **Shared memory**: Always single-threaded for reliability
+

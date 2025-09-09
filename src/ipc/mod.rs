@@ -53,19 +53,23 @@ use time::OffsetDateTime;
 use tokio::sync::mpsc;
 
 // Public module exports for specific transport implementations
+#[cfg(target_os = "linux")]
 pub mod posix_message_queue;
 pub mod shared_memory;
 pub mod tcp_socket;
+#[cfg(unix)]
 pub mod unix_domain_socket;
 
 // Re-export transport implementations for convenient access
-pub use posix_message_queue::PosixMessageQueueTransport;
 pub use self::shared_memory::SharedMemoryTransport;
+#[cfg(target_os = "linux")]
+pub use posix_message_queue::PosixMessageQueueTransport;
 pub use tcp_socket::TcpSocketTransport;
+#[cfg(unix)]
 pub use unix_domain_socket::UnixDomainSocketTransport;
 
 /// Connection identifier for tracking multiple client connections
-/// 
+///
 /// This type alias provides a clear identifier for individual connections
 /// in multi-client scenarios. Each connection gets a unique ID that
 /// allows the transport to route messages appropriately.
@@ -106,21 +110,21 @@ pub struct Message {
     /// Used to match requests with responses in round-trip tests
     /// and to detect message loss or reordering in transport.
     pub id: u64,
-    
+
     /// Timestamp when message was created (nanoseconds since epoch)
     ///
     /// High-precision timestamp enables accurate latency measurement
     /// from message creation to receipt, accounting for serialization
     /// and transport overhead.
     pub timestamp: u64,
-    
+
     /// Message payload data
     ///
     /// Variable-length byte array containing the actual message content.
     /// Payload size is configurable to test different scenarios from
     /// small control messages to large data transfers.
     pub payload: Vec<u8>,
-    
+
     /// Classification of message type for benchmark patterns
     ///
     /// Enables different test patterns like one-way messaging,
@@ -152,28 +156,28 @@ pub enum MessageType {
     /// Used for throughput testing and fire-and-forget scenarios.
     /// The sender does not wait for acknowledgment or response.
     OneWay,
-    
+
     /// Request message (expecting response)
     ///
     /// Used in request-response patterns where the sender expects
     /// a corresponding response message. Essential for round-trip
     /// latency measurement and client-server testing.
     Request,
-    
+
     /// Response message (reply to request)
     ///
     /// Sent in reply to a Request message, completing the
     /// request-response cycle. Used for measuring full
     /// round-trip communication latency.
     Response,
-    
+
     /// Ping message for round-trip measurement
     ///
     /// Specialized message type for ping-pong latency testing.
     /// Similar to Request but optimized for minimal processing
     /// overhead on the receiver side.
     Ping,
-    
+
     /// Pong message (reply to ping)
     ///
     /// Response to a Ping message, completing the ping-pong cycle.
@@ -310,7 +314,7 @@ pub struct TransportConfig {
     /// - Socket send/receive buffer sizes  
     /// - Internal message queuing buffers
     pub buffer_size: usize,
-    
+
     /// Host address for network-based transports
     ///
     /// Specifies the network interface for TCP socket communication.
@@ -319,39 +323,39 @@ pub struct TransportConfig {
     /// - "0.0.0.0": Accept connections from any interface
     /// - Specific IP: Bind to particular network interface
     pub host: String,
-    
+
     /// Port number for network-based transports
     ///
     /// TCP socket port number. The benchmark may modify this value
     /// to ensure uniqueness across concurrent tests.
     pub port: u16,
-    
+
     /// Unix domain socket file path
     ///
     /// Filesystem path for the Unix domain socket. Should be in
     /// a writable directory and will be cleaned up after testing.
     pub socket_path: String,
-    
+
     /// Shared memory segment name
     ///
     /// System-wide identifier for the shared memory segment.
     /// Must be unique to avoid conflicts with other processes.
     pub shared_memory_name: String,
-    
+
     /// Maximum number of concurrent connections
     ///
     /// Limits the number of simultaneous client connections for
     /// transports that support multiple clients. Helps prevent
     /// resource exhaustion during concurrent testing.
     pub max_connections: usize,
-    
+
     /// Maximum number of messages in message queue
     ///
     /// Controls the depth of POSIX message queues. Limited by
     /// system configuration and affects memory usage and
     /// throughput characteristics.
     pub message_queue_depth: usize,
-    
+
     /// Base name for POSIX message queues
     ///
     /// System identifier for message queue resources. The actual
@@ -704,7 +708,7 @@ pub trait IpcTransport: Send + Sync {
 pub enum ConnectionRole {
     /// Server role - accepts connections and manages resources
     Server,
-    
+
     /// Client role - connects to server and uses shared resources
     Client,
 }
@@ -734,16 +738,16 @@ pub enum ConnectionRole {
 pub enum TransportState {
     /// Transport has been created but not initialized
     Uninitialized,
-    
+
     /// Transport is in the process of initialization
     Initializing,
-    
+
     /// Transport is connected and ready for communication
     Connected,
-    
+
     /// Transport has been cleanly disconnected
     Disconnected,
-    
+
     /// Transport is in an error state
     Error,
 }
@@ -796,17 +800,17 @@ impl TransportFactory {
         use crate::cli::IpcMechanism;
 
         match mechanism {
+            #[cfg(unix)]
             IpcMechanism::UnixDomainSocket => Ok(Box::new(UnixDomainSocketTransport::new())),
             IpcMechanism::SharedMemory => Ok(Box::new(SharedMemoryTransport::new())),
             IpcMechanism::TcpSocket => Ok(Box::new(TcpSocketTransport::new())),
+            #[cfg(target_os = "linux")]
             IpcMechanism::PosixMessageQueue => Ok(Box::new(PosixMessageQueueTransport::new())),
-            IpcMechanism::All => {
-                Err(anyhow::anyhow!("'All' mechanism should be expanded before transport creation"))
-            }
+            IpcMechanism::All => Err(anyhow::anyhow!(
+                "'All' mechanism should be expanded before transport creation"
+            )),
         }
     }
-
-    
 }
 
 #[cfg(test)]
