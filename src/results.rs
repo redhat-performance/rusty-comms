@@ -1644,9 +1644,11 @@ impl BenchmarkResults {
         {
             if let Some(ref latency) = results.latency {
                 // Update global minimum and maximum
-                min_latency = Some(min_latency.map_or(latency.min_ns, |min: u64| min.min(latency.min_ns)));
-                max_latency = Some(max_latency.map_or(latency.max_ns, |max: u64| max.max(latency.max_ns)));
-                
+                min_latency =
+                    Some(min_latency.map_or(latency.min_ns, |min: u64| min.min(latency.min_ns)));
+                max_latency =
+                    Some(max_latency.map_or(latency.max_ns, |max: u64| max.max(latency.max_ns)));
+
                 all_latency_metrics.push(latency);
             }
         }
@@ -1670,11 +1672,12 @@ impl BenchmarkResults {
             // Multiple test types - use representative percentiles
             // **CRITICAL FIX**: Cannot weight-average percentiles from different distributions!
             // Instead, use the test type with more samples as representative
-            
-            let representative_metrics = all_latency_metrics.iter()
+
+            let representative_metrics = all_latency_metrics
+                .iter()
                 .max_by_key(|m| m.total_samples)
                 .unwrap_or(&all_latency_metrics[0]);
-            
+
             let mut p95 = None;
             let mut p99 = None;
             for percentile in &representative_metrics.percentiles {

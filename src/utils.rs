@@ -55,4 +55,3 @@ pub fn current_timestamp_ns() -> u64 {
         .unwrap_or_default()
         .as_nanos() as u64
 }
-

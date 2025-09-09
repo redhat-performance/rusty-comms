@@ -170,7 +170,6 @@ impl PosixMessageQueueTransport {
         }
     }
 
-
     /// Clean up message queue resources
     ///
     /// Performs proper cleanup of message queue resources, including closing

@@ -891,7 +891,7 @@ impl MetricsCollector {
         // **FIXED**: Use correct percentiles from individual HDR histograms
         // instead of corrupted histogram_data. Each HDR histogram has accurate
         // percentiles - we just need to weight them properly by sample count.
-        
+
         // Calculate sample-weighted mean
         let mut total_weighted_mean = 0.0;
         for metrics in &latency_metrics {
@@ -909,21 +909,24 @@ impl MetricsCollector {
         // 1. Use raw data points (but HDR histogram_data is corrupted)
         // 2. Use the largest worker's percentiles as representative
         // 3. Calculate approximate percentiles using a different method
-        
+
         // Use the worker with the most samples as representative for percentiles
         // This is not perfect but much more accurate than weight-averaging percentiles
-        let representative_metrics = latency_metrics.iter()
+        let representative_metrics = latency_metrics
+            .iter()
             .max_by_key(|m| m.total_samples)
             .unwrap_or(&latency_metrics[0]);
-        
+
         let mut percentile_values = Vec::new();
         for &p in percentiles {
             // Find this percentile in the representative worker's accurate percentiles
-            let value = representative_metrics.percentiles.iter()
+            let value = representative_metrics
+                .percentiles
+                .iter()
                 .find(|percentile| (percentile.percentile - p).abs() < 0.1)
                 .map(|percentile| percentile.value_ns)
                 .unwrap_or(0);
-            
+
             percentile_values.push(PercentileValue {
                 percentile: p,
                 value_ns: value,
@@ -931,7 +934,8 @@ impl MetricsCollector {
         }
 
         // Calculate weighted median (P50)
-        let median_ns = percentile_values.iter()
+        let median_ns = percentile_values
+            .iter()
             .find(|p| (p.percentile - 50.0).abs() < 0.1)
             .map(|p| p.value_ns as f64)
             .unwrap_or(0.0);
