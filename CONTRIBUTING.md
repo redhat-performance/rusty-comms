@@ -30,7 +30,7 @@ We pledge to make participation in our project a harassment-free experience for 
 
 ### Prerequisites
 
-- **Rust**: 1.75.0 or later
+- **Rust**: 1.70.0 or later (MSRV)
 - **Git**: For version control
 - **Linux**: Development primarily targets Linux (RHEL 9.6+)
 - **Basic knowledge**: Familiarity with Rust, IPC mechanisms, and performance testing
@@ -345,6 +345,25 @@ pub struct TransportManager {
 ```
 
 ## Submitting Changes
+
+### Pre-Commit Checks
+
+Before submitting a pull request, please run the following checks locally to ensure that the CI pipeline will pass. These checks validate formatting, code quality, and functionality.
+
+1.  **Format Code**: Ensure the code is formatted according to the project's style.
+    ```bash
+    cargo fmt --all
+    ```
+
+2.  **Run Linter**: Check for common mistakes and style issues with Clippy.
+    ```bash
+    cargo clippy --all-targets --all-features -- -D warnings
+    ```
+
+3.  **Run Tests**: Make sure all tests pass.
+    ```bash
+    cargo test --verbose --all-features
+    ```
 
 ### Pull Request Process
 

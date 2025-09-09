@@ -40,7 +40,7 @@ This benchmark suite provides a systematic way to evaluate the performance of va
 
 ### Prerequisites
 
-- **Rust**: 1.75.0 or later
+- **Rust**: 1.70.0 or later (MSRV)
 - **Operating System**: Linux (tested on RHEL 9.6)
 - **Dependencies**: All handled by Cargo
 
@@ -394,6 +394,15 @@ cargo build --release
 # With debugging symbols
 cargo build --release --debug
 ```
+
+### Local Validation
+
+Before submitting contributions, it's important to run the same checks that our CI system uses. This ensures your changes will be accepted smoothly. For detailed instructions, please see the [CONTRIBUTING.md](CONTRIBUTING.md) file.
+
+The primary checks are:
+- **Formatting**: `cargo fmt --all`
+- **Linting**: `cargo clippy --all-targets --all-features -- -D warnings`
+- **Testing**: `cargo test --verbose --all-features`
 
 ### Testing
 
