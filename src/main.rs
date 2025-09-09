@@ -128,7 +128,7 @@ async fn main() -> Result<()> {
     let _log_guard = guard;
 
     info!("Starting IPC Benchmark Suite");
-    info!("{}", args);
+    // The detailed configuration will be printed for each mechanism run.
 
     // Create benchmark configuration from parsed CLI arguments
     // This converts the user-friendly CLI format into the internal
@@ -216,6 +216,7 @@ async fn main() -> Result<()> {
                     let mut failed_result = BenchmarkResults::new(
                         mechanism,
                         config.message_size,
+                        0, // Buffer size is unknown/irrelevant in a failure case.
                         config.concurrency,
                         config.msg_count,
                         config.duration,

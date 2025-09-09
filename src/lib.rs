@@ -42,7 +42,7 @@
 //!             round_trip: false,
 //!             warmup_iterations: 100,
 //!             percentiles: vec![50.0, 95.0, 99.0],
-//!             buffer_size: 8192,
+//!             buffer_size: Some(8192),
 //!             host: "127.0.0.1".to_string(),
 //!             port: 8080,
 //!         };

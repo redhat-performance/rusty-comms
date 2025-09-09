@@ -207,13 +207,16 @@ impl PosixMessageQueueTransport {
 
         // Only unlink the queue if this instance created it (server)
         if self.is_creator && !self.queue_name.is_empty() {
-            if let Err(e) = mq_unlink(self.queue_name.as_str()) {
-                warn!(
+            match mq_unlink(self.queue_name.as_str()) {
+                Ok(()) => debug!("Unlinked message queue: {}", self.queue_name),
+                Err(nix::Error::ENOENT) => {
+                    // This is fine, the queue was already gone.
+                    debug!("Message queue already unlinked: {}", self.queue_name);
+                }
+                Err(e) => warn!(
                     "Failed to unlink message queue '{}': {}",
                     self.queue_name, e
-                );
-            } else {
-                debug!("Unlinked message queue: {}", self.queue_name);
+                ),
             }
         }
     }
@@ -278,6 +281,7 @@ impl IpcTransport for PosixMessageQueueTransport {
     /// - Insufficient system resources for queue creation
     /// - System limits exceeded (max queues, memory limits)
     /// - Permission denied for queue creation
+    /// - Invalid arguments, e.g., a `buffer_size` greater than the system's `msgsize_max`.
     ///
     /// ## System Integration
     ///
@@ -299,13 +303,20 @@ impl IpcTransport for PosixMessageQueueTransport {
         let mq_fd = tokio::task::spawn_blocking(move || {
             debug!("Server creating message queue '{}'...", queue_name);
             let attr = MqAttr::new(0, max_msg_count as i64, max_msg_size as i64, 0);
-            let result = mq_open(
+            let result = match mq_open(
                 queue_name.as_str(),
-                MQ_OFlag::O_CREAT | MQ_OFlag::O_RDWR | MQ_OFlag::O_NONBLOCK, // Add O_NONBLOCK
+                MQ_OFlag::O_CREAT | MQ_OFlag::O_RDWR | MQ_OFlag::O_NONBLOCK,
                 Mode::S_IRUSR | Mode::S_IWUSR,
                 Some(&attr),
-            )
-            .map_err(|e| anyhow!("Failed to create server queue: {}", e));
+            ) {
+                Ok(fd) => Ok(fd),
+                Err(nix::Error::EINVAL) => Err(anyhow!(
+                    "Failed to create server queue: Invalid argument (EINVAL). \\
+                     This may be due to a buffer size ({}) greater than the system limit.",
+                    max_msg_size
+                )),
+                Err(e) => Err(anyhow!("Failed to create server queue: {}", e)),
+            };
 
             match &result {
                 Ok(fd) => debug!(
@@ -693,7 +704,9 @@ impl IpcTransport for PosixMessageQueueTransport {
             // Only unlink if this instance created the queue
             if is_creator && !queue_name.is_empty() {
                 if let Err(e) = mq_unlink(queue_name.as_str()) {
-                    warn!("Failed to unlink message queue '{}': {}", queue_name, e);
+                    if e != nix::Error::ENOENT {
+                        warn!("Failed to unlink message queue '{}': {}", queue_name, e);
+                    }
                 }
             }
         })
