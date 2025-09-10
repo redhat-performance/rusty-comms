@@ -14,7 +14,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import dash
-from dash import dcc, html, Input, Output, State, callback, dash_table
+from dash import dcc, html, Input, Output, State, callback, dash_table, ALL
 from dash.exceptions import PreventUpdate
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -28,6 +28,7 @@ except ImportError:
     SKLEARN_AVAILABLE = False
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union
+import os
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -323,6 +324,145 @@ class BenchmarkDataProcessor:
         
         return self.data_store
 
+def list_directories(path: str = ".") -> List[Dict]:
+    """List directories and relevant files in the given path for the file browser."""
+    try:
+        # Expand and resolve the path
+        resolved_path = Path(os.path.expanduser(path)).resolve()
+        
+        # Ensure we can read the directory
+        if not resolved_path.exists() or not resolved_path.is_dir():
+            resolved_path = Path.home()  # Fallback to home directory
+            
+        items = []
+        
+        # Add parent directory option (if not at root)
+        if resolved_path.parent != resolved_path:
+            items.append({
+                'name': '.. (Parent Directory)',
+                'path': str(resolved_path.parent),
+                'is_parent': True,
+                'is_directory': True,
+                'is_file': False,
+                'icon': '📁',
+                'type': 'parent'
+            })
+        
+        # List all items (directories and relevant files)
+        try:
+            # Separate directories and files
+            directories = []
+            files = []
+            
+            for item in sorted(resolved_path.iterdir()):
+                if item.is_dir() and not item.name.startswith('.'):
+                    # Get directory size info
+                    try:
+                        item_count = len(list(item.iterdir()))
+                        size_info = f" ({item_count} items)"
+                    except (PermissionError, OSError):
+                        size_info = " (Access denied)"
+                    
+                    directories.append({
+                        'name': item.name + size_info,
+                        'path': str(item),
+                        'is_parent': False,
+                        'is_directory': True,
+                        'is_file': False,
+                        'icon': '📁',
+                        'type': 'directory'
+                    })
+                
+                elif item.is_file() and not item.name.startswith('.'):
+                    # Check if it's a relevant data file
+                    file_ext = item.suffix.lower()
+                    if file_ext in ['.json', '.csv']:
+                        # Get file size
+                        try:
+                            file_size = item.stat().st_size
+                            if file_size < 1024:
+                                size_info = f" ({file_size}B)"
+                            elif file_size < 1024 * 1024:
+                                size_info = f" ({file_size//1024}KB)"
+                            else:
+                                size_info = f" ({file_size//(1024*1024)}MB)"
+                        except (PermissionError, OSError):
+                            size_info = ""
+                        
+                        # Determine file type and icon
+                        if file_ext == '.json':
+                            icon = '📄'
+                            if '_results.json' in item.name:
+                                icon = '📊'  # Summary results
+                            elif '_streaming.json' in item.name:
+                                icon = '📈'  # Streaming data
+                        else:  # .csv
+                            icon = '📋'
+                            
+                        files.append({
+                            'name': item.name + size_info,
+                            'path': str(item),
+                            'is_parent': False,
+                            'is_directory': False,
+                            'is_file': True,
+                            'icon': icon,
+                            'type': file_ext[1:]  # 'json' or 'csv'
+                        })
+            
+            # Add directories first, then files
+            items.extend(directories)
+            items.extend(files)
+            
+        except (PermissionError, OSError) as e:
+            logger.warning(f"Cannot read directory {resolved_path}: {e}")
+            
+        return items
+    except Exception as e:
+        logger.error(f"Error listing directory contents: {e}")
+        return []
+
+def get_directory_breadcrumbs(path: str) -> List[Dict]:
+    """Generate breadcrumbs for the current directory path."""
+    try:
+        resolved_path = Path(os.path.expanduser(path)).resolve()
+        breadcrumbs = []
+        
+        # Add home as the root
+        breadcrumbs.append({
+            'name': '🏠 Home',
+            'path': str(Path.home())
+        })
+        
+        # If not in home directory, add path components
+        if resolved_path != Path.home():
+            try:
+                # Get relative path from home
+                rel_path = resolved_path.relative_to(Path.home())
+                current_path = Path.home()
+                
+                for part in rel_path.parts:
+                    current_path = current_path / part
+                    breadcrumbs.append({
+                        'name': part,
+                        'path': str(current_path)
+                    })
+            except ValueError:
+                # Path is not under home, show absolute path components
+                breadcrumbs = [{'name': '💻 Root', 'path': '/'}]
+                current_path = Path('/')
+                
+                for part in resolved_path.parts[1:]:  # Skip empty root part
+                    current_path = current_path / part
+                    breadcrumbs.append({
+                        'name': part,
+                        'path': str(current_path)
+                    })
+                    
+        return breadcrumbs
+    except Exception as e:
+        logger.error(f"Error generating breadcrumbs: {e}")
+        return [{'name': '🏠 Home', 'path': str(Path.home())}]
+
 class DashboardApp:
     """Main Dash application for interactive benchmark visualization."""
     
@@ -434,48 +574,49 @@ class DashboardApp:
                 html.Div([
                     html.H1("Rusty-Comms Dashboard", className="header-title"),
                     
-                    # Data Directory Controls
+                    # Data Directory Controls with File Browser
                     html.Div([
                         html.H3("Data Directory"),
-                        html.P("Select a directory containing benchmark data files.", 
+                        html.P("Browse and select a directory containing benchmark data files.", 
                                style={'color': '#6b7280', 'font-size': '0.9rem', 'margin-bottom': '10px', 'font-style': 'italic'}),
                         
+                        # Current selected directory display
                         html.Div([
-                            dcc.Dropdown(
-                                id='data-directory-dropdown',
-                                options=[
-                                    {'label': 'Current Directory (.)', 'value': '.'},
-                                    {'label': 'Parent Directory (..)', 'value': '..'},
-                                    {'label': 'Home Directory (~)', 'value': '~'},
-                                    {'label': 'Desktop (~/Desktop)', 'value': '~/Desktop'},
-                                    {'label': 'Downloads (~/Downloads)', 'value': '~/Downloads'},
-                                    {'label': 'Documents (~/Documents)', 'value': '~/Documents'},
-                                    {'label': 'Custom Path...', 'value': 'custom'}
-                                ],
-                                value='.',
-                                clearable=False,
-                                style={'margin-bottom': '10px'}
+                            html.P(
+                                id='current-directory-display',
+                                children=f"📁 {self.initial_dir}",
+                                style={
+                                    'background-color': '#f3f4f6',
+                                    'padding': '8px 12px',
+                                    'border-radius': '6px',
+                                    'border': '1px solid #d1d5db',
+                                    'font-family': 'monospace',
+                                    'font-size': '0.85rem',
+                                    'margin-bottom': '10px',
+                                    'word-break': 'break-all'
+                                }
                             ),
                             
-                            # Custom path input (hidden by default)
-                            html.Div([
-                                dcc.Input(
-                                    id='custom-directory-input',
-                                    type='text',
-                                    placeholder='Enter custom directory path...',
-                                    value='',
-                                    style={
-                                        'width': '100%', 
-                                        'padding': '8px', 
-                                        'border': '1px solid #d1d5db',
-                                        'border-radius': '4px',
-                                        'font-size': '0.9rem'
-                                    }
-                                )
-                            ], id='custom-path-container', style={'display': 'none', 'margin-bottom': '10px'}),
+                            html.Button(
+                                [html.Span('📁', style={'margin-right': '8px'}), 'Browse Directory...'],
+                                id='browse-directory-button',
+                                n_clicks=0,
+                                style={
+                                    'width': '100%',
+                                    'padding': '10px 16px',
+                                    'background-color': '#10b981',
+                                    'color': 'white',
+                                    'border': 'none',
+                                    'border-radius': '6px',
+                                    'cursor': 'pointer',
+                                    'font-size': '0.95rem',
+                                    'font-weight': '600',
+                                    'margin-bottom': '10px'
+                                }
+                            ),
                             
                             html.Button(
-                                'Reload Data', 
+                                [html.Span('🔄', style={'margin-right': '8px'}), 'Reload Data'],
                                 id='reload-data-button',
                                 n_clicks=0,
                                 style={
@@ -556,7 +697,117 @@ class DashboardApp:
                     html.Div(id="tab-content", className="tab-content")
                 ], className="main-content")
                 
-            ], className="dashboard-container")
+            ], className="dashboard-container"),
+            
+            # File Browser Modal
+            html.Div([
+                html.Div([
+                    html.Div([
+                        # Modal Header
+                        html.Div([
+                            html.H3("📁 Browse Directory", style={'margin': 0, 'color': '#1f2937'}),
+                            html.Button(
+                                "×",
+                                id="file-browser-close",
+                                n_clicks=0,
+                                style={
+                                    'background': 'none',
+                                    'border': 'none',
+                                    'font-size': '24px',
+                                    'cursor': 'pointer',
+                                    'color': '#6b7280'
+                                }
+                            )
+                        ], style={'display': 'flex', 'justify-content': 'space-between', 'align-items': 'center', 'margin-bottom': '20px'}),
+                        
+                        # Breadcrumb Navigation
+                        html.Div(id='directory-breadcrumbs', style={'margin-bottom': '15px'}),
+                        
+                        # Directory Listing
+                        html.Div([
+                            html.Div(
+                                id='directory-listing',
+                                style={
+                                    'max-height': '400px',
+                                    'overflow-y': 'auto',
+                                    'border': '1px solid #e5e7eb',
+                                    'border-radius': '8px',
+                                    'padding': '10px',
+                                    'background-color': '#ffffff'
+                                }
+                            )
+                        ], style={'margin-bottom': '20px'}),
+                        
+                        # File type legend
+                        html.Div([
+                            html.P("File Types:", style={'font-size': '12px', 'color': '#6b7280', 'margin': '0 0 5px 0', 'font-weight': 'bold'}),
+                            html.Div([
+                                html.Span('📁 Folders', style={'font-size': '11px', 'color': '#6b7280', 'margin-right': '15px'}),
+                                html.Span('📊 Summary JSON', style={'font-size': '11px', 'color': '#6b7280', 'margin-right': '15px'}),
+                                html.Span('📈 Streaming JSON', style={'font-size': '11px', 'color': '#6b7280', 'margin-right': '15px'}),
+                                html.Span('📋 CSV Files', style={'font-size': '11px', 'color': '#6b7280'})
+                            ])
+                        ], style={'margin-bottom': '15px', 'padding': '8px', 'background-color': '#f9fafb', 'border-radius': '6px'}),
+                        
+                        # Modal Footer
+                        html.Div([
+                            html.Button(
+                                "Cancel",
+                                id="file-browser-cancel",
+                                n_clicks=0,
+                                style={
+                                    'padding': '8px 16px',
+                                    'background-color': '#6b7280',
+                                    'color': 'white',
+                                    'border': 'none',
+                                    'border-radius': '6px',
+                                    'cursor': 'pointer',
+                                    'margin-right': '10px'
+                                }
+                            ),
+                            html.Button(
+                                "Select Directory",
+                                id="file-browser-select",
+                                n_clicks=0,
+                                style={
+                                    'padding': '8px 16px',
+                                    'background-color': '#10b981',
+                                    'color': 'white',
+                                    'border': 'none',
+                                    'border-radius': '6px',
+                                    'cursor': 'pointer'
+                                }
+                            )
+                        ], style={'display': 'flex', 'justify-content': 'flex-end'})
+                        
+                    ], style={
+                        'background': 'white',
+                        'padding': '30px',
+                        'border-radius': '12px',
+                        'box-shadow': '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+                        'width': '90%',
+                        'max-width': '600px',
+                        'max-height': '80vh',
+                        'overflow-y': 'auto'
+                    })
+                ], style={
+                    'position': 'fixed',
+                    'top': 0,
+                    'left': 0,
+                    'width': '100%',
+                    'height': '100%',
+                    'background-color': 'rgba(0, 0, 0, 0.5)',
+                    'display': 'flex',
+                    'justify-content': 'center',
+                    'align-items': 'center',
+                    'z-index': 1000
+                })
+            ], id='file-browser-modal', style={'display': 'none'}),
+            
+            # Hidden components to store file browser state
+            dcc.Store(id='current-directory-store', data=self.initial_dir),
+            dcc.Store(id='selected-directory-store', data=self.initial_dir)
+            
         ], style={'background': 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)', 'minHeight': '100vh'})
     
     def setup_callbacks(self):
@@ -782,17 +1033,166 @@ class DashboardApp:
             
             raise PreventUpdate
         
-        # Directory dropdown callback to show/hide custom input
+        # File browser modal callbacks
         @self.app.callback(
-            Output('custom-path-container', 'style'),
-            [Input('data-directory-dropdown', 'value')],
+            Output('file-browser-modal', 'style'),
+            [Input('browse-directory-button', 'n_clicks'),
+             Input('file-browser-close', 'n_clicks'),
+             Input('file-browser-cancel', 'n_clicks')],
             prevent_initial_call=False
         )
-        def toggle_custom_input(dropdown_value):
-            if dropdown_value == 'custom':
-                return {'display': 'block', 'margin-bottom': '10px'}
+        def toggle_file_browser_modal(browse_clicks, close_clicks, cancel_clicks):
+            ctx = dash.callback_context
+            if not ctx.triggered:
+                return {'display': 'none'}
+            
+            trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
+            
+            if trigger_id == 'browse-directory-button' and browse_clicks > 0:
+                return {
+                    'position': 'fixed',
+                    'top': 0,
+                    'left': 0,
+                    'width': '100%',
+                    'height': '100%',
+                    'background-color': 'rgba(0, 0, 0, 0.5)',
+                    'display': 'flex',
+                    'justify-content': 'center',
+                    'align-items': 'center',
+                    'z-index': 1000
+                }
             else:
-                return {'display': 'none', 'margin-bottom': '10px'}
+                return {'display': 'none'}
+
+        @self.app.callback(
+            [Output('directory-listing', 'children'),
+             Output('directory-breadcrumbs', 'children'),
+             Output('current-directory-store', 'data')],
+            [Input('current-directory-store', 'data'),
+             Input('file-browser-modal', 'style')],
+            prevent_initial_call=False
+        )
+        def update_directory_listing(current_dir, modal_style):
+            if modal_style.get('display') == 'none':
+                return [], [], current_dir
+                
+            items = list_directories(current_dir)
+            breadcrumbs = get_directory_breadcrumbs(current_dir)
+            
+            # Create directory and file listing components
+            listing_items = []
+            for item_info in items:
+                # Different styling for directories vs files
+                if item_info['is_directory']:
+                    # Clickable directories
+                    item_style = {
+                        'padding': '8px 12px',
+                        'margin': '2px 0',
+                        'cursor': 'pointer',
+                        'border-radius': '4px',
+                        'border': '1px solid transparent',
+                        'background-color': '#ffffff',
+                        'transition': 'background-color 0.2s'
+                    }
+                    item_id = {'type': 'directory-item', 'path': item_info['path']}
+                    item_class = 'directory-item'
+                else:
+                    # Non-clickable files (informational)
+                    item_style = {
+                        'padding': '8px 12px',
+                        'margin': '2px 0',
+                        'border-radius': '4px',
+                        'border': '1px solid #e5e7eb',
+                        'background-color': '#f9fafb',
+                        'color': '#6b7280',
+                        'font-style': 'italic'
+                    }
+                    item_id = {'type': 'file-item', 'path': item_info['path']}
+                    item_class = 'file-item'
+                
+                listing_items.append(
+                    html.Div([
+                        html.Span(item_info['icon'], style={'margin-right': '8px', 'font-size': '14px'}),
+                        html.Span(item_info['name'], style={'font-size': '13px'})
+                    ], 
+                    id=item_id,
+                    style=item_style,
+                    className=item_class,
+                    title=f"{'Navigate to' if item_info['is_directory'] else 'Data file:'} {item_info['path']}"
+                    )
+                )
+            
+            # Add a summary of files found
+            file_count = sum(1 for item in items if item['is_file'])
+            if file_count > 0:
+                file_summary = html.Div([
+                    html.Hr(style={'margin': '10px 0', 'border': 'none', 'border-top': '1px solid #e5e7eb'}),
+                    html.Div([
+                        html.Span('📁 ', style={'font-size': '12px'}),
+                        html.Span(f"Found {file_count} data file{'s' if file_count != 1 else ''}", 
+                                 style={'font-size': '12px', 'color': '#10b981', 'font-weight': 'bold'})
+                    ], style={'text-align': 'center', 'padding': '5px'})
+                ], style={'margin-top': '10px'})
+                listing_items.append(file_summary)
+            
+            # Create breadcrumb components  
+            breadcrumb_items = []
+            for i, crumb in enumerate(breadcrumbs):
+                if i > 0:
+                    breadcrumb_items.append(html.Span(' > ', style={'margin': '0 5px', 'color': '#9ca3af'}))
+                
+                breadcrumb_items.append(
+                    html.Span(
+                        crumb['name'],
+                        id={'type': 'breadcrumb-item', 'path': crumb['path']},
+                        style={
+                            'cursor': 'pointer',
+                            'color': '#3b82f6',
+                            'text-decoration': 'underline',
+                            'font-size': '14px'
+                        }
+                    )
+                )
+            
+            return listing_items, breadcrumb_items, current_dir
+
+        @self.app.callback(
+            Output('current-directory-store', 'data', allow_duplicate=True),
+            [Input({'type': 'directory-item', 'path': ALL}, 'n_clicks'),
+             Input({'type': 'breadcrumb-item', 'path': ALL}, 'n_clicks')],
+            [State('current-directory-store', 'data')],
+            prevent_initial_call=True
+        )
+        def navigate_directory(dir_clicks, breadcrumb_clicks, current_dir):
+            ctx = dash.callback_context
+            if not ctx.triggered:
+                raise PreventUpdate
+                
+            trigger_info = ctx.triggered[0]
+            if trigger_info['value'] is None or trigger_info['value'] == 0:
+                raise PreventUpdate
+                
+            # Parse the triggered component to get the path
+            import json
+            component_id = json.loads(trigger_info['prop_id'].split('.')[0])
+            new_path = component_id['path']
+            
+            return new_path
+
+        @self.app.callback(
+            [Output('current-directory-display', 'children'),
+             Output('selected-directory-store', 'data'),
+             Output('file-browser-modal', 'style', allow_duplicate=True)],
+            [Input('file-browser-select', 'n_clicks')],
+            [State('current-directory-store', 'data')],
+            prevent_initial_call=True
+        )
+        def select_directory(select_clicks, current_dir):
+            if select_clicks == 0:
+                raise PreventUpdate
+                
+            # Close the modal and update the selected directory
+            return f"📁 {current_dir}", current_dir, {'display': 'none'}
         
         # Data reload callback
         @self.app.callback(
@@ -802,24 +1202,19 @@ class DashboardApp:
              Output('message-size-filter', 'options'),
              Output('message-size-filter', 'value')],
             [Input('reload-data-button', 'n_clicks')],
-            [State('data-directory-dropdown', 'value'),
-             State('custom-directory-input', 'value')],
+            [State('selected-directory-store', 'data')],
             prevent_initial_call=True
         )
-        def handle_data_reload(n_clicks, dropdown_value, custom_path):
+        def handle_data_reload(n_clicks, selected_directory):
             if n_clicks == 0:
                 # No callback needed for initial state
                 raise PreventUpdate
             
-            # Determine the directory path to use
-            if dropdown_value == 'custom':
-                directory_path = custom_path if custom_path else '.'
-            else:
-                directory_path = dropdown_value
+            # Use the selected directory from the file browser
+            directory_path = selected_directory if selected_directory else '.'
             
             # Expand ~ for home directory
             if directory_path.startswith('~'):
-                import os
                 directory_path = os.path.expanduser(directory_path)
             
             # Attempt to reload data
@@ -3497,6 +3892,47 @@ input[type="checkbox"] {
 .anomaly-alert li {
     color: #374151;
     margin-bottom: 5px;
+}
+
+/* File Browser Styles */
+.directory-item:hover {
+    background-color: #f3f4f6 !important;
+    border: 1px solid #d1d5db !important;
+    transform: translateX(2px);
+    transition: all 0.2s ease;
+}
+
+.file-item {
+    opacity: 0.7;
+}
+
+.file-item:hover {
+    opacity: 1 !important;
+    background-color: #f0f9ff !important;
+    border: 1px solid #bfdbfe !important;
+    transition: all 0.2s ease;
+}
+
+#directory-listing {
+    scrollbar-width: thin;
+    scrollbar-color: #cbd5e0 transparent;
+}
+
+#directory-listing::-webkit-scrollbar {
+    width: 6px;
+}
+
+#directory-listing::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+#directory-listing::-webkit-scrollbar-thumb {
+    background-color: #cbd5e0;
+    border-radius: 3px;
+}
+
+#directory-listing::-webkit-scrollbar-thumb:hover {
+    background-color: #a0aec0;
 }
 """
 
