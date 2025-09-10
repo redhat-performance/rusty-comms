@@ -40,6 +40,7 @@ use crate::{
     ipc::{Message, MessageType, TransportConfig, TransportFactory},
     metrics::{LatencyType, MetricsCollector, PerformanceMetrics},
     results::BenchmarkResults,
+    utils::spawn_with_affinity,
 };
 use anyhow::Result;
 use std::time::{Duration, Instant};
@@ -133,6 +134,12 @@ pub struct BenchmarkConfig {
     /// Base port number that will be modified to ensure uniqueness
     /// across concurrent tests. Ignored by non-network mechanisms.
     pub port: u16,
+
+    /// Server CPU affinity
+    pub server_affinity: Option<usize>,
+
+    /// Client CPU affinity
+    pub client_affinity: Option<usize>,
 }
 
 impl BenchmarkConfig {
@@ -191,6 +198,8 @@ impl BenchmarkConfig {
             buffer_size: args.buffer_size,
             host: args.host.clone(),
             port: args.port,
+            server_affinity: args.server_affinity,
+            client_affinity: args.client_affinity,
         })
     }
 }
@@ -237,6 +246,8 @@ impl BenchmarkConfig {
 /// #     log_file: None,
 /// #     streaming_output_json: None,
 /// #     streaming_output_csv: None,
+/// #     server_affinity: None,
+/// #     client_affinity: None,
 /// # };
 /// let config = BenchmarkConfig::from_args(&args)?;
 /// #[cfg(unix)]
@@ -400,24 +411,32 @@ impl BenchmarkRunner {
             let config = transport_config.clone();
             let mechanism = self.mechanism; // Copy mechanism to move into closure
             let warmup_iterations = self.config.warmup_iterations;
+            let server_affinity = self.config.server_affinity;
             tokio::spawn(async move {
-                let mut transport = TransportFactory::create(&mechanism)?;
-                if let Err(e) = transport.start_server(&config).await {
-                    let _ = tx.send(Err(e));
-                    return Err(anyhow::anyhow!("Server failed to start"));
+                let server_future = async move {
+                    let mut transport = TransportFactory::create(&mechanism)?;
+                    transport.start_server(&config).await?;
+                    Ok(transport)
+                };
+
+                match spawn_with_affinity(server_future, server_affinity).await {
+                    Ok(mut transport) => {
+                        if tx.send(Ok(())).is_err() {
+                            return; // client disconnected
+                        }
+                        debug!("Server signaled ready for warmup");
+
+                        for _ in 0..warmup_iterations {
+                            if transport.receive().await.is_err() {
+                                break;
+                            }
+                        }
+                        let _ = transport.close().await;
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(e));
+                    }
                 }
-
-                // Signal that server is ready to accept connections
-                let _ = tx.send(Ok(()));
-                debug!("Server signaled ready for warmup");
-
-                // Receive warmup messages without measuring performance
-                for _ in 0..warmup_iterations {
-                    let _ = transport.receive().await?;
-                }
-
-                transport.close().await?;
-                Ok::<(), anyhow::Error>(())
             })
         };
 
@@ -436,7 +455,7 @@ impl BenchmarkRunner {
 
         // Clean up resources
         client_transport.close().await?;
-        server_handle.await??;
+        server_handle.await?;
 
         debug!("Warmup completed");
         Ok(())
@@ -575,11 +594,18 @@ impl BenchmarkRunner {
     ///
     /// ## Execution Flow
     ///
-    /// 1. **Server Setup**: Start server and wait for readiness
-    /// 2. **Client Connection**: Connect client to server
-    /// 3. **Message Transmission**: Send messages with precise timing
-    /// 4. **Metrics Collection**: Record latency for each message sent
-    /// 5. **Resource Cleanup**: Close connections and clean up resources
+    /// 1. **Server Setup**: The server is spawned in a background task, optionally pinned
+    ///    to a specific CPU core if `server_affinity` is set. It signals readiness via a
+    ///    `oneshot` channel.
+    /// 2. **Client Setup**: The client logic is encapsulated in a future, which is then
+    ///    spawned in a separate background task. If `client_affinity` is set, this task
+    ///    runs on a dedicated thread pinned to the specified CPU core.
+    /// 3. **Data Collection**: The client task collects raw latency measurements and
+    ///    returns them in a `Vec`.
+    /// 4. **Metrics Processing**: The main task awaits the client's results and then
+    //     records the latencies into the `MetricsCollector` and streams them to the
+    ///    `ResultsManager`.
+    /// 5. **Cleanup**: Both client and server tasks are awaited to ensure graceful shutdown.
     ///
     /// ## Timing Methodology
     ///
@@ -609,51 +635,57 @@ impl BenchmarkRunner {
             let mechanism = self.mechanism;
             let duration = self.config.duration;
             let msg_count = self.get_msg_count();
-
+            let server_affinity = self.config.server_affinity;
             tokio::spawn(async move {
-                let mut transport = TransportFactory::create(&mechanism)?;
-                if let Err(e) = transport.start_server(&config).await {
-                    let _ = tx.send(Err(e));
-                    return Err(anyhow::anyhow!("Server failed to start"));
-                }
+                let server_future = async move {
+                    let mut transport = TransportFactory::create(&mechanism)?;
+                    transport.start_server(&config).await?;
+                    Ok(transport)
+                };
 
-                // Signal that server is ready
-                let _ = tx.send(Ok(()));
-                debug!("Server signaled ready for one-way test");
-
-                let start_time = Instant::now();
-                let mut received = 0;
-
-                // Server receive loop - adapts to duration or message count mode
-                loop {
-                    // Check if we should stop based on duration or message count
-                    if let Some(dur) = duration {
-                        if start_time.elapsed() >= dur {
-                            break;
+                match spawn_with_affinity(server_future, server_affinity).await {
+                    Ok(mut transport) => {
+                        if tx.send(Ok(())).is_err() {
+                            return; // client disconnected
                         }
-                    } else if received >= msg_count {
-                        break;
-                    }
+                        debug!("Server signaled ready for one-way test");
 
-                    // Try to receive with a shorter timeout to avoid hanging
-                    match timeout(Duration::from_millis(50), transport.receive()).await {
-                        Ok(Ok(_)) => {
-                            received += 1;
-                        }
-                        Ok(Err(_)) => break, // Transport error
-                        Err(_) => {
-                            // Timeout - check if duration-based test is done
-                            if duration.is_some() {
-                                continue; // Keep waiting for duration-based test
-                            } else {
-                                break; // Message-count-based test with no more messages
+                        let start_time = Instant::now();
+                        let mut received = 0;
+
+                        // Server receive loop - adapts to duration or message count mode
+                        loop {
+                            // Check if we should stop based on duration or message count
+                            if let Some(dur) = duration {
+                                if start_time.elapsed() >= dur {
+                                    break;
+                                }
+                            } else if received >= msg_count {
+                                break;
+                            }
+
+                            // Try to receive with a shorter timeout to avoid hanging
+                            match timeout(Duration::from_millis(50), transport.receive()).await {
+                                Ok(Ok(_)) => {
+                                    received += 1;
+                                }
+                                Ok(Err(_)) => break, // Transport error
+                                Err(_) => {
+                                    // Timeout - check if duration-based test is done
+                                    if duration.is_some() {
+                                        continue; // Keep waiting for duration-based test
+                                    } else {
+                                        break; // Message-count-based test with no more messages
+                                    }
+                                }
                             }
                         }
+                        let _ = transport.close().await;
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(e));
                     }
                 }
-
-                transport.close().await?;
-                Ok::<(), anyhow::Error>(())
             })
         };
 
@@ -661,83 +693,80 @@ impl BenchmarkRunner {
         rx.await??;
         debug!("Client received server ready signal for one-way test");
 
-        // Connect client
-        client_transport.start_client(transport_config).await?;
+        let client_config = self.config.clone();
+        let transport_config_clone = transport_config.clone();
 
-        // Send messages and measure latency
-        let payload = vec![0u8; self.config.message_size];
-        let start_time = Instant::now();
+        let client_future = async move {
+            let mut latencies = Vec::new();
+            // Connect client
+            client_transport
+                .start_client(&transport_config_clone)
+                .await?;
 
-        if let Some(duration) = self.config.duration {
-            // Duration-based test: loop until time expires
-            let mut i = 0u64;
-            while start_time.elapsed() < duration {
-                let send_time = Instant::now();
-                let message = Message::new(i, payload.clone(), MessageType::OneWay);
+            // Send messages and measure latency
+            let payload = vec![0u8; client_config.message_size];
+            let start_time = Instant::now();
 
-                // Use timeout for individual sends to avoid blocking indefinitely
-                match tokio::time::timeout(
-                    Duration::from_millis(50),
-                    client_transport.send(&message),
-                )
-                .await
-                {
-                    Ok(Ok(_)) => {
-                        let latency = send_time.elapsed();
-                        metrics_collector
-                            .record_message(self.config.message_size, Some(latency))?;
+            if let Some(duration) = client_config.duration {
+                // Duration-based test: loop until time expires
+                let mut i = 0u64;
+                while start_time.elapsed() < duration {
+                    let send_time = Instant::now();
+                    let message = Message::new(i, payload.clone(), MessageType::OneWay);
 
-                        // Stream individual latency record if enabled
-                        if let Some(ref mut manager) = results_manager {
-                            let record = crate::results::MessageLatencyRecord::new(
-                                i,
-                                self.mechanism,
-                                self.config.message_size,
-                                crate::metrics::LatencyType::OneWay,
-                                latency,
-                            );
-                            manager.stream_latency_record(&record).await?;
+                    // Use timeout for individual sends to avoid blocking indefinitely
+                    match tokio::time::timeout(
+                        Duration::from_millis(50),
+                        client_transport.send(&message),
+                    )
+                    .await
+                    {
+                        Ok(Ok(_)) => {
+                            latencies.push(send_time.elapsed());
+                            i += 1;
                         }
+                        Ok(Err(_)) => break, // Transport error
+                        Err(_) => {
+                            // Send timeout - ring buffer might be full, small delay and continue
+                            sleep(Duration::from_millis(1)).await;
+                            continue;
+                        }
+                    }
+                }
+            } else {
+                // Message-count-based test: loop for fixed number of messages
+                let msg_count = client_config.msg_count.unwrap_or_default();
 
-                        i += 1;
-                    }
-                    Ok(Err(_)) => break, // Transport error
-                    Err(_) => {
-                        // Send timeout - ring buffer might be full, small delay and continue
-                        sleep(Duration::from_millis(1)).await;
-                        continue;
-                    }
+                for i in 0..msg_count {
+                    let send_time = Instant::now();
+                    let message = Message::new(i as u64, payload.clone(), MessageType::OneWay);
+                    let _ = client_transport.send(&message).await?;
+                    latencies.push(send_time.elapsed());
                 }
             }
-        } else {
-            // Message-count-based test: loop for fixed number of messages
-            let msg_count = self.get_msg_count();
 
-            for i in 0..msg_count {
-                let send_time = Instant::now();
-                let message = Message::new(i as u64, payload.clone(), MessageType::OneWay);
-                let _ = client_transport.send(&message).await?;
+            // Clean up resources
+            client_transport.close().await?;
+            Ok(latencies)
+        };
 
-                let latency = send_time.elapsed();
-                metrics_collector.record_message(self.config.message_size, Some(latency))?;
+        let latencies = spawn_with_affinity(client_future, self.config.client_affinity).await?;
 
-                // Stream individual latency record if enabled
-                if let Some(ref mut manager) = results_manager {
-                    let record = crate::results::MessageLatencyRecord::new(
-                        i as u64,
-                        self.mechanism,
-                        self.config.message_size,
-                        crate::metrics::LatencyType::OneWay,
-                        latency,
-                    );
-                    manager.stream_latency_record(&record).await?;
-                }
+        for (i, latency) in latencies.iter().enumerate() {
+            metrics_collector.record_message(self.config.message_size, Some(*latency))?;
+            if let Some(ref mut manager) = results_manager {
+                let record = crate::results::MessageLatencyRecord::new(
+                    i as u64,
+                    self.mechanism,
+                    self.config.message_size,
+                    crate::metrics::LatencyType::OneWay,
+                    *latency,
+                );
+                manager.stream_latency_record(&record).await?;
             }
         }
 
-        // Clean up resources
-        client_transport.close().await?;
-        server_handle.await??;
+        server_handle.await?;
 
         Ok(())
     }
@@ -777,60 +806,66 @@ impl BenchmarkRunner {
             let mechanism = self.mechanism;
             let duration = self.config.duration;
             let msg_count = self.get_msg_count();
-
+            let server_affinity = self.config.server_affinity;
             tokio::spawn(async move {
-                let mut transport = TransportFactory::create(&mechanism)?;
-                if let Err(e) = transport.start_server(&config).await {
-                    let _ = tx.send(Err(e));
-                    return Err(anyhow::anyhow!("Server failed to start"));
-                }
+                let server_future = async move {
+                    let mut transport = TransportFactory::create(&mechanism)?;
+                    transport.start_server(&config).await?;
+                    Ok(transport)
+                };
 
-                // Signal that server is ready
-                let _ = tx.send(Ok(()));
-                debug!("Server signaled ready for round-trip test");
-
-                let start_time = Instant::now();
-                let mut received = 0;
-
-                // Server request-response loop
-                loop {
-                    // Check if we should stop based on duration or iterations
-                    if let Some(dur) = duration {
-                        if start_time.elapsed() >= dur {
-                            break;
+                match spawn_with_affinity(server_future, server_affinity).await {
+                    Ok(mut transport) => {
+                        if tx.send(Ok(())).is_err() {
+                            return; // client disconnected
                         }
-                    } else if received >= msg_count {
-                        break;
-                    }
+                        debug!("Server signaled ready for round-trip test");
 
-                    // Try to receive with a shorter timeout
-                    match timeout(Duration::from_millis(50), transport.receive()).await {
-                        Ok(Ok(request)) => {
-                            received += 1;
-                            // Echo back with modified ID to indicate processing
-                            let response = Message::new(
-                                request.id + 1000000,
-                                request.payload,
-                                MessageType::Response,
-                            );
-                            if (transport.send(&response).await).is_err() {
-                                break; // Client disconnected
+                        let start_time = Instant::now();
+                        let mut received = 0;
+
+                        // Server request-response loop
+                        loop {
+                            // Check if we should stop based on duration or iterations
+                            if let Some(dur) = duration {
+                                if start_time.elapsed() >= dur {
+                                    break;
+                                }
+                            } else if received >= msg_count {
+                                break;
+                            }
+
+                            // Try to receive with a shorter timeout
+                            match timeout(Duration::from_millis(50), transport.receive()).await {
+                                Ok(Ok(request)) => {
+                                    received += 1;
+                                    // Echo back with modified ID to indicate processing
+                                    let response = Message::new(
+                                        request.id + 1000000,
+                                        request.payload,
+                                        MessageType::Response,
+                                    );
+                                    if (transport.send(&response).await).is_err() {
+                                        break; // Client disconnected
+                                    }
+                                }
+                                Ok(Err(_)) => break, // Transport error
+                                Err(_) => {
+                                    // Timeout - check if duration-based test is done
+                                    if duration.is_some() {
+                                        continue; // Keep waiting for duration-based test
+                                    } else {
+                                        break; // Message-count-based test with no more messages
+                                    }
+                                }
                             }
                         }
-                        Ok(Err(_)) => break, // Transport error
-                        Err(_) => {
-                            // Timeout - check if duration-based test is done
-                            if duration.is_some() {
-                                continue; // Keep waiting for duration-based test
-                            } else {
-                                break; // Message-count-based test with no more messages
-                            }
-                        }
+                        let _ = transport.close().await;
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(e));
                     }
                 }
-
-                transport.close().await?;
-                Ok::<(), anyhow::Error>(())
             })
         };
 
@@ -838,102 +873,101 @@ impl BenchmarkRunner {
         rx.await??;
         debug!("Client received server ready signal for round-trip test");
 
-        // Connect client
-        client_transport.start_client(transport_config).await?;
+        let client_config = self.config.clone();
+        let transport_config_clone = transport_config.clone();
 
-        // Send messages and measure round-trip latency
-        let payload = vec![0u8; self.config.message_size];
-        let start_time = Instant::now();
+        let client_future = async move {
+            let mut latencies = Vec::new();
+            // Connect client
+            client_transport
+                .start_client(&transport_config_clone)
+                .await?;
 
-        if let Some(duration) = self.config.duration {
-            // Duration-based test: loop until time expires
-            let mut i = 0u64;
-            while start_time.elapsed() < duration {
-                let send_time = Instant::now();
-                let message = Message::new(i, payload.clone(), MessageType::Request);
+            // Send messages and measure round-trip latency
+            let payload = vec![0u8; client_config.message_size];
+            let start_time = Instant::now();
 
-                // Use timeout for sends and receives to avoid blocking indefinitely
-                match tokio::time::timeout(
-                    Duration::from_millis(50),
-                    client_transport.send(&message),
-                )
-                .await
-                {
-                    Ok(Ok(_)) => {
-                        // Send succeeded - increment counter immediately to ensure unique message IDs
-                        i += 1;
+            if let Some(duration) = client_config.duration {
+                // Duration-based test: loop until time expires
+                let mut i = 0u64;
+                while start_time.elapsed() < duration {
+                    let send_time = Instant::now();
+                    let message = Message::new(i, payload.clone(), MessageType::Request);
 
-                        // Try to receive response with timeout
-                        match tokio::time::timeout(
-                            Duration::from_millis(50),
-                            client_transport.receive(),
-                        )
-                        .await
-                        {
-                            Ok(Ok(_)) => {
-                                let latency = send_time.elapsed();
-                                metrics_collector
-                                    .record_message(self.config.message_size, Some(latency))?;
+                    // Use timeout for sends and receives to avoid blocking indefinitely
+                    match tokio::time::timeout(
+                        Duration::from_millis(50),
+                        client_transport.send(&message),
+                    )
+                    .await
+                    {
+                        Ok(Ok(_)) => {
+                            // Send succeeded - increment counter immediately to ensure unique message IDs
+                            i += 1;
 
-                                // Stream individual latency record if enabled
-                                if let Some(ref mut manager) = results_manager {
-                                    let record = crate::results::MessageLatencyRecord::new(
-                                        i - 1, // Use the actual message ID that was sent
-                                        self.mechanism,
-                                        self.config.message_size,
-                                        crate::metrics::LatencyType::RoundTrip,
-                                        latency,
-                                    );
-                                    manager.stream_latency_record(&record).await?;
+                            // Try to receive response with timeout
+                            match tokio::time::timeout(
+                                Duration::from_millis(50),
+                                client_transport.receive(),
+                            )
+                            .await
+                            {
+                                Ok(Ok(_)) => {
+                                    latencies.push(send_time.elapsed());
+                                }
+                                Ok(Err(_)) => break, // Transport error
+                                Err(_) => {
+                                    // Receive timeout, but send was successful so we continue
+                                    // Message ID was already incremented after successful send
+                                    sleep(Duration::from_millis(1)).await;
+                                    continue;
                                 }
                             }
-                            Ok(Err(_)) => break, // Transport error
-                            Err(_) => {
-                                // Receive timeout, but send was successful so we continue
-                                // Message ID was already incremented after successful send
-                                sleep(Duration::from_millis(1)).await;
-                                continue;
-                            }
+                        }
+                        Ok(Err(_)) => break, // Transport error
+                        Err(_) => {
+                            // Send timeout - ring buffer might be full, small delay and continue
+                            sleep(Duration::from_millis(1)).await;
+                            continue;
                         }
                     }
-                    Ok(Err(_)) => break, // Transport error
-                    Err(_) => {
-                        // Send timeout - ring buffer might be full, small delay and continue
-                        sleep(Duration::from_millis(1)).await;
-                        continue;
-                    }
+                }
+            } else {
+                // Message-count-based test: loop for fixed number of messages
+                let msg_count = client_config.msg_count.unwrap_or_default();
+
+                for i in 0..msg_count {
+                    let send_time = Instant::now();
+                    let message = Message::new(i as u64, payload.clone(), MessageType::Request);
+                    let _ = client_transport.send(&message).await?;
+
+                    let _ = client_transport.receive().await?;
+                    latencies.push(send_time.elapsed());
                 }
             }
-        } else {
-            // Message-count-based test: loop for fixed number of messages
-            let msg_count = self.get_msg_count();
 
-            for i in 0..msg_count {
-                let send_time = Instant::now();
-                let message = Message::new(i as u64, payload.clone(), MessageType::Request);
-                let _ = client_transport.send(&message).await?;
+            // Clean up resources
+            client_transport.close().await?;
+            Ok(latencies)
+        };
 
-                let _ = client_transport.receive().await?;
-                let latency = send_time.elapsed();
-                metrics_collector.record_message(self.config.message_size, Some(latency))?;
+        let latencies = spawn_with_affinity(client_future, self.config.client_affinity).await?;
 
-                // Stream individual latency record if enabled
-                if let Some(ref mut manager) = results_manager {
-                    let record = crate::results::MessageLatencyRecord::new(
-                        i as u64,
-                        self.mechanism,
-                        self.config.message_size,
-                        crate::metrics::LatencyType::RoundTrip,
-                        latency,
-                    );
-                    manager.stream_latency_record(&record).await?;
-                }
+        for (i, latency) in latencies.iter().enumerate() {
+            metrics_collector.record_message(self.config.message_size, Some(*latency))?;
+            if let Some(ref mut manager) = results_manager {
+                let record = crate::results::MessageLatencyRecord::new(
+                    i as u64,
+                    self.mechanism,
+                    self.config.message_size,
+                    crate::metrics::LatencyType::RoundTrip,
+                    *latency,
+                );
+                manager.stream_latency_record(&record).await?;
             }
         }
 
-        // Clean up resources
-        client_transport.close().await?;
-        server_handle.await??;
+        server_handle.await?;
 
         Ok(())
     }
@@ -1151,58 +1185,64 @@ impl BenchmarkRunner {
             let mechanism = self.mechanism;
             let duration = self.config.duration;
             let msg_count = self.get_msg_count();
-
+            let server_affinity = self.config.server_affinity;
             tokio::spawn(async move {
-                let mut transport = TransportFactory::create(&mechanism)?;
-                if let Err(e) = transport.start_server(&config).await {
-                    let _ = tx.send(Err(e));
-                    return Err(anyhow::anyhow!("Server failed to start"));
-                }
+                let server_future = async move {
+                    let mut transport = TransportFactory::create(&mechanism)?;
+                    transport.start_server(&config).await?;
+                    Ok(transport)
+                };
 
-                // Signal that server is ready
-                let _ = tx.send(Ok(()));
-                debug!("Server signaled ready for combined test");
-
-                let start_time = Instant::now();
-                let mut processed = 0;
-
-                // Server receive and response loop - handles both one-way tracking and round-trip responses
-                loop {
-                    // Check if we should stop based on duration or iterations
-                    if let Some(dur) = duration {
-                        if start_time.elapsed() >= dur {
-                            break;
+                match spawn_with_affinity(server_future, server_affinity).await {
+                    Ok(mut transport) => {
+                        if tx.send(Ok(())).is_err() {
+                            return; // client disconnected
                         }
-                    } else if processed >= msg_count {
-                        break;
-                    }
+                        debug!("Server signaled ready for combined test");
 
-                    // Receive message and send response for round-trip timing
-                    match timeout(Duration::from_millis(50), transport.receive()).await {
-                        Ok(Ok(msg)) => {
-                            // Send immediate response for round-trip timing
-                            let response = Message::new(
-                                msg.id + 1000000, // Offset to distinguish response
-                                msg.payload.clone(),
-                                MessageType::Response,
-                            );
-                            let _ = transport.send(&response).await;
-                            processed += 1;
-                        }
-                        Ok(Err(_)) => break, // Transport error
-                        Err(_) => {
-                            // Timeout - check if duration-based test is done
-                            if duration.is_some() {
-                                continue; // Keep waiting for duration-based test
-                            } else {
-                                break; // Message-count-based test with no more messages
+                        let start_time = Instant::now();
+                        let mut processed = 0;
+
+                        // Server receive and response loop - handles both one-way tracking and round-trip responses
+                        loop {
+                            // Check if we should stop based on duration or iterations
+                            if let Some(dur) = duration {
+                                if start_time.elapsed() >= dur {
+                                    break;
+                                }
+                            } else if processed >= msg_count {
+                                break;
+                            }
+
+                            // Receive message and send response for round-trip timing
+                            match timeout(Duration::from_millis(50), transport.receive()).await {
+                                Ok(Ok(msg)) => {
+                                    // Send immediate response for round-trip timing
+                                    let response = Message::new(
+                                        msg.id + 1000000, // Offset to distinguish response
+                                        msg.payload.clone(),
+                                        MessageType::Response,
+                                    );
+                                    let _ = transport.send(&response).await;
+                                    processed += 1;
+                                }
+                                Ok(Err(_)) => break, // Transport error
+                                Err(_) => {
+                                    // Timeout - check if duration-based test is done
+                                    if duration.is_some() {
+                                        continue; // Keep waiting for duration-based test
+                                    } else {
+                                        break; // Message-count-based test with no more messages
+                                    }
+                                }
                             }
                         }
+                        let _ = transport.close().await;
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(e));
                     }
                 }
-
-                transport.close().await?;
-                Ok::<(), anyhow::Error>(())
             })
         };
 
@@ -1210,116 +1250,112 @@ impl BenchmarkRunner {
         rx.await??;
         debug!("Client received server ready signal for combined test");
 
-        // Connect client
-        client_transport.start_client(transport_config).await?;
+        let client_config = self.config.clone();
+        let transport_config_clone = transport_config.clone();
 
-        // Create payload for messages
-        let payload = vec![0u8; self.config.message_size];
-        let start_time = Instant::now();
+        let client_future = async move {
+            let mut one_way_latencies = Vec::new();
+            let mut round_trip_latencies = Vec::new();
+            // Connect client
+            client_transport
+                .start_client(&transport_config_clone)
+                .await?;
 
-        if let Some(duration) = self.config.duration {
-            // Duration-based test: loop until time expires
-            let mut i = 0u64;
-            while start_time.elapsed() < duration {
-                let send_start = Instant::now();
-                let message = Message::new(i, payload.clone(), MessageType::Request);
+            // Create payload for messages
+            let payload = vec![0u8; client_config.message_size];
+            let start_time = Instant::now();
 
-                // Send message and measure one-way latency
-                match tokio::time::timeout(
-                    Duration::from_millis(50),
-                    client_transport.send(&message),
-                )
-                .await
-                {
-                    Ok(Ok(_)) => {
-                        let one_way_latency = send_start.elapsed();
+            if let Some(duration) = client_config.duration {
+                // Duration-based test: loop until time expires
+                let mut i = 0u64;
+                while start_time.elapsed() < duration {
+                    let send_start = Instant::now();
+                    let message = Message::new(i, payload.clone(), MessageType::Request);
 
-                        // Try to receive response and measure round-trip latency
-                        match tokio::time::timeout(
-                            Duration::from_millis(50),
-                            client_transport.receive(),
-                        )
-                        .await
-                        {
-                            Ok(Ok(_)) => {
-                                let round_trip_latency = send_start.elapsed();
+                    // Send message and measure one-way latency
+                    match tokio::time::timeout(
+                        Duration::from_millis(50),
+                        client_transport.send(&message),
+                    )
+                    .await
+                    {
+                        Ok(Ok(_)) => {
+                            let one_way_latency = send_start.elapsed();
 
-                                // Record both metrics
-                                one_way_metrics.record_message(
-                                    self.config.message_size,
-                                    Some(one_way_latency),
-                                )?;
-                                round_trip_metrics.record_message(
-                                    self.config.message_size,
-                                    Some(round_trip_latency),
-                                )?;
-
-                                // Stream combined record if enabled
-                                if let Some(ref mut manager) = results_manager {
-                                    let record = crate::results::MessageLatencyRecord::new_combined(
-                                        i,
-                                        self.mechanism,
-                                        self.config.message_size,
-                                        one_way_latency,
-                                        round_trip_latency,
-                                    );
-                                    manager.write_streaming_record_direct(&record).await?;
+                            // Try to receive response and measure round-trip latency
+                            match tokio::time::timeout(
+                                Duration::from_millis(50),
+                                client_transport.receive(),
+                            )
+                            .await
+                            {
+                                Ok(Ok(_)) => {
+                                    let round_trip_latency = send_start.elapsed();
+                                    one_way_latencies.push(one_way_latency);
+                                    round_trip_latencies.push(round_trip_latency);
+                                    i += 1;
                                 }
-
-                                i += 1;
-                            }
-                            Ok(Err(_)) => break, // Transport error
-                            Err(_) => {
-                                // Receive timeout - continue without incrementing
-                                sleep(Duration::from_millis(1)).await;
-                                continue;
+                                Ok(Err(_)) => break, // Transport error
+                                Err(_) => {
+                                    // Receive timeout - continue without incrementing
+                                    sleep(Duration::from_millis(1)).await;
+                                    continue;
+                                }
                             }
                         }
+                        Ok(Err(_)) => break, // Send transport error
+                        Err(_) => {
+                            // Send timeout - continue
+                            sleep(Duration::from_millis(1)).await;
+                            continue;
+                        }
                     }
-                    Ok(Err(_)) => break, // Send transport error
-                    Err(_) => {
-                        // Send timeout - continue
-                        sleep(Duration::from_millis(1)).await;
-                        continue;
-                    }
+                }
+            } else {
+                // Message-count-based test: loop for fixed number of messages
+                let msg_count = client_config.msg_count.unwrap_or_default();
+
+                for i in 0..msg_count {
+                    let send_start = Instant::now();
+                    let message = Message::new(i as u64, payload.clone(), MessageType::Request);
+
+                    let _ = client_transport.send(&message).await?;
+                    let one_way_latency = send_start.elapsed();
+
+                    let _ = client_transport.receive().await?;
+                    let round_trip_latency = send_start.elapsed();
+                    one_way_latencies.push(one_way_latency);
+                    round_trip_latencies.push(round_trip_latency);
                 }
             }
-        } else {
-            // Message-count-based test: loop for fixed number of messages
-            let msg_count = self.get_msg_count();
 
-            for i in 0..msg_count {
-                let send_start = Instant::now();
-                let message = Message::new(i as u64, payload.clone(), MessageType::Request);
+            // Clean up resources
+            client_transport.close().await?;
+            Ok((one_way_latencies, round_trip_latencies))
+        };
 
-                let _ = client_transport.send(&message).await?;
-                let one_way_latency = send_start.elapsed();
+        let (one_way_latencies, round_trip_latencies) =
+            spawn_with_affinity(client_future, self.config.client_affinity).await?;
 
-                let _ = client_transport.receive().await?;
-                let round_trip_latency = send_start.elapsed();
-
-                // Record both metrics
-                one_way_metrics.record_message(self.config.message_size, Some(one_way_latency))?;
-                round_trip_metrics
-                    .record_message(self.config.message_size, Some(round_trip_latency))?;
-
-                // Stream combined record if enabled
-                if let Some(ref mut manager) = results_manager {
-                    let record = crate::results::MessageLatencyRecord::new_combined(
-                        i as u64,
-                        self.mechanism,
-                        self.config.message_size,
-                        one_way_latency,
-                        round_trip_latency,
-                    );
-                    manager.write_streaming_record_direct(&record).await?;
-                }
+        for (i, latency) in one_way_latencies.iter().enumerate() {
+            one_way_metrics.record_message(self.config.message_size, Some(*latency))?;
+            if let Some(ref mut manager) = results_manager {
+                let record = crate::results::MessageLatencyRecord::new_combined(
+                    i as u64,
+                    self.mechanism,
+                    self.config.message_size,
+                    *latency,
+                    round_trip_latencies[i],
+                );
+                manager.write_streaming_record_direct(&record).await?;
             }
         }
 
-        // Clean up resources
-        client_transport.close().await?;
-        server_handle.await??;
+        for latency in round_trip_latencies {
+            round_trip_metrics.record_message(self.config.message_size, Some(latency))?;
+        }
+
+        server_handle.await?;
 
         Ok(())
     }
@@ -1487,6 +1523,8 @@ mod tests {
             buffer_size: Some(8192),
             host: "127.0.0.1".to_string(),
             port: 8080,
+            server_affinity: None,
+            client_affinity: None,
         };
 
         assert_eq!(config.message_size, 1024);
@@ -1513,6 +1551,8 @@ mod tests {
             buffer_size: Some(8192),
             host: "127.0.0.1".to_string(),
             port: 8080,
+            server_affinity: None,
+            client_affinity: None,
         };
 
         let runner = BenchmarkRunner::new(config, IpcMechanism::UnixDomainSocket);
@@ -1548,6 +1588,8 @@ mod tests {
             buffer_size: None,
             host: "127.0.0.1".to_string(),
             port: 8080,
+            server_affinity: None,
+            client_affinity: None,
         };
 
         // Scenario 1: User-provided buffer size is always respected.
