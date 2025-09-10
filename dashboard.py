@@ -29,10 +29,124 @@ except ImportError:
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union
 import os
+import hashlib
+import time
+import traceback
+from functools import wraps
+import weakref
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Enhanced Cache with TTL and size limits
+class EnhancedCache:
+    """Thread-safe cache with TTL and size limits for dashboard computations."""
+    
+    def __init__(self, max_size=100, default_ttl=300):
+        self.cache = {}
+        self.access_times = {}
+        self.creation_times = {}
+        self.max_size = max_size
+        self.default_ttl = default_ttl
+        self._lock = threading.Lock()
+    
+    def _generate_key(self, *args, **kwargs):
+        """Generate a cache key from arguments."""
+        key_data = str(args) + str(sorted(kwargs.items()))
+        return hashlib.md5(key_data.encode()).hexdigest()
+    
+    def _is_expired(self, key):
+        """Check if a cache entry is expired."""
+        if key not in self.creation_times:
+            return True
+        return time.time() - self.creation_times[key] > self.default_ttl
+    
+    def _evict_lru(self):
+        """Evict least recently used entries."""
+        if len(self.cache) >= self.max_size:
+            # Remove oldest accessed entries
+            sorted_keys = sorted(self.access_times.items(), key=lambda x: x[1])
+            keys_to_remove = [k for k, _ in sorted_keys[:len(sorted_keys)//4]]  # Remove 25%
+            for key in keys_to_remove:
+                self.cache.pop(key, None)
+                self.access_times.pop(key, None)
+                self.creation_times.pop(key, None)
+    
+    def get(self, key):
+        """Get item from cache."""
+        with self._lock:
+            if key in self.cache and not self._is_expired(key):
+                self.access_times[key] = time.time()
+                logger.debug(f"Cache HIT for key: {key[:8]}...")
+                return self.cache[key]
+            logger.debug(f"Cache MISS for key: {key[:8]}...")
+            return None
+    
+    def put(self, key, value):
+        """Put item in cache."""
+        with self._lock:
+            self._evict_lru()
+            self.cache[key] = value
+            self.access_times[key] = time.time()
+            self.creation_times[key] = time.time()
+            logger.debug(f"Cache PUT for key: {key[:8]}...")
+    
+    def clear(self):
+        """Clear all cache entries."""
+        with self._lock:
+            self.cache.clear()
+            self.access_times.clear()
+            self.creation_times.clear()
+            logger.info("Cache cleared")
+
+# Global cache instance
+dashboard_cache = EnhancedCache(max_size=50, default_ttl=600)  # 10 minutes TTL
+
+def cached_computation(ttl=None):
+    """Decorator for caching expensive computations with error handling."""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            # Generate cache key
+            cache_key = dashboard_cache._generate_key(func.__name__, *args, **kwargs)
+            
+            # Try to get from cache
+            cached_result = dashboard_cache.get(cache_key)
+            if cached_result is not None:
+                return cached_result
+            
+            # Compute and cache result with error handling
+            try:
+                start_time = time.time()
+                result = func(*args, **kwargs)
+                computation_time = time.time() - start_time
+                
+                logger.info(f"{func.__name__} computed in {computation_time:.2f}s")
+                dashboard_cache.put(cache_key, result)
+                return result
+                
+            except Exception as e:
+                logger.error(f"Error in {func.__name__}: {str(e)}")
+                logger.debug(traceback.format_exc())
+                raise
+                
+        return wrapper
+    return decorator
+
+def safe_computation(default_return=None):
+    """Decorator for safe computations with comprehensive error handling."""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                logger.error(f"Error in {func.__name__}: {str(e)}")
+                logger.debug(traceback.format_exc())
+                return default_return
+        return wrapper
+    return decorator
 
 class BenchmarkDataProcessor:
     """Handles discovery, loading, and processing of benchmark result files."""
@@ -574,6 +688,55 @@ class DashboardApp:
                 html.Div([
                     html.H1("Rusty-Comms Dashboard", className="header-title"),
                     
+                    # Analysis Control Section - MOVED TO TOP
+                    html.Div([
+                        html.H3("Analysis", style={'margin-bottom': '10px'}),
+                        html.P("Run analysis with current filters to generate charts and insights.", 
+                               style={'color': '#6b7280', 'font-size': '0.9rem', 'margin-bottom': '15px', 'font-style': 'italic'}),
+                        
+                        html.Button(
+                            [
+                                html.Span('🚀', style={'margin-right': '8px'}), 
+                                html.Span(id='run-analysis-button-text', children='Run Analysis')
+                            ],
+                            id='run-analysis-button',
+                            n_clicks=0,
+                            style={
+                                'width': '100%',
+                                'padding': '12px 20px',
+                                'background-color': '#7c2d12',
+                                'color': 'white',
+                                'border': 'none',
+                                'border-radius': '8px',
+                                'cursor': 'pointer',
+                                'font-size': '1rem',
+                                'font-weight': '700',
+                                'margin-bottom': '10px',
+                                'box-shadow': '0 2px 4px rgba(0, 0, 0, 0.1)'
+                            }
+                        ),
+                        
+                        html.Button(
+                            [html.Span('🗑️', style={'margin-right': '8px'}), 'Clear Cache'],
+                            id='clear-cache-button',
+                            n_clicks=0,
+                            style={
+                                'width': '100%',
+                                'padding': '8px 16px',
+                                'background-color': '#6b7280',
+                                'color': 'white',
+                                'border': 'none',
+                                'border-radius': '6px',
+                                'cursor': 'pointer',
+                                'font-size': '0.9rem',
+                                'font-weight': '500'
+                            }
+                        ),
+                        
+                        # Status display for analysis
+                        html.Div(id='analysis-status', style={'margin-top': '10px'})
+                    ], className="filter-section"),
+                    
                     # Data Directory Controls with File Browser
                     html.Div([
                         html.H3("Data Directory"),
@@ -660,12 +823,6 @@ class DashboardApp:
                             className="filter-checklist"
                         ),
                     ], className="filter-section"),
-                    
-
-                    
-
-                    
-
                     
                 ], className="sidebar"),
                 
@@ -813,46 +970,152 @@ class DashboardApp:
     def setup_callbacks(self):
         """Setup all dashboard callbacks."""
         
+        # Cache management callbacks
+        @self.app.callback(
+            Output('analysis-status', 'children'),
+            [Input('clear-cache-button', 'n_clicks')],
+            prevent_initial_call=True
+        )
+        def clear_cache(n_clicks):
+            if n_clicks > 0:
+                dashboard_cache.clear()
+                return html.Div([
+                    html.Span("✅ Cache cleared", style={'color': '#10b981', 'font-weight': 'bold'})
+                ], style={'padding': '8px', 'background-color': '#f0fdf4', 'border-radius': '4px', 'border': '1px solid #10b981'})
+            return html.Div()
+
+        # Main content callback - now only responds to Run Analysis button
         @self.app.callback(
             Output("tab-content", "children"),
-            [Input("main-tabs", "value"),
-             Input("mechanism-filter", "value"),
-             Input("message-size-filter", "value")],
-            prevent_initial_call=False
+            [Input("run-analysis-button", "n_clicks"),
+             Input("main-tabs", "value")],
+            [State("mechanism-filter", "value"),
+             State("message-size-filter", "value")],
+            prevent_initial_call=True
         )
-        def render_tab_content(active_tab, mechanisms, message_sizes):
-            if active_tab == "summary-tab":
-                logger.info(f"Summary tab called with filters: mechanisms={mechanisms}, message_sizes={message_sizes}")
-                return self.render_summary_tab(mechanisms, message_sizes)
-            elif active_tab == "timeseries-tab":
-                return self.render_timeseries_tab(mechanisms, message_sizes)
-            return html.Div("Select a tab")
+        @safe_computation(default_return=html.Div("Error loading content"))
+        def render_tab_content(n_clicks, active_tab, mechanisms, message_sizes):
+            if n_clicks == 0:
+                return html.Div([
+                    html.Div([
+                        html.H2("🚀 Ready for Analysis", style={'color': '#1f2937', 'margin-bottom': '20px'}),
+                        html.P("Select your filters and click the 'Run Analysis' button to generate insights and visualizations.", 
+                               style={'color': '#6b7280', 'font-size': '1.1rem', 'line-height': '1.6'}),
+                        html.Ul([
+                            html.Li("Choose mechanisms to analyze (PMQ, SHM, UDS)"),
+                            html.Li("Select message sizes for comparison"),
+                            html.Li("Click 'Run Analysis' to start processing")
+                        ], style={'color': '#374151', 'padding-left': '20px'})
+                    ], style={
+                        'text-align': 'center', 
+                        'padding': '60px 40px',
+                        'background': 'linear-gradient(135deg, #f3f4f6 0%, #e5e7eb 100%)',
+                        'border-radius': '12px',
+                        'margin': '20px'
+                    })
+                ])
+            
+            try:
+                if active_tab == "summary-tab":
+                    logger.info(f"Summary tab analysis triggered with filters: mechanisms={mechanisms}, message_sizes={message_sizes}")
+                    return self.render_summary_tab_cached(mechanisms, message_sizes)
+                elif active_tab == "timeseries-tab":
+                    logger.info(f"Time series tab analysis triggered with filters: mechanisms={mechanisms}, message_sizes={message_sizes}")
+                    return self.render_timeseries_tab_cached(mechanisms, message_sizes)
+                return html.Div("Select a tab")
+            except Exception as e:
+                logger.error(f"Error rendering tab content: {str(e)}")
+                return html.Div([
+                    html.H3("⚠️ Analysis Error", style={'color': '#dc2626'}),
+                    html.P(f"Error: {str(e)}", style={'color': '#6b7280'})
+                ], style={'padding': '20px', 'text-align': 'center'})
+
+        # Simple button status callback 
+        @self.app.callback(
+            [Output('run-analysis-button-text', 'children'),
+             Output('run-analysis-button', 'style')],
+            [Input('run-analysis-button', 'n_clicks')],
+            [State('run-analysis-button', 'style')],
+            prevent_initial_call=True
+        )
+        def update_analysis_button_status(n_clicks, current_style):
+            if n_clicks > 0:
+                # Reset to normal state (this will be called after analysis completes)
+                reset_style = current_style.copy() if current_style else {
+                    'width': '100%',
+                    'padding': '12px 20px',
+                    'background-color': '#7c2d12',
+                    'color': 'white',
+                    'border': 'none',
+                    'border-radius': '8px',
+                    'cursor': 'pointer',
+                    'font-size': '1rem',
+                    'font-weight': '700',
+                    'margin-bottom': '10px',
+                    'box-shadow': '0 2px 4px rgba(0, 0, 0, 0.1)'
+                }
+                reset_style['background-color'] = '#7c2d12'  # Original color
+                return 'Run Analysis', reset_style
+            
+            return 'Run Analysis', current_style
         
 
 
-        # Enhanced time series charts update callback with all new controls
+        # Time series charts update callback - only responds to Run Analysis button and tab changes
         @self.app.callback(
             Output('ts-charts-container', 'children'),
-            [Input('ts-moving-avg-slider', 'value'),
-             Input('ts-display-options', 'value'),
-             Input('ts-chart-layout', 'value'),
-             Input('ts-view-options', 'value'),
-             Input('ts-latency-types', 'value'),
-             Input('ts-statistical-overlays', 'value'),
-             Input('ts-y-axis-scale', 'value'),
-             Input('ts-y-axis-range', 'value'),
-             Input('ts-sampling-strategy', 'value'),
-             Input("mechanism-filter", "value"),
-             Input("message-size-filter", "value")],
+            [Input('run-analysis-button', 'n_clicks'),
+             Input('main-tabs', 'value')],
+            [State('ts-moving-avg-slider', 'value'),
+             State('ts-display-points-slider', 'value'),
+             State('ts-display-options', 'value'),
+             State('ts-chart-layout', 'value'),
+             State('ts-view-options', 'value'),
+             State('ts-latency-types', 'value'),
+             State('ts-statistical-overlays', 'value'),
+             State('ts-y-axis-scale', 'value'),
+             State('ts-y-axis-range', 'value'),
+             State('ts-sampling-strategy', 'value'),
+             State("mechanism-filter", "value"),
+             State("message-size-filter", "value")],
             prevent_initial_call=True
         )
-        def update_timeseries_charts(moving_avg_window, display_options, 
-                                   chart_layout, view_options, latency_types, statistical_overlays,
-                                   y_axis_scale, y_axis_range, sampling_strategy,
+        @safe_computation(default_return=html.Div("Click 'Run Analysis' to generate time series charts"))
+        def update_timeseries_charts(n_clicks, active_tab, moving_avg_window, display_points,
+                                   display_options, chart_layout, view_options, latency_types, 
+                                   statistical_overlays, y_axis_scale, y_axis_range, sampling_strategy,
                                    mechanisms, message_sizes):
             from dash import ctx
             
+            # Only generate charts if Run Analysis button clicked and we're on time series tab
+            if not (n_clicks > 0 and active_tab == "timeseries-tab"):
+                return html.Div([
+                    html.Div([
+                        html.H3("📊 Time Series Charts Ready", style={'color': '#1f2937', 'margin-bottom': '20px'}),
+                        html.P("Configure your analysis settings above and click 'Run Analysis' to generate interactive time series charts.", 
+                               style={'color': '#6b7280', 'font-size': '1.1rem', 'line-height': '1.6', 'margin-bottom': '20px'}),
+                        html.Div([
+                            html.H4("Chart Features Available:", style={'color': '#374151', 'margin-bottom': '15px'}),
+                            html.Ul([
+                                html.Li("🔍 Interactive zoom and pan across all charts"),
+                                html.Li("📈 Multiple statistical overlays and anomaly detection"),
+                                html.Li("⚙️ Flexible layout options and sampling strategies"),
+                                html.Li("🎯 Performance zones and percentile indicators"),
+                                html.Li("📊 Real-time statistics and distribution analysis")
+                            ], style={'color': '#374151', 'padding-left': '20px', 'line-height': '1.8'})
+                        ])
+                    ], style={
+                        'text-align': 'center', 
+                        'padding': '40px 30px',
+                        'background': 'linear-gradient(135deg, #f0f9ff 0%, #dbeafe 100%)',
+                        'border-radius': '12px',
+                        'margin': '20px 0',
+                        'border': '2px dashed #3b82f6'
+                    })
+                ])
+            
             # Handle None values for controls with defaults
+            display_points = display_points if display_points is not None else 10000
             chart_layout = chart_layout if chart_layout is not None else 'separate'
             view_options = view_options if view_options is not None else ['sync_zoom']
             latency_types = latency_types if latency_types is not None else ['one_way']
@@ -861,26 +1124,31 @@ class DashboardApp:
             y_axis_range = y_axis_range if y_axis_range is not None else 'auto'
             sampling_strategy = sampling_strategy if sampling_strategy is not None else 'uniform'
             
-
-            
             return self.render_timeseries_charts(
-                mechanisms, message_sizes, moving_avg_window, display_options, 
+                mechanisms, message_sizes, moving_avg_window, display_points, display_options, 
                 chart_layout, view_options, latency_types, statistical_overlays, 
                 y_axis_scale, y_axis_range, sampling_strategy
             )
         
 
 
-        # Real-time statistics panel update callback
+        # Statistics panel update callback - only responds to Run Analysis
         @self.app.callback(
             Output('ts-stats-panel', 'children'),
-            [Input('ts-view-options', 'value'),
-             Input('ts-latency-types', 'value'),
-             Input("mechanism-filter", "value"),
-             Input("message-size-filter", "value")],
-            prevent_initial_call=False
+            [Input('run-analysis-button', 'n_clicks'),
+             Input('main-tabs', 'value')],
+            [State('ts-view-options', 'value'),
+             State('ts-latency-types', 'value'),
+             State("mechanism-filter", "value"),
+             State("message-size-filter", "value")],
+            prevent_initial_call=True
         )
-        def update_stats_panel(view_options, latency_types, mechanisms, message_sizes):
+        @safe_computation(default_return=html.Div())
+        def update_stats_panel(n_clicks, active_tab, view_options, latency_types, mechanisms, message_sizes):
+            # Only show stats panel if Run Analysis was clicked and we're on time series tab
+            if not (n_clicks > 0 and active_tab == "timeseries-tab"):
+                return html.Div()
+                
             if not view_options or 'show_stats' not in view_options:
                 return html.Div()
             
@@ -1287,6 +1555,7 @@ class DashboardApp:
         
         return filtered
     
+    @cached_computation()
     def generate_performance_insights(self, percentile_df: pd.DataFrame, throughput_df: pd.DataFrame = None, max_latency_df: pd.DataFrame = None) -> Dict:
         """Generate mechanism + message size specific performance recommendations based on lowest jitter and worst-case latency."""
         insights = {
@@ -1601,6 +1870,7 @@ class DashboardApp:
             'flex-wrap': 'nowrap'  # Prevent wrapping to ensure single row
         })
 
+    @cached_computation()
     def calculate_percentiles_from_streaming(self, mechanisms: List, message_sizes: List):
         """Calculate percentiles dynamically from streaming data."""
         logger.info(f"calculate_percentiles_from_streaming: Original data shape: {self.data_store['streaming_data'].shape}")
@@ -1680,6 +1950,7 @@ class DashboardApp:
         
         return pd.DataFrame(percentile_data)
 
+    @cached_computation()
     def calculate_max_latencies(self, mechanisms: List, message_sizes: List):
         """Calculate maximum latencies from streaming data for performance comparison."""
         logger.info(f"calculate_max_latencies: Original data shape: {self.data_store['streaming_data'].shape}")
@@ -2393,19 +2664,98 @@ class DashboardApp:
             )
         ])
     
+    @safe_computation(default_return=html.Div("Error rendering summary"))
+    def render_summary_tab_cached(self, mechanisms: List, message_sizes: List):
+        """Cached version of render_summary_tab with enhanced error handling and threading."""
+        return self._render_with_threading(self.render_summary_tab, mechanisms, message_sizes, "Summary")
+    
+    @safe_computation(default_return=html.Div("Error rendering time series"))
+    def render_timeseries_tab_cached(self, mechanisms: List, message_sizes: List):
+        """Cached version of render_timeseries_tab with enhanced error handling and threading."""
+        return self._render_with_threading(self.render_timeseries_tab, mechanisms, message_sizes, "Time Series")
+    
+    def _render_with_threading(self, render_func, mechanisms, message_sizes, tab_name):
+        """Helper method to render tabs with threading and progress indication."""
+        try:
+            logger.info(f"Starting {tab_name} analysis with threading...")
+            start_time = time.time()
+            
+            # Use threading for rendering
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                future = executor.submit(render_func, mechanisms, message_sizes)
+                result = future.result(timeout=120)  # 2 minute timeout
+            
+            computation_time = time.time() - start_time
+            logger.info(f"{tab_name} analysis completed in {computation_time:.2f}s")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in {tab_name} rendering: {str(e)}")
+            return html.Div([
+                html.Div([
+                    html.H3(f"⚠️ {tab_name} Analysis Error", style={'color': '#dc2626', 'margin-bottom': '15px'}),
+                    html.P(f"An error occurred during {tab_name.lower()} analysis:", style={'color': '#374151', 'margin-bottom': '10px'}),
+                    html.Code(str(e), style={'background-color': '#fee2e2', 'padding': '8px', 'border-radius': '4px', 'color': '#991b1b'}),
+                    html.P("Please check your data and filters, then try again.", style={'color': '#6b7280', 'margin-top': '15px', 'font-style': 'italic'})
+                ], style={
+                    'text-align': 'center', 
+                    'padding': '40px',
+                    'background-color': '#fefefe',
+                    'border': '1px solid #fecaca',
+                    'border-radius': '8px',
+                    'margin': '20px'
+                })
+            ])
+    
+    @safe_computation(default_return={})
+    def _create_charts_threaded(self, chart_functions):
+        """Create multiple charts using threading for better performance."""
+        try:
+            logger.info(f"Creating {len(chart_functions)} charts with threading...")
+            start_time = time.time()
+            
+            # Use threading for chart generation
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                # Submit all chart creation tasks
+                futures = {executor.submit(func): name for func, name in chart_functions}
+                
+                results = {}
+                for future in as_completed(futures):
+                    chart_name = futures[future]
+                    try:
+                        results[chart_name] = future.result(timeout=60)  # 1 minute per chart
+                        logger.debug(f"Chart '{chart_name}' created successfully")
+                    except Exception as e:
+                        logger.error(f"Error creating chart '{chart_name}': {str(e)}")
+                        results[chart_name] = self._create_error_chart(f"Error in {chart_name}: {str(e)}")
+            
+            computation_time = time.time() - start_time
+            logger.info(f"Chart generation completed in {computation_time:.2f}s")
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error in threaded chart creation: {str(e)}")
+            return {}
+    
+    @safe_computation(default_return=go.Figure())
+    def _create_error_chart(self, error_message):
+        """Create an error chart for display when chart generation fails."""
+        return go.Figure().add_annotation(
+            text=f"⚠️ {error_message}",
+            x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False,
+            font=dict(size=14, color="#dc2626")
+        )
+    
     def render_timeseries_tab(self, mechanisms: List, message_sizes: List):
         """Render time series analysis tab."""
         streaming_df = self.filter_data(self.data_store['streaming_data'], mechanisms, message_sizes)
         
-        if streaming_df.empty:
-            return html.Div([
-                html.H3("No Data Available"),
-                html.P("No streaming data available for the selected filters. Try adjusting your filter selections.", 
-                       style={'color': '#6b7280', 'fontSize': '1.1rem', 'textAlign': 'center', 'padding': '40px'})
-            ], style={'textAlign': 'center', 'padding': '50px'})
-            
-        # Create time series controls section
-        available_mechanisms = mechanisms if mechanisms and len(mechanisms) > 0 else streaming_df['mechanism'].unique().tolist()
+        # Create time series controls section (always show controls)
+        available_mechanisms = mechanisms if mechanisms and len(mechanisms) > 0 else (
+            streaming_df['mechanism'].unique().tolist() if not streaming_df.empty else ['PosixMessageQueue', 'SharedMemory', 'UnixDomainSocket']
+        )
         
         controls_section = html.Div([
             html.H3("Time Series Controls", style={'margin-bottom': '20px'}),
@@ -2519,6 +2869,19 @@ class DashboardApp:
                 ], style={'width': '30%', 'display': 'inline-block', 'vertical-align': 'top'}),
                 
                 html.Div([
+                    html.Label("Display Points:", style={'margin-bottom': '10px', 'display': 'block'}),
+                    dcc.Slider(
+                        id='ts-display-points-slider',
+                        min=1000,
+                        max=50000,
+                        step=1000,
+                        value=10000,
+                        marks={i: f'{i//1000}K' for i in [1000, 5000, 10000, 25000, 50000]},
+                        tooltip={"placement": "bottom", "always_visible": True}
+                    ),
+                ], style={'width': '30%', 'display': 'inline-block', 'vertical-align': 'top', 'margin-left': '5%'}),
+                
+                html.Div([
                     html.Label("Display Options:", style={'margin-bottom': '10px', 'display': 'block'}),
                     dcc.Checklist(
                         id='ts-display-options',
@@ -2601,10 +2964,39 @@ class DashboardApp:
             )
         ], className="filter-section", style={'margin-bottom': '30px'})
         
+        # Check if we have data to show a helpful message
+        if streaming_df.empty:
+            no_data_message = html.Div([
+                html.Div([
+                    html.H3("📊 Time Series Analysis Ready", style={'color': '#1f2937', 'margin-bottom': '20px'}),
+                    html.P("Configure your time series analysis settings above and click 'Run Analysis' to visualize latency patterns over time.", 
+                           style={'color': '#6b7280', 'font-size': '1.1rem', 'line-height': '1.6', 'margin-bottom': '20px'}),
+                    html.Div([
+                        html.H4("Available Analysis Features:", style={'color': '#374151', 'margin-bottom': '15px'}),
+                        html.Ul([
+                            html.Li("📈 Interactive latency trends visualization"),
+                            html.Li("🔍 Statistical overlays and anomaly detection"),
+                            html.Li("📊 Performance zones and percentile bands"),
+                            html.Li("🎛️ Flexible chart layouts and sampling options"),
+                            html.Li("⚙️ Real-time statistics and distribution analysis")
+                        ], style={'color': '#374151', 'padding-left': '20px', 'line-height': '1.8'})
+                    ])
+                ], style={
+                    'text-align': 'center', 
+                    'padding': '40px 30px',
+                    'background': 'linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%)',
+                    'border-radius': '12px',
+                    'margin': '20px 0',
+                    'border': '2px dashed #cbd5e1'
+                })
+            ], style={'margin-top': '30px'})
+            
+            return html.Div([controls_section, no_data_message])
+        
         return controls_section
     
     def render_timeseries_charts(self, mechanisms: List, message_sizes: List, 
-                                moving_avg_window: int, display_options: List,
+                                moving_avg_window: int, display_points: int, display_options: List,
                                 chart_layout: str = 'separate',
                                 view_options: List = None, latency_types: List = None, statistical_overlays: List = None, 
                                 y_axis_scale: str = 'log', 
@@ -2623,8 +3015,8 @@ class DashboardApp:
                        style={'textAlign': 'center', 'color': '#6b7280', 'fontSize': '1.1rem', 'padding': '40px'})
             ])
 
-        # Advanced sampling strategies
-        MAX_POINTS_PER_RUN = 10000
+        # Advanced sampling strategies - use display_points from slider
+        MAX_POINTS_PER_RUN = display_points
         total_original_points = len(streaming_df)
         performance_note = html.Div()
         
