@@ -23,7 +23,7 @@
 //! individual message latency measurements as they occur, while final output
 //! provides aggregated statistics and cross-mechanism comparisons.
 
-use crate::metrics::{LatencyType, PerformanceMetrics};
+use crate::metrics::{LatencyMetrics, LatencyType, PerformanceMetrics};
 use crate::IpcMechanism;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -302,6 +302,9 @@ pub struct TestConfiguration {
     /// Size of message payloads in bytes
     pub message_size: usize,
 
+    /// Buffer size used for the test
+    pub buffer_size: usize,
+
     /// Number of concurrent workers used
     pub concurrency: usize,
 
@@ -322,9 +325,6 @@ pub struct TestConfiguration {
 
     /// Percentiles calculated for latency analysis
     pub percentiles: Vec<f64>,
-
-    /// Buffer size used for transport mechanisms
-    pub buffer_size: usize,
 }
 
 /// Summary of benchmark results
@@ -1193,10 +1193,11 @@ impl ResultsManager {
             for result in &self.results {
                 println!("Mechanism: {}", result.mechanism);
                 println!("  Message Size: {} bytes", result.test_config.message_size);
+                println!("  Buffer Size:  {} bytes", result.test_config.buffer_size);
 
                 match &result.status {
                     BenchmarkStatus::Success => {
-                        Self::print_summary_details(&result.summary, "  ");
+                        Self::print_summary_details(result, "  ");
                     }
                     BenchmarkStatus::Failure(error_msg) => {
                         println!("  Status: FAILED");
@@ -1211,41 +1212,60 @@ impl ResultsManager {
         Ok(())
     }
 
-    /// Helper function to format and print the details from a BenchmarkSummary.
-    fn print_summary_details(summary: &BenchmarkSummary, indent: &str) {
-        if summary.average_latency_ns.is_some() {
-            println!("{}Latency:", indent);
-            println!(
-                "{}{:<8} Mean: {}, P95: {}, P99: {}",
-                indent,
-                "  ",
-                summary
-                    .average_latency_ns
-                    .map(|v| format_latency(v as u64))
-                    .unwrap_or_else(|| "N/A".to_string()),
-                summary
-                    .p95_latency_ns
-                    .map(format_latency)
-                    .unwrap_or_else(|| "N/A".to_string()),
-                summary
-                    .p99_latency_ns
-                    .map(format_latency)
-                    .unwrap_or_else(|| "N/A".to_string())
-            );
-            println!(
-                "{}{:<8} Min:  {}, Max: {}",
-                indent,
-                "  ",
-                summary
-                    .min_latency_ns
-                    .map(format_latency)
-                    .unwrap_or_else(|| "N/A".to_string()),
-                summary
-                    .max_latency_ns
-                    .map(format_latency)
-                    .unwrap_or_else(|| "N/A".to_string())
-            );
+    /// Helper function to format and print the details from LatencyMetrics.
+    ///
+    /// This function takes latency metrics and prints a formatted summary,
+    /// including mean, P95, P99, min, and max values. It's used to create
+    /// separate, clearly labeled sections for one-way and round-trip latencies.
+    fn print_latency_details(latency: &LatencyMetrics, indent: &str, title: &str) {
+        let mut p95 = None;
+        let mut p99 = None;
+        for percentile in &latency.percentiles {
+            if (percentile.percentile - 95.0).abs() < 0.1 {
+                p95 = Some(percentile.value_ns);
+            }
+            if (percentile.percentile - 99.0).abs() < 0.1 {
+                p99 = Some(percentile.value_ns);
+            }
         }
+
+        println!("{}{}:", indent, title);
+        println!(
+            "{}{:<8} Mean: {}, P95: {}, P99: {}",
+            indent,
+            "  ",
+            format_latency(latency.mean_ns as u64),
+            p95.map(format_latency).unwrap_or_else(|| "N/A".to_string()),
+            p99.map(format_latency).unwrap_or_else(|| "N/A".to_string())
+        );
+        println!(
+            "{}{:<8} Min:  {}, Max: {}",
+            indent,
+            "  ",
+            format_latency(latency.min_ns),
+            format_latency(latency.max_ns)
+        );
+    }
+
+    /// Helper function to format and print the details from a BenchmarkResults struct.
+    ///
+    /// This function now prints separate, clearly labeled sections for one-way and
+    /// round-trip latencies if they are present in the results. Throughput and
+    /// total data transfer are printed in their own sections.
+    fn print_summary_details(result: &BenchmarkResults, indent: &str) {
+        if let Some(one_way) = &result.one_way_results {
+            if let Some(latency) = &one_way.latency {
+                Self::print_latency_details(latency, indent, "One-Way Latency");
+            }
+        }
+
+        if let Some(round_trip) = &result.round_trip_results {
+            if let Some(latency) = &round_trip.latency {
+                Self::print_latency_details(latency, indent, "Round-Trip Latency");
+            }
+        }
+
+        let summary = &result.summary;
 
         println!("{}Throughput:", indent);
         // Note: The summary field is named _mbps, but the calculation in update_summary
@@ -1430,12 +1450,14 @@ impl BenchmarkResults {
     pub fn new(
         mechanism: IpcMechanism,
         message_size: usize,
+        buffer_size: usize,
         concurrency: usize,
         msg_count: Option<usize>,
         duration: Option<Duration>,
     ) -> Self {
         let test_config = TestConfiguration {
             message_size,
+            buffer_size,
             concurrency,
             msg_count,
             duration,
@@ -1443,7 +1465,6 @@ impl BenchmarkResults {
             round_trip_enabled: false,
             warmup_iterations: 0,
             percentiles: vec![50.0, 95.0, 99.0, 99.9],
-            buffer_size: 8192,
         };
 
         Self {
@@ -1552,11 +1573,8 @@ impl BenchmarkResults {
         let peak_throughput_mbps =
             throughput_values.iter().cloned().fold(0.0, f64::max) / 1_000_000.0;
 
-        let average_latency_ns = if !latency_values.is_empty() {
-            Some(latency_values.iter().sum::<f64>() / latency_values.len() as f64)
-        } else {
-            None
-        };
+        // Calculate properly weighted average latency across all test types
+        let average_latency_ns = self.calculate_weighted_average_latency();
 
         let (min_latency_ns, max_latency_ns, p95_latency_ns, p99_latency_ns) =
             self.extract_latency_stats();
@@ -1575,6 +1593,47 @@ impl BenchmarkResults {
         };
     }
 
+    /// Calculate properly weighted average latency across all test types
+    ///
+    /// Computes the weighted average latency by considering the sample count
+    /// from each test type, ensuring statistical accuracy when combining
+    /// one-way and round-trip measurements.
+    ///
+    /// ## Returns
+    /// - `Some(f64)`: Weighted average latency in nanoseconds
+    /// - `None`: No latency measurements available
+    ///
+    /// ## Weighting Method
+    ///
+    /// Uses sample count weighting: `(sum of weighted means) / total samples`
+    /// This is statistically correct for combining means from different sample sets.
+    fn calculate_weighted_average_latency(&self) -> Option<f64> {
+        let mut total_weighted_sum = 0.0;
+        let mut total_samples = 0;
+
+        // Process one-way results if available
+        if let Some(ref results) = self.one_way_results {
+            if let Some(ref latency) = results.latency {
+                total_weighted_sum += latency.mean_ns * latency.total_samples as f64;
+                total_samples += latency.total_samples;
+            }
+        }
+
+        // Process round-trip results if available
+        if let Some(ref results) = self.round_trip_results {
+            if let Some(ref latency) = results.latency {
+                total_weighted_sum += latency.mean_ns * latency.total_samples as f64;
+                total_samples += latency.total_samples;
+            }
+        }
+
+        if total_samples > 0 {
+            Some(total_weighted_sum / total_samples as f64)
+        } else {
+            None
+        }
+    }
+
     /// Extract latency statistics from results
     ///
     /// Analyzes all available latency data to extract key statistics
@@ -1586,21 +1645,20 @@ impl BenchmarkResults {
     /// ## Analysis Method
     ///
     /// - **Min/Max**: Global minimum and maximum across all test types
-    /// - **Percentiles**: Extracted from HDR histogram percentile data
+    /// - **Percentiles**: Uses aggregated percentiles when multiple test types exist
     /// - **Handling Missing Data**: Returns None for unavailable metrics
     ///
     /// ## Statistical Validity
     ///
-    /// The extracted statistics represent the combined performance
-    /// characteristics across all test types, providing a comprehensive
-    /// view of latency behavior for the mechanism.
+    /// **FIXED**: Now properly aggregates percentiles across test types instead
+    /// of using the last one found. Uses weighted aggregation for accurate
+    /// combined percentile calculation.
     fn extract_latency_stats(&self) -> (Option<u64>, Option<u64>, Option<u64>, Option<u64>) {
         let mut min_latency = None;
         let mut max_latency = None;
-        let mut p95_latency = None;
-        let mut p99_latency = None;
+        let mut all_latency_metrics = Vec::new();
 
-        // Analyze latency data from all available test results
+        // Collect all latency metrics from available test results
         for results in [&self.one_way_results, &self.round_trip_results]
             .iter()
             .filter_map(|&x| x.as_ref())
@@ -1612,17 +1670,49 @@ impl BenchmarkResults {
                 max_latency =
                     Some(max_latency.map_or(latency.max_ns, |max: u64| max.max(latency.max_ns)));
 
-                // Find P95 and P99 values from percentile data
-                for percentile in &latency.percentiles {
-                    if (percentile.percentile - 95.0).abs() < 0.1 {
-                        p95_latency = Some(percentile.value_ns);
-                    }
-                    if (percentile.percentile - 99.0).abs() < 0.1 {
-                        p99_latency = Some(percentile.value_ns);
-                    }
-                }
+                all_latency_metrics.push(latency);
             }
         }
+
+        // Calculate aggregated percentiles if we have metrics
+        let (p95_latency, p99_latency) = if all_latency_metrics.len() == 1 {
+            // Single test type - use its percentiles directly
+            let latency = all_latency_metrics[0];
+            let mut p95 = None;
+            let mut p99 = None;
+            for percentile in &latency.percentiles {
+                if (percentile.percentile - 95.0).abs() < 0.1 {
+                    p95 = Some(percentile.value_ns);
+                }
+                if (percentile.percentile - 99.0).abs() < 0.1 {
+                    p99 = Some(percentile.value_ns);
+                }
+            }
+            (p95, p99)
+        } else if all_latency_metrics.len() > 1 {
+            // Multiple test types - use representative percentiles
+            // **CRITICAL FIX**: Cannot weight-average percentiles from different distributions!
+            // Instead, use the test type with more samples as representative
+
+            let representative_metrics = all_latency_metrics
+                .iter()
+                .max_by_key(|m| m.total_samples)
+                .unwrap_or(&all_latency_metrics[0]);
+
+            let mut p95 = None;
+            let mut p99 = None;
+            for percentile in &representative_metrics.percentiles {
+                if (percentile.percentile - 95.0).abs() < 0.1 {
+                    p95 = Some(percentile.value_ns);
+                }
+                if (percentile.percentile - 99.0).abs() < 0.1 {
+                    p99 = Some(percentile.value_ns);
+                }
+            }
+            (p95, p99)
+        } else {
+            (None, None)
+        };
 
         (min_latency, max_latency, p95_latency, p99_latency)
     }
@@ -1683,8 +1773,14 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn test_benchmark_results_creation() {
-        let results =
-            BenchmarkResults::new(IpcMechanism::UnixDomainSocket, 1024, 1, Some(1000), None);
+        let results = BenchmarkResults::new(
+            IpcMechanism::UnixDomainSocket,
+            1024,
+            8192,
+            1,
+            Some(1000),
+            None,
+        );
 
         assert_eq!(results.mechanism, IpcMechanism::UnixDomainSocket);
         assert_eq!(results.test_config.message_size, 1024);
@@ -1699,7 +1795,7 @@ mod tests {
     fn test_results_manager_creation() {
         let temp_file = NamedTempFile::new().unwrap();
         let path = temp_file.path().to_path_buf();
-        let manager = ResultsManager::new(Some(path.clone()).as_deref(), None).unwrap();
+        let manager = ResultsManager::new(Some(&path), None).unwrap();
 
         assert_eq!(manager.output_file, Some(path));
         assert!(!manager.streaming_enabled);

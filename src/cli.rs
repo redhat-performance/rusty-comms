@@ -81,6 +81,7 @@ fn styles() -> Styles {
 // Define constants for help headings to ensure consistency.
 const TIMING: &str = "Timing";
 const CONCURRENCY: &str = "Concurrency";
+const AFFINITY: &str = "Affinity";
 const OUTPUT_AND_LOGGING: &str = "Output and Logging";
 const ADVANCED: &str = "Advanced";
 
@@ -143,6 +144,20 @@ pub struct Args {
     /// to avoid race conditions in the current implementation.
     #[arg(short = 'c', long, default_value_t = crate::defaults::CONCURRENCY, help_heading = CONCURRENCY)]
     pub concurrency: usize,
+
+    /// Server CPU affinity.
+    ///
+    /// Specifies the CPU core to which the server process should be pinned.
+    /// Pinning can reduce cache misses and context switching, improving performance.
+    #[arg(long, help_heading = AFFINITY)]
+    pub server_affinity: Option<usize>,
+
+    /// Client CPU affinity.
+    ///
+    /// Specifies the CPU core to which the client process should be pinned.
+    /// Pinning can reduce cache misses and context switching, improving performance.
+    #[arg(long, help_heading = AFFINITY)]
+    pub client_affinity: Option<usize>,
 
     /// Path to the final JSON output file. If used without a path, defaults to 'benchmark_results.json'.
     ///
@@ -235,10 +250,13 @@ pub struct Args {
     /// Buffer size for message queues and shared memory
     ///
     /// Controls the size of internal buffers used by IPC mechanisms.
+    ///
     /// Larger buffers can improve throughput but increase memory usage.
-    /// The optimal size depends on message size and concurrency level.
-    #[arg(long, default_value_t = 8192, help_heading = ADVANCED)]
-    pub buffer_size: usize,
+    /// If not specified, a smart default is calculated based on message count and size
+    /// to avoid backpressure, except for PMQ which uses a safe 8192-byte default
+    /// to stay within typical OS limits.
+    #[arg(long, help_heading = ADVANCED)]
+    pub buffer_size: Option<usize>,
 
     /// Host address for TCP sockets
     ///
@@ -452,13 +470,19 @@ pub struct BenchmarkConfiguration {
     pub percentiles: Vec<f64>,
 
     /// Buffer size for internal data structures
-    pub buffer_size: usize,
+    pub buffer_size: Option<usize>,
 
     /// Host address for network-based mechanisms
     pub host: String,
 
     /// Port number for network-based mechanisms
     pub port: u16,
+
+    /// Server CPU affinity
+    pub server_affinity: Option<usize>,
+
+    /// Client CPU affinity
+    pub client_affinity: Option<usize>,
 }
 
 impl From<&Args> for BenchmarkConfiguration {
@@ -502,6 +526,8 @@ impl From<&Args> for BenchmarkConfiguration {
             buffer_size: args.buffer_size,
             host: args.host.clone(),
             port: args.port,
+            server_affinity: args.server_affinity,
+            client_affinity: args.client_affinity,
         }
     }
 }
@@ -624,6 +650,14 @@ impl fmt::Display for Args {
         writeln!(f, "  Mechanisms:         {}", mechanisms_str)?;
         writeln!(f, "  Message Size:       {} bytes", self.message_size)?;
 
+        // Display buffer size information
+        let buffer_size_str = if let Some(size) = self.buffer_size {
+            format!("{} bytes (User-provided)", size)
+        } else {
+            "Automatic (mechanism-specific)".to_string()
+        };
+        writeln!(f, "  Buffer Size:        {}", buffer_size_str)?;
+
         // Display duration if specified, as it takes precedence over message count.
         if let Some(duration) = self.duration {
             writeln!(f, "  Test Duration:      {:?}", duration)?;
@@ -633,6 +667,17 @@ impl fmt::Display for Args {
 
         writeln!(f, "  Warmup Iterations:  {}", self.warmup_iterations)?;
         writeln!(f, "  Test Types:         {}", test_types)?;
+
+        // Display CPU affinity settings
+        let server_affinity_str = self
+            .server_affinity
+            .map_or("Not set".to_string(), |c| c.to_string());
+        let client_affinity_str = self
+            .client_affinity
+            .map_or("Not set".to_string(), |c| c.to_string());
+        writeln!(f, "  Server Affinity:    {}", server_affinity_str)?;
+        writeln!(f, "  Client Affinity:    {}", client_affinity_str)?;
+
         // Conditionally display the path for the main JSON output file.
         if let Some(output_dest) = self.output_file.as_ref() {
             writeln!(f, "  Output File:        {}", output_dest.display())?;
@@ -725,5 +770,19 @@ mod tests {
             IpcMechanism::expand_all(vec![IpcMechanism::UnixDomainSocket, IpcMechanism::All]),
             all_mechanisms
         );
+    }
+
+    /// Test parsing of CPU affinity arguments
+    #[test]
+    fn test_parse_affinity_args() {
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "--server-affinity",
+            "2",
+            "--client-affinity",
+            "3",
+        ]);
+        assert_eq!(args.server_affinity, Some(2));
+        assert_eq!(args.client_affinity, Some(3));
     }
 }

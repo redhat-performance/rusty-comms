@@ -49,6 +49,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use time::OffsetDateTime;
 use tokio::sync::mpsc;
 
@@ -67,6 +68,21 @@ pub use posix_message_queue::PosixMessageQueueTransport;
 pub use tcp_socket::TcpSocketTransport;
 #[cfg(unix)]
 pub use unix_domain_socket::UnixDomainSocketTransport;
+
+/// Custom error types for IPC operations.
+#[derive(Error, Debug)]
+pub enum IpcError {
+    /// Error indicating a timeout that occurred due to backpressure.
+    ///
+    /// This error is returned when a send operation cannot complete within a
+    /// reasonable time because the underlying buffer or queue is full,
+    /// indicating that the receiver is not processing messages fast enough.
+    #[error("Timeout sending message due to backpressure")]
+    BackpressureTimeout,
+    /// A generic IPC error.
+    #[error("IPC error: {0}")]
+    Generic(#[from] anyhow::Error),
+}
 
 /// Connection identifier for tracking multiple client connections
 ///
@@ -471,7 +487,7 @@ pub trait IpcTransport: Send + Sync {
     /// - `message`: Message to transmit
     ///
     /// ## Returns
-    /// - `Ok(())`: Message sent successfully
+    /// - `Ok(bool)`: `true` if backpressure was detected, `false` otherwise
     /// - `Err(anyhow::Error)`: Transmission failed
     ///
     /// ## Performance Considerations
@@ -479,7 +495,7 @@ pub trait IpcTransport: Send + Sync {
     /// This method should be optimized for low latency and high throughput
     /// as it's called frequently during benchmarking. Implementations
     /// should minimize copies and allocations where possible.
-    async fn send(&mut self, message: &Message) -> Result<()>;
+    async fn send(&mut self, message: &Message) -> Result<bool>;
 
     /// Receive a message (legacy single-connection interface)
     ///
@@ -644,7 +660,8 @@ pub trait IpcTransport: Send + Sync {
         message: &Message,
     ) -> Result<()> {
         // Default implementation ignores connection_id and uses legacy send
-        self.send(message).await
+        self.send(message).await?;
+        Ok(())
     }
 
     /// Get list of active connection IDs
