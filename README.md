@@ -435,7 +435,7 @@ This project uses GitHub Actions for continuous integration. The CI pipeline is 
 
 - **Linting and Formatting**: Ensures code style and quality using `cargo fmt` and `cargo clippy`.
 - **Testing**: Runs the full test suite on stable, beta, and MSRV Rust across Linux, Windows, and macOS.
-- **Code Coverage**: Generates a code coverage report using `cargo-tarpaulin` and uploads it to Codecov.
+- **Code Coverage**: Generates a code coverage report using `cargo-tarpaulin`.
 - **Security Audit**: Scans for vulnerabilities using `cargo audit`.
 - **Docker Build**: Validates that the Docker image can be built and run successfully.
 

@@ -243,7 +243,6 @@ jobs:
           --verbose \
           --all-features \
           --workspace \
-          --all \
           --engine llvm \
           --timeout 120 \
           --out Xml \
@@ -268,6 +267,27 @@ jobs:
         python3 -c '
         import xml.etree.ElementTree as ET
         import os
+
+        def to_ranges(numbers):
+            if not numbers:
+                return ""
+            numbers = sorted([int(n) for n in numbers])
+            ranges = []
+            start = end = numbers[0]
+            for n in numbers[1:]:
+                if n == end + 1:
+                    end = n
+                else:
+                    if start == end:
+                        ranges.append(str(start))
+                    else:
+                        ranges.append(f"{start}-{end}")
+                    start = end = n
+            if start == end:
+                ranges.append(str(start))
+            else:
+                ranges.append(f"{start}-{end}")
+            return ", ".join(ranges)
 
         tree = ET.parse("./coverage-reports/cobertura.xml")
         root = tree.getroot()
@@ -302,7 +322,7 @@ jobs:
                         if line.attrib["hits"] == "0":
                             uncovered_lines.append(line.attrib["number"])
                 
-                uncovered_lines_str = ", ".join(uncovered_lines)
+                uncovered_lines_str = to_ranges(uncovered_lines)
                 f.write(f"| `{filename}` | {line_rate_class:.2f}% | `{uncovered_lines_str}` |\n")
 
             f.write(f"| **Total** | **{line_rate:.2f}%** | | \n")
@@ -328,11 +348,19 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # Fetch the full history to allow diff-coverage checking
+          fetch-depth: 0
       - name: Download coverage report artifact
         uses: actions/download-artifact@v4
         with:
           name: coverage-reports
           path: ./coverage-reports/
+
+      - name: Check for uncovered lines in PR
+        id: pr_coverage_check
+        run: | 
+          echo "PR_COVERAGE_REPORT=$(/home/dblack/git/redhat-performance/rusty-comms/.github/scripts/check_pr_coverage.py ${{ github.base_ref }})" >> $GITHUB_OUTPUT
 
       - name: Post Coverage Comment
         env:
@@ -341,8 +369,13 @@ jobs:
         run: |
           MARKER="<!-- gemini-coverage-comment -->"
           BODY=$(cat ./coverage-reports/coverage-summary.md)
+          PR_COVERAGE_REPORT="${{ steps.pr_coverage_check.outputs.PR_COVERAGE_REPORT }}"
+          
           COMMENT_BODY="$MARKER
+          $PR_COVERAGE_REPORT
+
           $BODY"
+          
           gh pr comment "$PR_NUMBER" --body "$COMMENT_BODY"
 
   benchmarks:
