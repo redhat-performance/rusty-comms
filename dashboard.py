@@ -17,6 +17,8 @@ import dash
 from dash import dcc, html, Input, Output, State, callback, dash_table
 from dash.exceptions import PreventUpdate
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 from scipy import stats
 try:
@@ -103,125 +105,199 @@ class BenchmarkDataProcessor:
         except Exception:
             return False
     
+    def _process_single_summary_file(self, file_path: Path) -> List[Dict]:
+        """Process a single summary JSON file and return list of records."""
+        try:
+            with open(file_path, 'r') as f:
+                data = json.load(f)
+            
+            records = []
+            for result in data.get('results', []):
+                mechanism = result.get('mechanism', 'unknown')
+                # message_size is inside test_config
+                test_config = result.get('test_config', {})
+                message_size = test_config.get('message_size')
+                if message_size is None or message_size <= 0:
+                    logger.warning(f"Skipping result with invalid message_size: {message_size}")
+                    continue
+                
+                summary = result.get('summary', {})
+                
+                # Extract latency percentiles (convert ns to μs)
+                latency_data = summary.get('latency', {}).get('percentiles', [])
+                percentiles = {p['percentile']: p['value_ns'] / 1000 for p in latency_data}
+                
+                # Extract throughput data
+                one_way_throughput = result.get('one_way_results', {}).get('throughput', {})
+                round_trip_throughput = result.get('round_trip_results', {}).get('throughput', {})
+                
+                record = {
+                    'mechanism': mechanism,
+                    'message_size': message_size,
+                    'file_path': str(file_path),
+                    'p50_latency_us': percentiles.get(50.0, np.nan),
+                    'p95_latency_us': percentiles.get(95.0, np.nan),
+                    'p99_latency_us': percentiles.get(99.0, np.nan),
+                    'mean_latency_us': summary.get('latency', {}).get('mean_ns', 0) / 1000,
+                    'one_way_msgs_per_sec': one_way_throughput.get('messages_per_second', np.nan),
+                    'one_way_bytes_per_sec': one_way_throughput.get('bytes_per_second', np.nan),
+                    'round_trip_msgs_per_sec': round_trip_throughput.get('messages_per_second', np.nan),
+                    'round_trip_bytes_per_sec': round_trip_throughput.get('bytes_per_second', np.nan),
+                }
+                records.append(record)
+                
+            return records
+                
+        except Exception as e:
+            logger.error(f"Error processing summary file {file_path}: {e}")
+            return []
+
+    def _process_single_streaming_json_file(self, file_path: Path) -> pd.DataFrame:
+        """Process a single streaming JSON file and return DataFrame."""
+        try:
+            with open(file_path, 'r') as f:
+                data = json.load(f)
+            
+            headings = data.get('headings', [])
+            records = data.get('data', [])
+            
+            if not headings or not records:
+                return pd.DataFrame()
+            
+            df = pd.DataFrame(records, columns=headings)
+            
+            # Detect mechanism and message size from first record
+            if len(df) > 0:
+                mechanism = df['mechanism'].iloc[0] if 'mechanism' in df.columns else 'unknown'
+                message_size = df['message_size'].iloc[0] if 'message_size' in df.columns else None
+                
+                if message_size is None or message_size <= 0:
+                    logger.warning(f"Skipping streaming file {file_path} with invalid message_size: {message_size}")
+                    return pd.DataFrame()
+                
+                # Convert nanoseconds to microseconds for latency columns
+                if 'one_way_latency_ns' in df.columns:
+                    df['one_way_latency_us'] = df['one_way_latency_ns'] / 1000
+                if 'round_trip_latency_ns' in df.columns:
+                    df['round_trip_latency_us'] = df['round_trip_latency_ns'] / 1000
+                    
+                # Add file source for tracking
+                df['source_file'] = str(file_path)
+                
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error processing streaming JSON file {file_path}: {e}")
+            return pd.DataFrame()
+
+    def _process_single_streaming_csv_file(self, file_path: Path) -> pd.DataFrame:
+        """Process a single streaming CSV file and return DataFrame."""
+        try:
+            df = pd.read_csv(file_path)
+            
+            # Detect mechanism and message size from first row
+            if len(df) > 0:
+                mechanism = df['mechanism'].iloc[0] if 'mechanism' in df.columns else 'unknown'
+                message_size = df['message_size'].iloc[0] if 'message_size' in df.columns else None
+                
+                if message_size is None or message_size <= 0:
+                    logger.warning(f"Skipping streaming CSV file {file_path} with invalid message_size: {message_size}")
+                    return pd.DataFrame()
+                
+                # Convert nanoseconds to microseconds for latency columns
+                if 'one_way_latency_ns' in df.columns:
+                    df['one_way_latency_us'] = df['one_way_latency_ns'] / 1000
+                if 'round_trip_latency_ns' in df.columns:
+                    df['round_trip_latency_us'] = df['round_trip_latency_ns'] / 1000
+                    
+                # Add file source for tracking
+                df['source_file'] = str(file_path)
+                
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error processing streaming CSV file {file_path}: {e}")
+            return pd.DataFrame()
 
     
     def load_summary_data(self, files: List[Path]) -> pd.DataFrame:
-        """Load and process summary JSON files."""
-        summary_records = []
+        """Load and process summary JSON files using threading for improved performance."""
+        if not files:
+            return pd.DataFrame()
         
-        for file_path in files:
-            try:
-                with open(file_path, 'r') as f:
-                    data = json.load(f)
-                
-                for result in data.get('results', []):
-                    mechanism = result.get('mechanism', 'unknown')
-                    # message_size is inside test_config
-                    test_config = result.get('test_config', {})
-                    message_size = test_config.get('message_size')
-                    if message_size is None or message_size <= 0:
-                        logger.warning(f"Skipping result with invalid message_size: {message_size}")
-                        continue
-                    
-                    summary = result.get('summary', {})
-                    
-                    # Extract latency percentiles (convert ns to μs)
-                    latency_data = summary.get('latency', {}).get('percentiles', [])
-                    percentiles = {p['percentile']: p['value_ns'] / 1000 for p in latency_data}
-                    
-                    # Extract throughput data
-                    one_way_throughput = result.get('one_way_results', {}).get('throughput', {})
-                    round_trip_throughput = result.get('round_trip_results', {}).get('throughput', {})
-                    
-                    record = {
-                        'mechanism': mechanism,
-                        'message_size': message_size,
-                        'file_path': str(file_path),
-                        'p50_latency_us': percentiles.get(50.0, np.nan),
-                        'p95_latency_us': percentiles.get(95.0, np.nan),
-                        'p99_latency_us': percentiles.get(99.0, np.nan),
-                        'mean_latency_us': summary.get('latency', {}).get('mean_ns', 0) / 1000,
-                        'one_way_msgs_per_sec': one_way_throughput.get('messages_per_second', np.nan),
-                        'one_way_bytes_per_sec': one_way_throughput.get('bytes_per_second', np.nan),
-                        'round_trip_msgs_per_sec': round_trip_throughput.get('messages_per_second', np.nan),
-                        'round_trip_bytes_per_sec': round_trip_throughput.get('bytes_per_second', np.nan),
-                    }
-                    summary_records.append(record)
-                    
-            except Exception as e:
-                logger.error(f"Error processing summary file {file_path}: {e}")
+        logger.info(f"Loading {len(files)} summary files using threading...")
+        all_records = []
         
-        return pd.DataFrame(summary_records)
+        # Use ThreadPoolExecutor to process files concurrently
+        # Limit max workers to avoid overwhelming system resources
+        max_workers = min(len(files), 8)  # Cap at 8 threads
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all file processing tasks
+            future_to_file = {
+                executor.submit(self._process_single_summary_file, file_path): file_path 
+                for file_path in files
+            }
+            
+            # Collect results as they complete
+            for future in as_completed(future_to_file):
+                file_path = future_to_file[future]
+                try:
+                    file_records = future.result()
+                    all_records.extend(file_records)
+                    logger.debug(f"Processed summary file: {file_path} ({len(file_records)} records)")
+                except Exception as e:
+                    logger.error(f"Thread failed processing summary file {file_path}: {e}")
+        
+        logger.info(f"Successfully loaded {len(all_records)} summary records from {len(files)} files")
+        return pd.DataFrame(all_records)
     
     def load_streaming_data(self, json_files: List[Path], csv_files: List[Path]) -> pd.DataFrame:
-        """Load and process streaming data, preferring JSON over CSV for same runs."""
+        """Load and process streaming data using threading for improved performance."""
+        if not json_files and not csv_files:
+            return pd.DataFrame()
+        
+        all_files = len(json_files) + len(csv_files)
+        logger.info(f"Loading {all_files} streaming files using threading...")
         streaming_records = []
         
-        # Process JSON files first (preferred)
-        for file_path in json_files:
-            try:
-                with open(file_path, 'r') as f:
-                    data = json.load(f)
-                
-                headings = data.get('headings', [])
-                records = data.get('data', [])
-                
-                if not headings or not records:
-                    continue
-                
-                df = pd.DataFrame(records, columns=headings)
-                
-                # Detect mechanism and message size from first record
-                if len(df) > 0:
-                    mechanism = df['mechanism'].iloc[0] if 'mechanism' in df.columns else 'unknown'
-                    message_size = df['message_size'].iloc[0] if 'message_size' in df.columns else None
-                    
-                    if message_size is None or message_size <= 0:
-                        logger.warning(f"Skipping streaming data with invalid message_size: {message_size} in {file_path}")
-                        continue
-                        
-                    # Add file path for reference
-                    df['file_path'] = str(file_path)
-                    df['file_type'] = 'streaming_json'
-                    
-                    # Convert latencies from ns to μs
-                    if 'one_way_latency_ns' in df.columns:
-                        df['one_way_latency_us'] = df['one_way_latency_ns'] / 1000
-                    if 'round_trip_latency_ns' in df.columns:
-                        df['round_trip_latency_us'] = df['round_trip_latency_ns'] / 1000
-                    
-                    streaming_records.append(df)
-                        
-            except Exception as e:
-                logger.error(f"Error processing streaming JSON {file_path}: {e}")
+        # Use ThreadPoolExecutor to process files concurrently
+        max_workers = min(all_files, 6)  # Cap at 6 threads for streaming files (they're larger)
         
-        # Process CSV files (only if not already processed as JSON)
-        for file_path in csv_files:
-            try:
-                df = pd.read_csv(file_path)
-                
-                if len(df) > 0:
-                    mechanism = df['mechanism'].iloc[0] if 'mechanism' in df.columns else 'unknown'
-                    message_size = df['message_size'].iloc[0] if 'message_size' in df.columns else 0
-                    
-                    if message_size > 0:  # Only process valid message sizes
-                        df['file_path'] = str(file_path)
-                        df['file_type'] = 'streaming_csv'
-                        
-                        # Convert latencies from ns to μs
-                        if 'one_way_latency_ns' in df.columns:
-                            df['one_way_latency_us'] = df['one_way_latency_ns'] / 1000
-                        if 'round_trip_latency_ns' in df.columns:
-                            df['round_trip_latency_us'] = df['round_trip_latency_ns'] / 1000
-                        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit JSON file processing tasks
+            future_to_info = {}
+            for file_path in json_files:
+                future = executor.submit(self._process_single_streaming_json_file, file_path)
+                future_to_info[future] = ('json', file_path)
+            
+            # Submit CSV file processing tasks
+            for file_path in csv_files:
+                future = executor.submit(self._process_single_streaming_csv_file, file_path)
+                future_to_info[future] = ('csv', file_path)
+            
+            # Collect results as they complete
+            for future in as_completed(future_to_info):
+                file_type, file_path = future_to_info[future]
+                try:
+                    df = future.result()
+                    if not df.empty:
+                        # Add metadata for tracking
+                        df['file_type'] = f'streaming_{file_type}'
                         streaming_records.append(df)
-                        
-            except Exception as e:
-                logger.error(f"Error processing streaming CSV {file_path}: {e}")
+                        logger.debug(f"Processed streaming {file_type} file: {file_path} ({len(df)} records)")
+                    else:
+                        logger.debug(f"Empty result from streaming {file_type} file: {file_path}")
+                except Exception as e:
+                    logger.error(f"Thread failed processing streaming {file_type} file {file_path}: {e}")
         
+        # Combine all DataFrames
         if streaming_records:
-            return pd.concat(streaming_records, ignore_index=True)
+            combined_df = pd.concat(streaming_records, ignore_index=True)
+            logger.info(f"Successfully loaded {len(combined_df)} streaming records from {len(streaming_records)} files")
+            return combined_df
         else:
+            logger.warning("No valid streaming data found")
             return pd.DataFrame()
     
     def process_all_data(self) -> Dict:
