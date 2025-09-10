@@ -775,7 +775,7 @@ mod tests {
     /// Test parsing of CPU affinity arguments
     #[test]
     fn test_parse_affinity_args() {
-        let args = Args::parse_from(&[
+        let args = Args::parse_from([
             "ipc-benchmark",
             "--server-affinity",
             "2",
