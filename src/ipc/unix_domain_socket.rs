@@ -1,12 +1,14 @@
-use super::{ConnectionId, IpcTransport, Message, TransportConfig, TransportState};
+use super::{ConnectionId, IpcError, IpcTransport, Message, TransportConfig, TransportState};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, Mutex};
+use tokio::time::timeout;
 use tracing::{debug, error, warn};
 
 /// Unix Domain Socket transport implementation with multi-client support
@@ -20,6 +22,7 @@ pub struct UnixDomainSocketTransport {
     next_connection_id: Arc<AtomicU64>,
     socket_path: String,
     message_receiver: Option<mpsc::Receiver<(ConnectionId, Message)>>,
+    has_warned_backpressure: bool,
 }
 
 impl Default for UnixDomainSocketTransport {
@@ -39,6 +42,7 @@ impl UnixDomainSocketTransport {
             next_connection_id: Arc::new(AtomicU64::new(1)),
             socket_path: String::new(),
             message_receiver: None,
+            has_warned_backpressure: false,
         }
     }
 
@@ -63,16 +67,25 @@ impl UnixDomainSocketTransport {
     }
 
     /// Write a message to the Unix stream
-    async fn write_message(stream: &mut UnixStream, message: &Message) -> Result<()> {
-        let message_bytes = message.to_bytes()?;
+    async fn write_message(stream: &mut UnixStream, message: &Message) -> Result<(), IpcError> {
+        const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+        let message_bytes = message.to_bytes().map_err(IpcError::Generic)?;
         let message_len = message_bytes.len() as u32;
 
-        // Write message length and data
-        stream.write_all(&message_len.to_le_bytes()).await?;
-        stream.write_all(&message_bytes).await?;
-        stream.flush().await?;
+        let write_fut = async {
+            stream.write_all(&message_len.to_le_bytes()).await?;
+            stream.write_all(&message_bytes).await?;
+            stream.flush().await?;
+            Ok(()) as Result<(), std::io::Error>
+        };
 
-        Ok(())
+        // Justification: Prevent indefinite blocking on send operations when the receiver is unresponsive,
+        // which is a clear sign of backpressure. This timeout ensures the system remains responsive.
+        match timeout(WRITE_TIMEOUT, write_fut).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(IpcError::Generic(e.into())), // IO error
+            Err(_) => Err(IpcError::BackpressureTimeout),   // Timeout error
+        }
     }
 
     /// Clean up socket file
@@ -219,7 +232,11 @@ impl IpcTransport for UnixDomainSocketTransport {
         Ok(())
     }
 
-    async fn send(&mut self, message: &Message) -> Result<()> {
+    /// This implementation detects backpressure heuristically. If a send
+    /// operation takes longer than a few milliseconds, it's considered a sign
+    /// that the OS send buffer is full. Additionally, a hard timeout prevents
+    /// the operation from blocking indefinitely.
+    async fn send(&mut self, message: &Message) -> Result<bool> {
         if self.state != TransportState::Connected {
             return Err(anyhow!("Transport not connected"));
         }
@@ -232,9 +249,40 @@ impl IpcTransport for UnixDomainSocketTransport {
         }
 
         if let Some(ref mut stream) = self.stream {
-            Self::write_message(stream, message).await?;
-            debug!("Sent message {} via Unix Domain Socket", message.id);
-            Ok(())
+            let start_time = std::time::Instant::now();
+            match Self::write_message(stream, message).await {
+                Ok(()) => {
+                    let elapsed = start_time.elapsed();
+                    let mut backpressure_detected = false;
+                    // A send operation taking longer than a few milliseconds is a strong
+                    // indicator of the OS send buffer being full.
+                    if elapsed > std::time::Duration::from_millis(5) {
+                        backpressure_detected = true;
+                        if !self.has_warned_backpressure {
+                            warn!(
+                                "UDS backpressure detected (send took {:?}). \
+                                This may impact latency and throughput measurements. \
+                                Consider increasing the buffer size if this is not the desired scenario.",
+                                elapsed
+                            );
+                            self.has_warned_backpressure = true;
+                        }
+                    }
+                    debug!("Sent message {} via Unix Domain Socket", message.id);
+                    Ok(backpressure_detected)
+                }
+                Err(IpcError::BackpressureTimeout) => {
+                    if !self.has_warned_backpressure {
+                        warn!(
+                            "UDS send timed out due to backpressure. \
+                            This will significantly impact latency and throughput measurements."
+                        );
+                        self.has_warned_backpressure = true;
+                    }
+                    Err(anyhow!(IpcError::BackpressureTimeout))
+                }
+                Err(IpcError::Generic(e)) => Err(e),
+            }
         } else {
             Err(anyhow!("No active stream available"))
         }
@@ -448,7 +496,8 @@ mod tests {
             server.close().await.unwrap();
         });
 
-        // Give server time to start
+        // Justification: Give the server task time to start up and create the socket file before the client connects.
+        // This is a pragmatic approach for testing to avoid race conditions on startup.
         sleep(Duration::from_millis(100)).await;
 
         // Start client and communicate
@@ -463,6 +512,74 @@ mod tests {
 
         client.close().await.unwrap();
         server_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_uds_backpressure() {
+        let socket_path = "/tmp/test_uds_backpressure.sock";
+        let config = TransportConfig {
+            socket_path: socket_path.to_string(),
+            ..Default::default()
+        };
+
+        // Clean up any existing socket
+        let _ = std::fs::remove_file(socket_path);
+
+        let mut server = UnixDomainSocketTransport::new();
+        let mut client = UnixDomainSocketTransport::new();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+
+        // Start server in background, but it won't receive anything, causing the buffer to fill up.
+        let server_config = config.clone();
+        let server_handle = tokio::spawn(async move {
+            server.start_server(&server_config).await.unwrap();
+            // Accept a connection but do nothing with it.
+            let (_stream, _addr) = server.listener.as_ref().unwrap().accept().await.unwrap();
+            // Wait for the client to signal it's done.
+            rx.await.unwrap();
+            server.close().await.unwrap();
+        });
+
+        // Justification: Give the server task time to start up and create the socket file before the client connects.
+        // This is a pragmatic approach for testing to avoid race conditions on startup.
+        sleep(Duration::from_millis(100)).await;
+
+        // Start client
+        client.start_client(&config).await.unwrap();
+
+        let mut backpressure_timeout_detected = false;
+        let large_payload = vec![0; 1024]; // A reasonably large payload.
+
+        // Send messages until a backpressure timeout occurs.
+        for i in 0..200 {
+            let message = Message::new(i, large_payload.clone(), MessageType::Request);
+            match client.send(&message).await {
+                Ok(backpressure_detected) => {
+                    if backpressure_detected {
+                        println!("Regular backpressure detected, continuing to force a timeout.");
+                    }
+                }
+                Err(e) => {
+                    if e.to_string()
+                        .contains("Timeout sending message due to backpressure")
+                    {
+                        backpressure_timeout_detected = true;
+                        break;
+                    }
+                    panic!("An unexpected error occurred: {}", e);
+                }
+            }
+        }
+
+        assert!(
+            backpressure_timeout_detected,
+            "A backpressure timeout was not detected when the UDS buffer was full"
+        );
+
+        // Signal the server to shut down.
+        tx.send(()).unwrap();
+        server_handle.await.unwrap();
+        client.close().await.unwrap();
     }
 
     #[tokio::test]
@@ -481,7 +598,8 @@ mod tests {
         // Start multi-server
         let mut receiver = server.start_multi_server(&config).await.unwrap();
 
-        // Give server time to start
+        // Justification: Give the server task time to start up and create the socket file before clients connect.
+        // This is a pragmatic approach for testing to avoid race conditions on startup.
         sleep(Duration::from_millis(100)).await;
 
         // Start multiple clients

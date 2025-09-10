@@ -346,6 +346,20 @@ taskset -c 0-3 ipc-benchmark --concurrency 4
 - **Noise**: Run tests on idle systems for best accuracy
 - **Repetition**: Run multiple test executions and average results
 
+### Backpressure Warnings
+
+During high-throughput tests, it's possible for the sender to produce data faster than the receiver can consume it. When the underlying OS buffers or message queues become full, the send operation will slow down or block. This condition is known as **backpressure**.
+
+This benchmark tool automatically detects backpressure and will issue a warning message the first time it occurs for a given transport, for example:
+
+```
+WARN rusty_comms::ipc::shared_memory: Shared memory buffer is full; backpressure is occurring. 
+This may impact latency and throughput measurements. 
+Consider increasing the buffer size if this is not the desired scenario.
+```
+
+When you see this warning, it means your benchmark may be measuring a backpressure-limited scenario rather than the pure, unconstrained performance of the IPC mechanism. This is a valid and important scenario to test, but it's crucial for interpreting the results correctly. If your goal is to measure maximum throughput, you may need to increase the buffer sizes (`--buffer-size`) or investigate the receiver's performance.
+
 ## Troubleshooting
 
 ### Common Issues

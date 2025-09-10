@@ -431,7 +431,7 @@ impl BenchmarkRunner {
         let payload = vec![0u8; self.config.message_size];
         for i in 0..self.config.warmup_iterations {
             let message = Message::new(i as u64, payload.clone(), MessageType::OneWay);
-            client_transport.send(&message).await?;
+            let _ = client_transport.send(&message).await?;
         }
 
         // Clean up resources
@@ -682,7 +682,7 @@ impl BenchmarkRunner {
                 )
                 .await
                 {
-                    Ok(Ok(())) => {
+                    Ok(Ok(_)) => {
                         let latency = send_time.elapsed();
                         metrics_collector
                             .record_message(self.config.message_size, Some(latency))?;
@@ -716,7 +716,7 @@ impl BenchmarkRunner {
             for i in 0..msg_count {
                 let send_time = Instant::now();
                 let message = Message::new(i as u64, payload.clone(), MessageType::OneWay);
-                client_transport.send(&message).await?;
+                let _ = client_transport.send(&message).await?;
 
                 let latency = send_time.elapsed();
                 metrics_collector.record_message(self.config.message_size, Some(latency))?;
@@ -859,7 +859,7 @@ impl BenchmarkRunner {
                 )
                 .await
                 {
-                    Ok(Ok(())) => {
+                    Ok(Ok(_)) => {
                         // Send succeeded - increment counter immediately to ensure unique message IDs
                         i += 1;
 
@@ -911,7 +911,7 @@ impl BenchmarkRunner {
             for i in 0..msg_count {
                 let send_time = Instant::now();
                 let message = Message::new(i as u64, payload.clone(), MessageType::Request);
-                client_transport.send(&message).await?;
+                let _ = client_transport.send(&message).await?;
 
                 let _ = client_transport.receive().await?;
                 let latency = send_time.elapsed();
@@ -1231,7 +1231,7 @@ impl BenchmarkRunner {
                 )
                 .await
                 {
-                    Ok(Ok(())) => {
+                    Ok(Ok(_)) => {
                         let one_way_latency = send_start.elapsed();
 
                         // Try to receive response and measure round-trip latency
@@ -1292,7 +1292,7 @@ impl BenchmarkRunner {
                 let send_start = Instant::now();
                 let message = Message::new(i as u64, payload.clone(), MessageType::Request);
 
-                client_transport.send(&message).await?;
+                let _ = client_transport.send(&message).await?;
                 let one_way_latency = send_start.elapsed();
 
                 let _ = client_transport.receive().await?;

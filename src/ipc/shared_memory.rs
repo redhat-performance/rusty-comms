@@ -1,4 +1,6 @@
-use super::{ConnectionId, ConnectionRole, IpcTransport, Message, TransportConfig, TransportState};
+use super::{
+    ConnectionId, ConnectionRole, IpcError, IpcTransport, Message, TransportConfig, TransportState,
+};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use parking_lot::Mutex;
@@ -9,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Shared memory ring buffer structure
 #[repr(C)]
@@ -221,6 +223,7 @@ impl SharedMemoryConnection {
                 return Err(anyhow!("Timeout waiting for peer"));
             }
 
+            // Justification: Short poll delay to wait for the peer to become ready without busy-waiting.
             sleep(Duration::from_millis(10)).await;
         }
     }
@@ -233,11 +236,14 @@ impl SharedMemoryConnection {
         }
     }
 
-    async fn send_message(&self, message: &Message) -> Result<()> {
+    /// Sends a message, returning true if the buffer was full and caused a delay.
+    async fn send_message(&self, message: &Message) -> Result<bool, IpcError> {
         let ring_buffer = self.get_ring_buffer();
-        let message_bytes = bincode::serialize(&message)?;
+        let message_bytes =
+            bincode::serialize(&message).map_err(|e| IpcError::Generic(e.into()))?;
+        let mut backpressure_detected = false;
 
-        // Try to write with timeout
+        // Try to write with timeout and backpressure detection
         let start = std::time::Instant::now();
         let timeout_duration = Duration::from_secs(5);
 
@@ -248,12 +254,18 @@ impl SharedMemoryConnection {
                         "Sent message {} via connection {}",
                         message.id, self.connection_id
                     );
-                    return Ok(());
+                    return Ok(backpressure_detected);
                 }
                 Err(_) => {
-                    if start.elapsed() > timeout_duration {
-                        return Err(anyhow!("Timeout sending message"));
+                    // This error means the buffer is full.
+                    if !backpressure_detected {
+                        backpressure_detected = true;
                     }
+                    if start.elapsed() > timeout_duration {
+                        return Err(IpcError::BackpressureTimeout);
+                    }
+                    // Justification: Yield to the scheduler to allow the receiver to catch up when the buffer is full.
+                    // This prevents a tight loop from consuming CPU while waiting for space.
                     sleep(Duration::from_millis(1)).await;
                 }
             }
@@ -281,6 +293,7 @@ impl SharedMemoryConnection {
                     if start.elapsed() > timeout_duration {
                         return Err(anyhow!("Timeout receiving message"));
                     }
+                    // Justification: Short poll delay to wait for a message to arrive without busy-waiting.
                     sleep(Duration::from_millis(1)).await;
                 }
             }
@@ -300,6 +313,7 @@ pub struct SharedMemoryTransport {
     shared_memory_name: String,
     buffer_size: usize,
     message_receiver: Option<mpsc::Receiver<(ConnectionId, Message)>>,
+    has_warned_buffer_full: bool,
 }
 
 unsafe impl Send for SharedMemoryTransport {}
@@ -323,6 +337,7 @@ impl SharedMemoryTransport {
             shared_memory_name: String::new(),
             buffer_size: 0,
             message_receiver: None,
+            has_warned_buffer_full: false,
         }
     }
 
@@ -357,6 +372,7 @@ impl SharedMemoryTransport {
                             Err(_) if attempts < max_attempts => {
                                 debug!("Shared memory segment not ready yet, retrying... (attempt {}/{})", attempts + 1, max_attempts);
                                 attempts += 1;
+                                // Justification: Short poll delay to wait for the server to create the shared memory segment.
                                 sleep(Duration::from_millis(100)).await;
                                 continue;
                             }
@@ -471,7 +487,10 @@ impl IpcTransport for SharedMemoryTransport {
         Ok(())
     }
 
-    async fn send(&mut self, message: &Message) -> Result<()> {
+    /// This implementation detects backpressure when the ring buffer is full,
+    /// causing the send operation to retry until space becomes available or a
+    /// timeout is reached. A warning is logged on the first detection.
+    async fn send(&mut self, message: &Message) -> Result<bool> {
         if self.state != TransportState::Connected {
             return Err(anyhow!("Transport not connected"));
         }
@@ -482,7 +501,32 @@ impl IpcTransport for SharedMemoryTransport {
         }
 
         if let Some(ref connection) = self.single_connection {
-            connection.send_message(message).await
+            let backpressure_detected = connection.send_message(message).await;
+            match backpressure_detected {
+                Ok(detected) => {
+                    if detected && !self.has_warned_buffer_full {
+                        warn!(
+                            "Shared memory buffer is full; backpressure is occurring. 
+                            This may impact latency and throughput measurements. 
+                            Consider increasing the buffer size if this is not the desired scenario."
+                        );
+                        self.has_warned_buffer_full = true;
+                    }
+                    Ok(detected)
+                }
+                Err(IpcError::BackpressureTimeout) => {
+                    // The warning is implicitly handled by the error, but we can log it too.
+                    if !self.has_warned_buffer_full {
+                        warn!(
+                            "Shared memory buffer is full; send timed out due to backpressure. 
+                            This will significantly impact latency and throughput measurements."
+                        );
+                        self.has_warned_buffer_full = true;
+                    }
+                    Err(anyhow!("Timeout sending message due to backpressure"))
+                }
+                Err(IpcError::Generic(e)) => Err(e),
+            }
         } else {
             Err(anyhow!("No active connection available"))
         }
@@ -608,7 +652,7 @@ impl IpcTransport for SharedMemoryTransport {
                     }
                 }
 
-                // Check every 100ms for new connections
+                // Justification: Polling interval to check for new client connections in multi-server mode.
                 sleep(Duration::from_millis(100)).await;
             }
         });
@@ -696,7 +740,8 @@ mod tests {
             server.close().await.unwrap();
         });
 
-        // Give server time to start
+        // Justification: Give the server task time to start up before the client connects.
+        // This is a pragmatic approach for testing to avoid race conditions on startup.
         sleep(Duration::from_millis(500)).await;
 
         // Start client and communicate
@@ -704,6 +749,8 @@ mod tests {
 
         let message = Message::new(1, vec![1, 2, 3, 4, 5], MessageType::Request);
         client.send(&message).await.unwrap();
+        // Justification: Allow a brief moment for the message to be processed by the server.
+        // In a real application, a more robust synchronization mechanism would be used.
         sleep(Duration::from_millis(100)).await;
 
         let response = client.receive().await.unwrap();
@@ -712,5 +759,77 @@ mod tests {
 
         client.close().await.unwrap();
         server_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_shared_memory_backpressure() {
+        let shared_memory_name = format!(
+            "test-backpressure-{}",
+            &Uuid::new_v4().as_simple().to_string()[..10]
+        );
+        let config = TransportConfig {
+            shared_memory_name: shared_memory_name.clone(),
+            buffer_size: 128, // Small buffer to trigger backpressure easily
+            ..Default::default()
+        };
+
+        let mut server = SharedMemoryTransport::new();
+        let mut client = SharedMemoryTransport::new();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+
+        // Start server in background, but it won't receive anything, causing the buffer to fill up.
+        let server_config = config.clone();
+        let server_handle = tokio::spawn(async move {
+            server.start_server(&server_config).await.unwrap();
+            // The server does nothing, so the client's send buffer will fill up.
+            // Wait for the client to signal it's done.
+            rx.await.unwrap();
+            server.close().await.unwrap();
+        });
+
+        // Justification: Give the server task time to start up before the client connects.
+        // This is a pragmatic approach for testing to avoid race conditions on startup.
+        sleep(Duration::from_millis(500)).await;
+
+        // Start client
+        client.start_client(&config).await.unwrap();
+
+        let mut backpressure_timeout_detected = false;
+
+        // Send messages until a backpressure timeout occurs.
+        for i in 0..20 {
+            let message = Message::new(i, vec![0; 64], MessageType::Request); // 64-byte payload
+            match client.send(&message).await {
+                Ok(backpressure_detected) => {
+                    // The first few sends might succeed without backpressure.
+                    // Some might even succeed with backpressure if the timing is just right.
+                    if backpressure_detected {
+                        println!("Regular backpressure detected, continuing to force a timeout.");
+                    }
+                }
+                Err(e) => {
+                    // We expect a specific error related to backpressure timeout.
+                    if e.to_string()
+                        .contains("Timeout sending message due to backpressure")
+                    {
+                        backpressure_timeout_detected = true;
+                        break;
+                    }
+                    // Other errors should cause a panic.
+                    panic!("An unexpected error occurred: {}", e);
+                }
+            }
+        }
+
+        assert!(
+            backpressure_timeout_detected,
+            "A backpressure timeout was not detected when the buffer was full"
+        );
+
+        // Signal the server to shut down.
+        tx.send(()).unwrap();
+        // Wait for the server to finish.
+        server_handle.await.unwrap();
+        client.close().await.unwrap();
     }
 }
