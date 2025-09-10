@@ -243,7 +243,7 @@ jobs:
           --verbose \
           --all-features \
           --workspace \
-          --branch \
+          --all \
           --engine llvm \
           --timeout 120 \
           --out Xml \
@@ -272,12 +272,11 @@ jobs:
         tree = ET.parse("./coverage-reports/cobertura.xml")
         root = tree.getroot()
         line_rate = float(root.attrib["line-rate"]) * 100
-        branch_rate = float(root.attrib["branch-rate"]) * 100
 
         with open("./coverage-reports/coverage-summary.md", "w") as f:
             f.write("### 📊 Code Coverage Summary\n\n")
-            f.write("| File | Line Coverage | Branch Coverage | Uncovered Lines |\n")
-            f.write("|------|---------------|-----------------|-----------------|\n")
+            f.write("| File | Line Coverage | Uncovered Lines |\n")
+            f.write("|------|---------------|-----------------|\n")
 
             packages = root.find("packages")
             all_classes = []
@@ -295,7 +294,6 @@ jobs:
                 if "target/debug/build" in filename:
                     continue
                 line_rate_class = float(klass.attrib["line-rate"]) * 100
-                branch_rate_class = float(klass.attrib["branch-rate"]) * 100
                 
                 uncovered_lines = []
                 lines = klass.find("lines")
@@ -305,9 +303,9 @@ jobs:
                             uncovered_lines.append(line.attrib["number"])
                 
                 uncovered_lines_str = ", ".join(uncovered_lines)
-                f.write(f"| `{filename}` | {line_rate_class:.2f}% | {branch_rate_class:.2f}% | `{uncovered_lines_str}` |\n")
+                f.write(f"| `{filename}` | {line_rate_class:.2f}% | `{uncovered_lines_str}` |\n")
 
-            f.write(f"| **Total** | **{line_rate:.2f}%** | **{branch_rate:.2f}%** | | \n")
+            f.write(f"| **Total** | **{line_rate:.2f}%** | | \n")
         '
     - name: Add Markdown summary table to Job Summary
       run: |
