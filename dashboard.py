@@ -1506,7 +1506,9 @@ class DashboardApp:
                 'background': 'linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%)',
                 'padding': '20px', 'border-radius': '12px', 'text-align': 'center',
                 'box-shadow': '0 4px 6px rgba(0, 0, 0, 0.1)', 'border': '1px solid #10b981'
-            })
+            }),
+            html.P("The mechanism with the best balance of typical performance (P50) and consistency. Combines low latency with predictable behavior - ideal for most applications.", 
+                   style={'margin': '8px 0 0 0', 'font-size': '0.75rem', 'color': '#6b7280', 'font-style': 'italic', 'line-height': '1.3', 'text-align': 'center'})
         ], style={'flex': '1', 'min-width': '0'})
         
         # Performance Range Card for Best Mechanism
@@ -1541,7 +1543,9 @@ class DashboardApp:
                 'background': 'linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%)',
                 'padding': '20px', 'border-radius': '12px', 'text-align': 'center',
                 'box-shadow': '0 4px 6px rgba(0, 0, 0, 0.1)', 'border': '1px solid #3b82f6'
-            })
+            }),
+            html.P("Shows the latency spread for the best mechanism. Smaller ranges indicate more predictable performance. P99 represents near-worst-case latency.", 
+                   style={'margin': '8px 0 0 0', 'font-size': '0.75rem', 'color': '#6b7280', 'font-style': 'italic', 'line-height': '1.3', 'text-align': 'center'})
         ], style={'flex': '1', 'min-width': '0'})
         
         # Throughput Card
@@ -1555,7 +1559,9 @@ class DashboardApp:
                 'background': 'linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)',
                 'padding': '20px', 'border-radius': '12px', 'text-align': 'center',
                 'box-shadow': '0 4px 6px rgba(0, 0, 0, 0.1)', 'border': '1px solid #f59e0b'
-            })
+            }),
+            html.P("Highest message rate achieved across all mechanisms. Important for high-volume applications that prioritize throughput over latency.", 
+                   style={'margin': '8px 0 0 0', 'font-size': '0.75rem', 'color': '#6b7280', 'font-style': 'italic', 'line-height': '1.3', 'text-align': 'center'})
         ], style={'flex': '1', 'min-width': '0'})
         
         # Max Latency Card
@@ -1575,7 +1581,9 @@ class DashboardApp:
                         'background': 'linear-gradient(135deg, #fee2e2 0%, #fecaca 100%)',
                         'padding': '20px', 'border-radius': '12px', 'text-align': 'center',
                         'box-shadow': '0 4px 6px rgba(0, 0, 0, 0.1)', 'border': '1px solid #dc2626'
-                    })
+                    }),
+                    html.P("Mechanism with the lowest worst-case latency. Critical for real-time systems where maximum response time must be guaranteed.", 
+                           style={'margin': '8px 0 0 0', 'font-size': '0.75rem', 'color': '#6b7280', 'font-style': 'italic', 'line-height': '1.3', 'text-align': 'center'})
                 ], style={'flex': '1', 'min-width': '0'})
         
         # Insights Card (adjusted width)
