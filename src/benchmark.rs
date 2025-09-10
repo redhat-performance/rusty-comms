@@ -323,6 +323,16 @@ impl BenchmarkRunner {
         } else {
             info!("  Message Count:      {}", self.get_msg_count());
         }
+        let server_affinity_str = self
+            .config
+            .server_affinity
+            .map_or("Not set".to_string(), |c| c.to_string());
+        let client_affinity_str = self
+            .config
+            .client_affinity
+            .map_or("Not set".to_string(), |c| c.to_string());
+        info!("  Server Affinity:    {}", server_affinity_str);
+        info!("  Client Affinity:    {}", client_affinity_str);
         info!("-----------------------------------------------------------------");
 
         // Initialize results structure with test configuration
