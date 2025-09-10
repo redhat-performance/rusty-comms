@@ -57,7 +57,7 @@
 //! - **Platform**: UNIX-like systems only (Linux, macOS, BSD)
 //! - **Permissions**: Requires appropriate system permissions for queue operations
 
-use super::{ConnectionId, IpcTransport, Message, TransportConfig, TransportState};
+use super::{ConnectionId, IpcError, IpcTransport, Message, TransportConfig, TransportState};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use nix::errno::Errno;
@@ -122,6 +122,9 @@ pub struct PosixMessageQueueTransport {
     /// This prevents clients from accidentally destroying queues that other
     /// processes may still be using.
     is_creator: bool,
+
+    /// Flag to ensure the backpressure warning is only logged once.
+    has_warned_backpressure: bool,
 }
 
 impl Default for PosixMessageQueueTransport {
@@ -167,6 +170,7 @@ impl PosixMessageQueueTransport {
             max_msg_size: 8192,
             max_msg_count: 10,
             is_creator: false,
+            has_warned_backpressure: false,
         }
     }
 
@@ -493,7 +497,13 @@ impl IpcTransport for PosixMessageQueueTransport {
     /// - **Temporary**: Queue full (EAGAIN) - retried automatically
     /// - **Permanent**: Invalid parameters, permissions, or system errors
     /// - **Resource**: No queue available or transport not initialized
-    async fn send(&mut self, message: &Message) -> Result<()> {
+    /// ## Backpressure Detection
+    ///
+    /// Backpressure is detected when a send operation returns an `EAGAIN`
+    /// error, indicating that the message queue is full. The transport will
+    /// retry with a backoff, and a warning will be logged on the first
+    /// occurrence.
+    async fn send(&mut self, message: &Message) -> Result<bool> {
         let data = message.to_bytes()?;
         let fd_ref = self
             .mq_fd
@@ -502,12 +512,14 @@ impl IpcTransport for PosixMessageQueueTransport {
 
         // Since MqdT is just a wrapper around an fd, we can extract its raw fd
         let raw_fd = fd_ref.as_raw_fd();
+        let mut backpressure_detected = false;
 
         // Use non-blocking send with exponential backoff for queue-full conditions
         let mut retry_delay_ms = 1;
         let max_retries = 100; // More retries since each one is much faster
 
         for attempt in 0..max_retries {
+            let start_time = std::time::Instant::now();
             let result = tokio::task::spawn_blocking({
                 let data = data.clone();
                 move || {
@@ -521,17 +533,36 @@ impl IpcTransport for PosixMessageQueueTransport {
 
             match result {
                 Ok(()) => {
+                    let elapsed = start_time.elapsed();
+                    // A send operation taking longer than a few milliseconds is a strong
+                    // indicator of the OS send buffer being full.
+                    if elapsed > std::time::Duration::from_millis(5) {
+                        backpressure_detected = true;
+                        if !self.has_warned_backpressure {
+                            warn!(
+                                "PMQ backpressure detected (send took {:?}). \n                                This may impact latency and throughput measurements.",
+                                elapsed
+                            );
+                            self.has_warned_backpressure = true;
+                        }
+                    }
                     debug!("Sent message {} bytes via POSIX message queue", data.len());
-                    return Ok(());
+                    return Ok(backpressure_detected);
                 }
                 Err(Errno::EAGAIN) => {
+                    backpressure_detected = true;
+                    if !self.has_warned_backpressure {
+                        warn!(
+                            "POSIX Message Queue is full; backpressure is occurring. \n                            This may impact latency and throughput measurements."
+                        );
+                        self.has_warned_backpressure = true;
+                    }
                     // Queue is full, wait and retry
                     if attempt == max_retries - 1 {
-                        return Err(anyhow!(
-                            "Send failed after {} attempts - queue consistently full",
-                            max_retries
-                        ));
+                        return Err(anyhow!(IpcError::BackpressureTimeout));
                     }
+                    // Justification: Short, exponentially increasing delay to wait for space to become available
+                    // in a full queue without busy-waiting.
                     tokio::time::sleep(Duration::from_millis(retry_delay_ms)).await;
                     retry_delay_ms = (retry_delay_ms * 2).min(10); // Cap at 10ms for faster throughput
                 }
@@ -637,6 +668,8 @@ impl IpcTransport for PosixMessageQueueTransport {
                             max_retries
                         ));
                     }
+                    // Justification: Short, exponentially increasing delay to wait for a message to arrive
+                    // in an empty queue without busy-waiting.
                     tokio::time::sleep(Duration::from_millis(retry_delay_ms)).await;
                     retry_delay_ms = (retry_delay_ms * 2).min(10); // Cap at 10ms
                 }
@@ -897,7 +930,8 @@ impl IpcTransport for PosixMessageQueueTransport {
         _connection_id: ConnectionId,
         message: &Message,
     ) -> Result<()> {
-        self.send(message).await
+        self.send(message).await?;
+        Ok(())
     }
 
     /// Get list of active connection IDs
@@ -933,5 +967,130 @@ impl IpcTransport for PosixMessageQueueTransport {
     /// - No selective client disconnection possible
     async fn close_connection(&mut self, _connection_id: ConnectionId) -> Result<()> {
         self.close().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ipc::MessageType;
+    use tokio::time::{sleep, Duration};
+    use uuid::Uuid;
+
+    #[tokio::test]
+    async fn test_pmq_communication() {
+        let queue_name = format!("test-pmq-{}", Uuid::new_v4().as_simple());
+        let config = TransportConfig {
+            message_queue_name: queue_name,
+            ..Default::default()
+        };
+
+        let mut server = PosixMessageQueueTransport::new();
+        let mut client = PosixMessageQueueTransport::new();
+
+        // Start server in background
+        let server_config = config.clone();
+        let server_handle = tokio::spawn(async move {
+            server.start_server(&server_config).await.unwrap();
+
+            // Receive message
+            let message = server.receive().await.unwrap();
+            assert_eq!(message.id, 1);
+            assert_eq!(message.payload, vec![1, 2, 3, 4, 5]);
+
+            // Send response
+            let response = Message::new(2, vec![6, 7, 8], MessageType::Response);
+            server.send(&response).await.unwrap();
+
+            server.close().await.unwrap();
+        });
+
+        // Justification: Give the server task time to start up and create the message queue before the client connects.
+        // This is a pragmatic approach for testing to avoid race conditions on startup.
+        sleep(Duration::from_millis(100)).await;
+
+        // Start client and communicate
+        client.start_client(&config).await.unwrap();
+
+        let message = Message::new(1, vec![1, 2, 3, 4, 5], MessageType::Request);
+        client.send(&message).await.unwrap();
+
+        // Justification: Allow a brief moment for the message to be processed by the server.
+        // This is necessary for single-queue transports to avoid the client reading its own message.
+        sleep(Duration::from_millis(100)).await;
+
+        let response = client.receive().await.unwrap();
+        assert_eq!(response.id, 2);
+        assert_eq!(response.payload, vec![6, 7, 8]);
+
+        client.close().await.unwrap();
+        server_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_pmq_backpressure() {
+        let queue_name = format!("test-pmq-backpressure-{}", Uuid::new_v4().as_simple());
+        let config = TransportConfig {
+            message_queue_name: queue_name,
+            message_queue_depth: 2, // Small queue to trigger backpressure easily
+            buffer_size: 1024,
+            ..Default::default()
+        };
+
+        let mut server = PosixMessageQueueTransport::new();
+        let mut client = PosixMessageQueueTransport::new();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+
+        // Start server in background, but it won't receive anything.
+        let server_config = config.clone();
+        let server_handle = tokio::spawn(async move {
+            server.start_server(&server_config).await.unwrap();
+            // Wait for the client to signal it's done.
+            rx.await.unwrap();
+            server.close().await.unwrap();
+        });
+
+        // Justification: Give the server task time to start up and create the message queue before the client connects.
+        // This is a pragmatic approach for testing to avoid race conditions on startup.
+        sleep(Duration::from_millis(100)).await;
+
+        // Start client
+        client.start_client(&config).await.unwrap();
+
+        let mut backpressure_detected = false;
+        let payload = vec![0; 512];
+
+        // Send messages until a backpressure timeout occurs.
+        for i in 0..5 {
+            let message = Message::new(i, payload.clone(), MessageType::Request);
+            match client.send(&message).await {
+                Ok(bp_detected) => {
+                    if bp_detected {
+                        // This is expected for the first few full-queue sends.
+                        println!("Regular backpressure detected, continuing to force a timeout.");
+                    }
+                }
+                Err(e) => {
+                    // We expect a specific error related to backpressure timeout.
+                    if e.to_string()
+                        .contains("Timeout sending message due to backpressure")
+                    {
+                        backpressure_detected = true;
+                        break;
+                    }
+                    panic!("An unexpected error occurred: {}", e);
+                }
+            }
+        }
+
+        assert!(
+            backpressure_detected,
+            "Backpressure was not detected when the PMQ was full"
+        );
+
+        // Signal the server to shut down.
+        tx.send(()).unwrap();
+        server_handle.await.unwrap();
+        client.close().await.unwrap();
     }
 }
