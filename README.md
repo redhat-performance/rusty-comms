@@ -141,6 +141,22 @@ ipc-benchmark -m tcp --host 127.0.0.1 --port 9090
 ipc-benchmark -m shm --buffer-size 16384
 ```
 
+### CPU Affinity
+
+For the most stable and repeatable results, you can pin the server and client processes to specific CPU cores. This minimizes performance noise from OS scheduling, context switching, and cache misses.
+
+- `--server-affinity <CORE_ID>`: Pins the server process to a specific CPU core.
+- `--client-affinity <CORE_ID>`: Pins the client process to a specific CPU core.
+
+```bash
+# Pin the server to core 2 and the client to core 3
+ipc-benchmark \
+  -m uds \
+  -i 100000 \
+  --server-affinity 2 \
+  --client-affinity 3
+```
+
 ### Test Configuration Examples
 
 #### High-Throughput Testing
@@ -564,4 +580,3 @@ Common issues and solutions:
 - **Single-threaded** (`-c 1`): Most accurate latency measurements
 - **Simulated concurrency** (`-c 2+`): Good for throughput scaling analysis
 - **Shared memory**: Always single-threaded for reliability
-
