@@ -81,6 +81,7 @@ fn styles() -> Styles {
 // Define constants for help headings to ensure consistency.
 const TIMING: &str = "Timing";
 const CONCURRENCY: &str = "Concurrency";
+const AFFINITY: &str = "Affinity";
 const OUTPUT_AND_LOGGING: &str = "Output and Logging";
 const ADVANCED: &str = "Advanced";
 
@@ -148,14 +149,14 @@ pub struct Args {
     ///
     /// Specifies the CPU core to which the server process should be pinned.
     /// Pinning can reduce cache misses and context switching, improving performance.
-    #[arg(long, help_heading = CONCURRENCY)]
+    #[arg(long, help_heading = AFFINITY)]
     pub server_affinity: Option<usize>,
 
     /// Client CPU affinity.
     ///
     /// Specifies the CPU core to which the client process should be pinned.
     /// Pinning can reduce cache misses and context switching, improving performance.
-    #[arg(long, help_heading = CONCURRENCY)]
+    #[arg(long, help_heading = AFFINITY)]
     pub client_affinity: Option<usize>,
 
     /// Path to the final JSON output file. If used without a path, defaults to 'benchmark_results.json'.
