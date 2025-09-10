@@ -51,11 +51,11 @@ where
 {
     match core_id {
         Some(id) => {
-            let handle = tokio::task::spawn_blocking(move || {
-                let core_ids = core_affinity::get_core_ids().ok_or_else(|| {
-                    anyhow!("Failed to get core IDs, is this a supported platform?")
-                })?;
+            // Get the core IDs from the current thread, which is assumed to have an unrestricted view.
+            let core_ids = core_affinity::get_core_ids()
+                .ok_or_else(|| anyhow!("Failed to get core IDs, is this a supported platform?"))?;
 
+            let handle = tokio::task::spawn_blocking(move || {
                 if core_ids.is_empty() {
                     return Err(anyhow!("No available CPU cores found."));
                 }
