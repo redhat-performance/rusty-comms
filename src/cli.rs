@@ -281,6 +281,15 @@ pub struct Args {
     /// to avoid conflicts when testing multiple mechanisms.
     #[arg(long, default_value_t = 8080, help_heading = ADVANCED)]
     pub port: u16,
+
+    /// Message priority for POSIX Message Queues (PMQ)
+    ///
+    /// This option is only used when the 'pmq' mechanism is selected.
+    /// It sets the priority for each message sent, where higher numbers
+    /// indicate higher priority. The OS will deliver higher-priority
+    /// messages before lower-priority ones.
+    #[arg(long, default_value_t = 0, help_heading = ADVANCED)]
+    pub pmq_priority: u32,
 }
 
 /// Available IPC mechanisms for benchmarking
@@ -494,6 +503,9 @@ pub struct BenchmarkConfiguration {
 
     /// Delay between sending messages
     pub send_delay: Option<Duration>,
+
+    /// Message priority for PMQ
+    pub pmq_priority: u32,
 }
 
 impl From<&Args> for BenchmarkConfiguration {
@@ -540,6 +552,7 @@ impl From<&Args> for BenchmarkConfiguration {
             server_affinity: args.server_affinity,
             client_affinity: args.client_affinity,
             send_delay: args.send_delay,
+            pmq_priority: args.pmq_priority,
         }
     }
 }
@@ -776,6 +789,13 @@ impl fmt::Display for Args {
         if let Some(path) = self.streaming_output_csv.as_ref() {
             writeln!(f, "  Streaming CSV Output:    {}", path.display())?;
         }
+
+        // Only show PMQ priority if the pmq mechanism is actually being used.
+        #[cfg(target_os = "linux")]
+        if mechanisms.contains(&IpcMechanism::PosixMessageQueue) {
+            writeln!(f, "  PMQ Priority:       {}", self.pmq_priority)?;
+        }
+
         writeln!(f, "  Continue on Error:  {}", self.continue_on_error)?;
         write!(
             f,
@@ -882,10 +902,7 @@ mod tests {
             Duration::from_millis(100)
         );
         // Test second unit
-        assert_eq!(
-            parse_duration_micros("2s").unwrap(),
-            Duration::from_secs(2)
-        );
+        assert_eq!(parse_duration_micros("2s").unwrap(), Duration::from_secs(2));
         // Test default unit (seconds)
         assert_eq!(parse_duration_micros("5").unwrap(), Duration::from_secs(5));
 
@@ -893,5 +910,17 @@ mod tests {
         assert!(parse_duration_micros("").is_err());
         assert!(parse_duration_micros("invalid").is_err());
         assert!(parse_duration_micros("-10us").is_err());
+    }
+
+    /// Test parsing of the PMQ priority argument.
+    #[test]
+    fn test_pmq_priority_arg() {
+        // Test default value
+        let args_default = Args::parse_from(["ipc-benchmark"]);
+        assert_eq!(args_default.pmq_priority, 0);
+
+        // Test custom value
+        let args_custom = Args::parse_from(["ipc-benchmark", "--pmq-priority", "5"]);
+        assert_eq!(args_custom.pmq_priority, 5);
     }
 }

@@ -137,6 +137,9 @@ ipc-benchmark --percentiles 50 90 95 99 99.9 99.99
 # TCP-specific configuration
 ipc-benchmark -m tcp --host 127.0.0.1 --port 9090
 
+# POSIX Message Queue-specific configuration
+ipc-benchmark -m pmq --pmq-priority 1
+
 # Shared memory configuration (demonstrating a user-provided buffer size)
 ipc-benchmark -m shm --buffer-size 16384
 ```

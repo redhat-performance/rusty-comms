@@ -143,6 +143,9 @@ pub struct BenchmarkConfig {
 
     /// Optional delay between sending messages
     pub send_delay: Option<Duration>,
+
+    /// Message priority for PMQ
+    pub pmq_priority: u32,
 }
 
 impl BenchmarkConfig {
@@ -204,6 +207,7 @@ impl BenchmarkConfig {
             server_affinity: args.server_affinity,
             client_affinity: args.client_affinity,
             send_delay: args.send_delay,
+            pmq_priority: args.pmq_priority,
         })
     }
 }
@@ -253,6 +257,7 @@ impl BenchmarkConfig {
 /// #     server_affinity: None,
 /// #     client_affinity: None,
 /// #     send_delay: None,
+/// #     pmq_priority: 0,
 /// # };
 /// let config = BenchmarkConfig::from_args(&args)?;
 /// #[cfg(unix)]
@@ -331,6 +336,13 @@ impl BenchmarkRunner {
         if let Some(delay) = self.config.send_delay {
             info!("  Send Delay:         {:?}", delay);
         }
+
+        // Only show PMQ priority if the pmq mechanism is actually being used.
+        #[cfg(target_os = "linux")]
+        if self.mechanism == IpcMechanism::PosixMessageQueue {
+            info!("  PMQ Priority:       {}", self.config.pmq_priority);
+        }
+
         let server_affinity_str = self
             .config
             .server_affinity
@@ -1515,6 +1527,7 @@ impl BenchmarkRunner {
             max_connections: self.config.concurrency.max(16), // Set based on concurrency level
             message_queue_depth: adaptive_queue_depth,
             message_queue_name: format!("ipc_benchmark_pmq_{}", unique_id),
+            pmq_priority: self.config.pmq_priority,
         })
     }
 
@@ -1555,6 +1568,7 @@ mod tests {
             server_affinity: None,
             client_affinity: None,
             send_delay: None,
+            pmq_priority: 0,
         };
 
         assert_eq!(config.message_size, 1024);
@@ -1584,6 +1598,7 @@ mod tests {
             server_affinity: None,
             client_affinity: None,
             send_delay: None,
+            pmq_priority: 0,
         };
 
         let runner = BenchmarkRunner::new(config, IpcMechanism::UnixDomainSocket);
@@ -1622,6 +1637,7 @@ mod tests {
             server_affinity: None,
             client_affinity: None,
             send_delay: None,
+            pmq_priority: 0,
         };
 
         // Scenario 1: User-provided buffer size is always respected.
@@ -1717,6 +1733,7 @@ mod tests {
             server_affinity: None,
             client_affinity: None,
             send_delay: Some(send_delay),
+            pmq_priority: 0,
         };
 
         let runner = BenchmarkRunner::new(config, IpcMechanism::UnixDomainSocket);

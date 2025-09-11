@@ -47,6 +47,8 @@
 //!             port: 8080,
 //!             server_affinity: None,
 //!             client_affinity: None,
+//!             send_delay: None,
+//!             pmq_priority: 0,
 //!         };
 //!     
 //!         let runner = BenchmarkRunner::new(config, IpcMechanism::UnixDomainSocket);
