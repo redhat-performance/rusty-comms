@@ -1,0 +1,323 @@
+HOST-TO-CONTAINER IPC BENCHMARK SYNTAX EXAMPLES
+===============================================
+
+This file contains all valid syntax combinations for running host-to-container
+IPC benchmarks using the run_host_container.sh script.
+
+PREREQUISITES
+============
+1. Start the appropriate container server first:
+   ./start_uds_container_server.sh    # For UDS tests
+   ./start_shm_container_server.sh    # For SHM tests  
+   ./start_pmq_container_server.sh    # For PMQ tests
+
+2. Make script executable:
+   chmod +x run_host_container.sh
+
+BASIC SYNTAX
+===========
+./run_host_container.sh [MECHANISM] [MESSAGES/DURATION] [MESSAGE_SIZE] [WORKERS]
+
+Parameters:
+- MECHANISM: uds, shm, pmq (default: uds)
+- MESSAGES/DURATION: Number (e.g., 1000) OR duration (e.g., 30s, 5m, 1h)
+- MESSAGE_SIZE: Bytes (default: 1024)
+- WORKERS: Concurrent workers (default: 1)
+
+BASIC EXAMPLES
+=============
+
+# Default test (UDS, 1000 messages, 1024 bytes, 1 worker)
+./run_host_container.sh
+
+# Specify mechanism only
+./run_host_container.sh uds
+./run_host_container.sh shm
+./run_host_container.sh pmq
+
+# Message count variations
+./run_host_container.sh uds 100
+./run_host_container.sh uds 500
+./run_host_container.sh uds 1000
+./run_host_container.sh uds 5000
+./run_host_container.sh uds 10000
+
+# Message size variations (bytes)
+./run_host_container.sh uds 1000 64
+./run_host_container.sh uds 1000 512
+./run_host_container.sh uds 1000 1024
+./run_host_container.sh uds 1000 2048
+./run_host_container.sh uds 1000 4096
+./run_host_container.sh uds 1000 8192
+./run_host_container.sh uds 1000 16384
+
+# Worker variations
+./run_host_container.sh uds 1000 1024 1
+./run_host_container.sh uds 1000 1024 2
+./run_host_container.sh uds 1000 1024 4
+./run_host_container.sh uds 1000 1024 8
+
+# Complete parameter examples
+./run_host_container.sh uds 500 2048 1
+./run_host_container.sh shm 1000 4096 2
+./run_host_container.sh pmq 2000 1024 4
+
+DURATION-BASED TESTING
+======================
+
+# Duration formats: Xs, Xm, Xh, Xms
+# Duration takes precedence over message count
+
+# Seconds
+./run_host_container.sh uds 5s
+./run_host_container.sh uds 10s
+./run_host_container.sh uds 30s
+./run_host_container.sh uds 60s
+
+# Minutes  
+./run_host_container.sh uds 1m
+./run_host_container.sh uds 2m
+./run_host_container.sh uds 5m
+./run_host_container.sh uds 10m
+
+# Hours
+./run_host_container.sh uds 1h
+./run_host_container.sh uds 2h
+
+# Milliseconds
+./run_host_container.sh uds 500ms
+./run_host_container.sh uds 1000ms
+
+# Duration with other parameters
+./run_host_container.sh uds 30s 1024 1
+./run_host_container.sh shm 5m 4096 2
+./run_host_container.sh pmq 1m 2048 4
+
+MECHANISM-SPECIFIC EXAMPLES
+===========================
+
+# Unix Domain Sockets (UDS)
+./run_host_container.sh uds 1000 1024 1
+./run_host_container.sh uds 30s 2048 2
+./run_host_container.sh uds 5000 4096 1
+
+# Shared Memory (SHM)
+./run_host_container.sh shm 1000 1024 1
+./run_host_container.sh shm 30s 4096 2
+./run_host_container.sh shm 2000 8192 1
+
+# POSIX Message Queues (PMQ)
+./run_host_container.sh pmq 1000 1024 1
+./run_host_container.sh pmq 30s 1024 2
+./run_host_container.sh pmq 500 2048 1
+
+ENVIRONMENT VARIABLE SYNTAX
+===========================
+
+# Custom output file
+OUTPUT_FILE=./my_results.json ./run_host_container.sh uds 1000
+OUTPUT_FILE=./output/test_$(date +%Y%m%d).json ./run_host_container.sh uds 30s
+
+# Duration override (takes precedence over positional parameter)
+DURATION=30s ./run_host_container.sh uds 1000
+DURATION=5m ./run_host_container.sh shm 0 4096 2
+DURATION=1h ./run_host_container.sh pmq
+
+# Mechanism override
+MECHANISM=shm ./run_host_container.sh
+MECHANISM=pmq ./run_host_container.sh 1000 2048 2
+
+# Round-trip testing
+ROUND_TRIP=true ./run_host_container.sh uds 1000
+ROUND_TRIP=true ./run_host_container.sh shm 30s 4096
+
+# Verbose output
+VERBOSE=true ./run_host_container.sh uds 100
+VERBOSE=true ./run_host_container.sh pmq 10s 1024
+
+# UDS-specific: Custom socket path
+SOCKET_PATH=/tmp/benchmark.sock ./run_host_container.sh uds 1000
+SOCKET_PATH=./custom/path.sock ./run_host_container.sh uds 30s
+
+# SHM-specific: Custom shared memory name and buffer size
+SHM_NAME=my_benchmark_shm ./run_host_container.sh shm 1000
+BUFFER_SIZE=131072 ./run_host_container.sh shm 30s 8192
+SHM_NAME=custom_shm BUFFER_SIZE=262144 ./run_host_container.sh shm 5m 4096
+
+# Streaming output
+STREAM_JSON=./live_results.json ./run_host_container.sh uds 1m
+STREAM_CSV=./live_data.csv ./run_host_container.sh shm 30s
+STREAM_JSON=./live.json STREAM_CSV=./data.csv ./run_host_container.sh pmq 2m
+
+COMBINED ENVIRONMENT VARIABLES
+==============================
+
+# Multiple environment variables
+DURATION=30s OUTPUT_FILE=./custom.json ./run_host_container.sh uds
+ROUND_TRIP=true VERBOSE=true ./run_host_container.sh uds 1000 4096
+DURATION=5m STREAM_JSON=./live.json OUTPUT_FILE=./final.json ./run_host_container.sh shm
+
+# UDS with all options
+DURATION=1m OUTPUT_FILE=./uds_test.json SOCKET_PATH=/tmp/custom.sock ROUND_TRIP=true VERBOSE=true ./run_host_container.sh uds
+
+# SHM with all options  
+DURATION=30s OUTPUT_FILE=./shm_test.json SHM_NAME=test_shm BUFFER_SIZE=131072 ROUND_TRIP=true ./run_host_container.sh shm
+
+# PMQ with all options
+DURATION=2m OUTPUT_FILE=./pmq_test.json ROUND_TRIP=true STREAM_JSON=./pmq_live.json ./run_host_container.sh pmq
+
+PERFORMANCE TESTING SCENARIOS
+=============================
+
+# Latency testing (small messages, low count)
+./run_host_container.sh uds 100 64 1
+./run_host_container.sh shm 100 64 1
+./run_host_container.sh pmq 100 64 1
+
+# Throughput testing (large messages, high count)
+./run_host_container.sh uds 10000 8192 1
+./run_host_container.sh shm 10000 8192 1
+./run_host_container.sh pmq 5000 4096 1
+
+# Concurrency testing
+./run_host_container.sh uds 5000 1024 2
+./run_host_container.sh uds 5000 1024 4
+./run_host_container.sh uds 5000 1024 8
+
+# Duration-based performance testing
+./run_host_container.sh uds 30s 1024 1    # 30-second test
+./run_host_container.sh shm 5m 4096 2     # 5-minute test
+./run_host_container.sh pmq 1h 1024 1     # 1-hour endurance test
+
+# Round-trip latency testing
+ROUND_TRIP=true ./run_host_container.sh uds 1000 1024 1
+ROUND_TRIP=true ./run_host_container.sh shm 1000 4096 1
+ROUND_TRIP=true ./run_host_container.sh pmq 500 2048 1
+
+COMPARATIVE TESTING
+==================
+
+# Same parameters across mechanisms
+./run_host_container.sh uds 1000 1024 1
+./run_host_container.sh shm 1000 1024 1
+./run_host_container.sh pmq 1000 1024 1
+
+# Automated comparison script
+for mechanism in uds shm pmq; do
+    OUTPUT_FILE=./output/compare_${mechanism}.json ./run_host_container.sh $mechanism 30s 4096 1
+done
+
+# Message size comparison for UDS
+for size in 64 512 1024 2048 4096 8192; do
+    OUTPUT_FILE=./output/uds_${size}b.json ./run_host_container.sh uds 1000 $size 1
+done
+
+# Duration comparison
+for duration in 10s 30s 1m 2m 5m; do
+    OUTPUT_FILE=./output/duration_${duration}.json ./run_host_container.sh uds $duration 1024 1
+done
+
+SPECIAL USE CASES
+================
+
+# Zero message count (duration-based only)
+DURATION=30s ./run_host_container.sh uds 0 1024 1
+
+# Very large messages (test maximum throughput)
+./run_host_container.sh uds 100 65536 1
+BUFFER_SIZE=262144 ./run_host_container.sh shm 100 65536 1
+
+# Very small messages (test minimum latency)
+./run_host_container.sh uds 10000 8 1
+./run_host_container.sh shm 10000 8 1
+
+# High concurrency
+./run_host_container.sh uds 10000 1024 16
+
+# Long-running stability test
+DURATION=24h OUTPUT_FILE=./stability_test.json ./run_host_container.sh uds 0 1024 1
+
+STREAMING AND MONITORING
+=======================
+
+# Real-time JSON streaming
+STREAM_JSON=./live_metrics.json ./run_host_container.sh uds 1h 1024 1
+
+# Real-time CSV streaming for analysis
+STREAM_CSV=./performance_data.csv ./run_host_container.sh shm 30m 4096 2
+
+# Both JSON and CSV streaming
+STREAM_JSON=./metrics.json STREAM_CSV=./data.csv ./run_host_container.sh pmq 10m 1024 1
+
+# Streaming with custom output
+STREAM_JSON=./live.json OUTPUT_FILE=./final_$(date +%H%M%S).json ./run_host_container.sh uds 5m
+
+DEBUGGING AND TROUBLESHOOTING
+=============================
+
+# Verbose output for debugging
+VERBOSE=true ./run_host_container.sh uds 10 1024 1
+
+# Small test for quick verification
+./run_host_container.sh uds 5 64 1
+
+# Check help
+./run_host_container.sh --help
+
+# Verify container is running
+podman logs rusty-comms-uds-server
+
+ERROR SCENARIOS TO AVOID
+========================
+
+# DON'T use negative values
+# ./run_host_container.sh uds -100 1024 1    # INVALID
+
+# DON'T use invalid mechanisms  
+# ./run_host_container.sh invalid 1000       # INVALID
+
+# DON'T use invalid duration formats
+# ./run_host_container.sh uds 30x 1024 1     # INVALID (use 30s)
+
+# DON'T forget to start container first
+# Always run start_*_container_server.sh before benchmarking
+
+# DON'T use extremely large message sizes without adjusting buffer
+# BUFFER_SIZE=1048576 ./run_host_container.sh shm 100 524288 1  # GOOD
+# ./run_host_container.sh shm 100 524288 1                     # MAY FAIL
+
+EXAMPLE OUTPUT FILES
+===================
+
+Default output locations:
+- UDS: ./output/host_uds_results.json
+- SHM: ./output/host_shm_results.json  
+- PMQ: ./output/host_pmq_results.json
+
+View results:
+cat ./output/host_uds_results.json | jq
+jq '.throughput.messages_per_second' ./output/host_uds_results.json
+jq '.latency_ns.p95' ./output/host_uds_results.json
+
+CLEANUP
+=======
+
+# Stop containers after testing
+podman rm -f rusty-comms-uds-server
+podman rm -f rusty-comms-shm-server
+podman rm -f rusty-comms-pmq-server
+
+# Or stop all at once
+podman rm -f $(podman ps -aq --filter "name=rusty-comms-")
+
+NOTES
+=====
+
+1. Duration takes precedence over message count when both are specified
+2. Environment variables override positional parameters
+3. All tests run in host mode and communicate with containerized servers
+4. This is for host-to-container testing only (not standalone mode)
+5. Start the appropriate container server before running tests
+6. Use CTRL+C to interrupt long-running tests if needed
+7. Check container logs if tests fail to connect
+8. Ensure sufficient system resources for high-concurrency tests
