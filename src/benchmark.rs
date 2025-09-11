@@ -146,6 +146,9 @@ pub struct BenchmarkConfig {
 
     /// Message priority for PMQ
     pub pmq_priority: u32,
+
+    /// Whether to include the first message in results
+    pub include_first_message: bool,
 }
 
 impl BenchmarkConfig {
@@ -208,6 +211,7 @@ impl BenchmarkConfig {
             client_affinity: args.client_affinity,
             send_delay: args.send_delay,
             pmq_priority: args.pmq_priority,
+            include_first_message: args.include_first_message,
         })
     }
 }
@@ -258,6 +262,7 @@ impl BenchmarkConfig {
 /// #     client_affinity: None,
 /// #     send_delay: None,
 /// #     pmq_priority: 0,
+/// #     include_first_message: false,
 /// # };
 /// let config = BenchmarkConfig::from_args(&args)?;
 /// #[cfg(unix)]
@@ -353,6 +358,13 @@ impl BenchmarkRunner {
             .map_or("Not set".to_string(), |c| c.to_string());
         info!("  Server Affinity:    {}", server_affinity_str);
         info!("  Client Affinity:    {}", client_affinity_str);
+
+        let first_message_status = if self.config.include_first_message {
+            "Included in results"
+        } else {
+            "Discarded (default)"
+        };
+        info!("  First Message:      {}", first_message_status);
         info!("-----------------------------------------------------------------");
 
         // Initialize results structure with test configuration
@@ -659,6 +671,9 @@ impl BenchmarkRunner {
         // Use a oneshot channel to signal server readiness and propagate startup errors.
         let (tx, rx) = tokio::sync::oneshot::channel();
 
+        // Clone the necessary config values to move into the server task.
+        let include_first_message = self.config.include_first_message;
+
         // Start server in background task
         let server_handle = {
             let config = transport_config.clone();
@@ -682,6 +697,11 @@ impl BenchmarkRunner {
 
                         let start_time = Instant::now();
                         let mut received = 0;
+                        let msg_count_server = if include_first_message {
+                            msg_count
+                        } else {
+                            msg_count + 1
+                        };
 
                         // Server receive loop - adapts to duration or message count mode
                         loop {
@@ -690,7 +710,7 @@ impl BenchmarkRunner {
                                 if start_time.elapsed() >= dur {
                                     break;
                                 }
-                            } else if received >= msg_count {
+                            } else if received >= msg_count_server {
                                 break;
                             }
 
@@ -740,6 +760,13 @@ impl BenchmarkRunner {
             if let Some(duration) = client_config.duration {
                 // Duration-based test: loop until time expires
                 let mut i = 0u64;
+
+                // Send one "canary" message before the timer starts to warm up the code path.
+                if !client_config.include_first_message {
+                    let canary_message = Message::new(u64::MAX, payload.clone(), MessageType::OneWay);
+                    let _ = client_transport.send(&canary_message).await;
+                }
+
                 while start_time.elapsed() < duration {
                     let send_time = Instant::now();
                     let message = Message::new(i, payload.clone(), MessageType::OneWay);
@@ -769,12 +796,22 @@ impl BenchmarkRunner {
             } else {
                 // Message-count-based test: loop for fixed number of messages
                 let msg_count = client_config.msg_count.unwrap_or_default();
+                let iterations = if client_config.include_first_message {
+                    msg_count
+                } else {
+                    msg_count + 1
+                };
 
-                for i in 0..msg_count {
+                for i in 0..iterations {
                     let send_time = Instant::now();
                     let message = Message::new(i as u64, payload.clone(), MessageType::OneWay);
                     let _ = client_transport.send(&message).await?;
-                    latencies.push(send_time.elapsed());
+
+                    // Discard the first message (the canary) if not included
+                    if i > 0 || client_config.include_first_message {
+                        latencies.push(send_time.elapsed());
+                    }
+
                     if let Some(delay) = client_config.send_delay {
                         sleep(delay).await;
                     }
@@ -836,6 +873,9 @@ impl BenchmarkRunner {
         // Use a oneshot channel to signal server readiness and propagate startup errors.
         let (tx, rx) = tokio::sync::oneshot::channel();
 
+        // Clone the necessary config values to move into the server task.
+        let include_first_message = self.config.include_first_message;
+
         // Start server in background task
         let server_handle = {
             let config = transport_config.clone();
@@ -859,6 +899,11 @@ impl BenchmarkRunner {
 
                         let start_time = Instant::now();
                         let mut received = 0;
+                        let msg_count_server = if include_first_message {
+                            msg_count
+                        } else {
+                            msg_count + 1
+                        };
 
                         // Server request-response loop
                         loop {
@@ -867,7 +912,7 @@ impl BenchmarkRunner {
                                 if start_time.elapsed() >= dur {
                                     break;
                                 }
-                            } else if received >= msg_count {
+                            } else if received >= msg_count_server {
                                 break;
                             }
 
@@ -926,6 +971,15 @@ impl BenchmarkRunner {
             if let Some(duration) = client_config.duration {
                 // Duration-based test: loop until time expires
                 let mut i = 0u64;
+
+                // Send one "canary" message before the timer starts to warm up the code path.
+                if !client_config.include_first_message {
+                    let canary_message = Message::new(u64::MAX, payload.clone(), MessageType::Request);
+                    if client_transport.send(&canary_message).await.is_ok() {
+                        let _ = client_transport.receive().await;
+                    }
+                }
+
                 while start_time.elapsed() < duration {
                     let send_time = Instant::now();
                     let message = Message::new(i, payload.clone(), MessageType::Request);
@@ -975,8 +1029,13 @@ impl BenchmarkRunner {
             } else {
                 // Message-count-based test: loop for fixed number of messages
                 let msg_count = client_config.msg_count.unwrap_or_default();
+                let iterations = if client_config.include_first_message {
+                    msg_count
+                } else {
+                    msg_count + 1
+                };
 
-                for i in 0..msg_count {
+                for i in 0..iterations {
                     let send_time = Instant::now();
                     let message = Message::new(i as u64, payload.clone(), MessageType::Request);
                     let _ = client_transport.send(&message).await?;
@@ -986,7 +1045,11 @@ impl BenchmarkRunner {
                     }
 
                     let _ = client_transport.receive().await?;
-                    latencies.push(send_time.elapsed());
+
+                    // Discard the first message (the canary) if not included
+                    if i > 0 || client_config.include_first_message {
+                        latencies.push(send_time.elapsed());
+                    }
                 }
             }
 
@@ -1569,6 +1632,7 @@ mod tests {
             client_affinity: None,
             send_delay: None,
             pmq_priority: 0,
+            include_first_message: false,
         };
 
         assert_eq!(config.message_size, 1024);
@@ -1599,6 +1663,7 @@ mod tests {
             client_affinity: None,
             send_delay: None,
             pmq_priority: 0,
+            include_first_message: false,
         };
 
         let runner = BenchmarkRunner::new(config, IpcMechanism::UnixDomainSocket);
@@ -1638,6 +1703,7 @@ mod tests {
             client_affinity: None,
             send_delay: None,
             pmq_priority: 0,
+            include_first_message: false,
         };
 
         // Scenario 1: User-provided buffer size is always respected.
@@ -1734,6 +1800,7 @@ mod tests {
             client_affinity: None,
             send_delay: Some(send_delay),
             pmq_priority: 0,
+            include_first_message: false,
         };
 
         let runner = BenchmarkRunner::new(config, IpcMechanism::UnixDomainSocket);
@@ -1747,9 +1814,9 @@ mod tests {
             .unwrap();
         let elapsed = start_time.elapsed();
 
-        // The total time should be at least (n-1) * delay.
-        // We use n-1 because there's no delay after the last message.
-        let expected_min_duration = send_delay * (msg_count as u32 - 1);
+        // The total time should be at least msg_count * delay, since there is a
+        // delay after each of the 5 messages sent in the test.
+        let expected_min_duration = send_delay * msg_count as u32;
         assert!(
             elapsed >= expected_min_duration,
             "Elapsed time {:?} was less than the expected minimum {:?}",
@@ -1759,7 +1826,7 @@ mod tests {
 
         // It also shouldn't take excessively long. We'll allow a generous
         // margin for the actual IPC transport and scheduling overhead.
-        let expected_max_duration = expected_min_duration * 2;
+        let expected_max_duration = expected_min_duration + (send_delay * 2); // Allow 2 extra delays worth of overhead
         assert!(
             elapsed < expected_max_duration,
             "Elapsed time {:?} was much longer than the expected maximum {:?}",

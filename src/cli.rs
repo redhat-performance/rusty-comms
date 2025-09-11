@@ -290,6 +290,15 @@ pub struct Args {
     /// messages before lower-priority ones.
     #[arg(long, default_value_t = 0, help_heading = ADVANCED)]
     pub pmq_priority: u32,
+
+    /// Include the first message in the results.
+    ///
+    /// By default, the benchmark sends one message before starting measurements
+    /// to warm up caches and memory allocations. This first message is
+    /// discarded to prevent its typically higher latency from skewing the
+    /// results. Use this flag to include it in the final statistics.
+    #[arg(long, help_heading = ADVANCED)]
+    pub include_first_message: bool,
 }
 
 /// Available IPC mechanisms for benchmarking
@@ -506,6 +515,9 @@ pub struct BenchmarkConfiguration {
 
     /// Message priority for PMQ
     pub pmq_priority: u32,
+
+    /// Whether to include the first message in results
+    pub include_first_message: bool,
 }
 
 impl From<&Args> for BenchmarkConfiguration {
@@ -553,6 +565,7 @@ impl From<&Args> for BenchmarkConfiguration {
             client_affinity: args.client_affinity,
             send_delay: args.send_delay,
             pmq_priority: args.pmq_priority,
+            include_first_message: args.include_first_message,
         }
     }
 }
@@ -795,6 +808,13 @@ impl fmt::Display for Args {
         if mechanisms.contains(&IpcMechanism::PosixMessageQueue) {
             writeln!(f, "  PMQ Priority:       {}", self.pmq_priority)?;
         }
+
+        let first_message_status = if self.include_first_message {
+            "Included in results"
+        } else {
+            "Discarded (default)"
+        };
+        writeln!(f, "  First Message:      {}", first_message_status)?;
 
         writeln!(f, "  Continue on Error:  {}", self.continue_on_error)?;
         write!(

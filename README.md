@@ -144,6 +144,17 @@ ipc-benchmark -m pmq --pmq-priority 1
 ipc-benchmark -m shm --buffer-size 16384
 ```
 
+### First-Message Latency (Canary)
+
+The first message in any benchmark often has a higher latency than subsequent messages due to "cold start" effects like CPU cache misses, memory allocation, and branch prediction misses. To provide more stable and representative results, this tool automatically sends one "canary" message before starting the measurement loop. This message and its latency are discarded by default.
+
+If you need to analyze the raw performance data, including the first-message spike, you can use the `--include-first-message` flag to disable this behavior.
+
+```bash
+# Include the first message in the final results
+ipc-benchmark --include-first-message
+```
+
 ### CPU Affinity
 
 For the most stable and repeatable results, you can pin the server and client processes to specific CPU cores. This minimizes performance noise from OS scheduling, context switching, and cache misses.
