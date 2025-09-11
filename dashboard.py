@@ -2275,6 +2275,13 @@ class DashboardApp:
             )
             # Update facet labels to show only the message size value
             avg_latency_fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
+            # Add consistent gray gridlines to all axes
+            avg_latency_fig.update_layout(
+                xaxis=dict(showgrid=True, gridcolor='gray', gridwidth=1),
+                yaxis=dict(showgrid=True, gridcolor='gray', gridwidth=1)
+            )
+            avg_latency_fig.for_each_xaxis(lambda x: x.update(showgrid=True, gridcolor='gray', gridwidth=1))
+            avg_latency_fig.for_each_yaxis(lambda y: y.update(showgrid=True, gridcolor='gray', gridwidth=1))
             
             # Maximum latency chart
             max_latency_fig = px.bar(
@@ -2290,6 +2297,13 @@ class DashboardApp:
             )
             # Update facet labels to show only the message size value
             max_latency_fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
+            # Add consistent gray gridlines to all axes
+            max_latency_fig.update_layout(
+                xaxis=dict(showgrid=True, gridcolor='gray', gridwidth=1),
+                yaxis=dict(showgrid=True, gridcolor='gray', gridwidth=1)
+            )
+            max_latency_fig.for_each_xaxis(lambda x: x.update(showgrid=True, gridcolor='gray', gridwidth=1))
+            max_latency_fig.for_each_yaxis(lambda y: y.update(showgrid=True, gridcolor='gray', gridwidth=1))
         else:
             avg_latency_fig = go.Figure().add_annotation(
                 text="No latency data available",
@@ -2317,6 +2331,13 @@ class DashboardApp:
             )
             # Update facet labels to show only the message size value
             msgs_fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
+            # Add consistent gray gridlines to all axes
+            msgs_fig.update_layout(
+                xaxis=dict(showgrid=True, gridcolor='gray', gridwidth=1),
+                yaxis=dict(showgrid=True, gridcolor='gray', gridwidth=1)
+            )
+            msgs_fig.for_each_xaxis(lambda x: x.update(showgrid=True, gridcolor='gray', gridwidth=1))
+            msgs_fig.for_each_yaxis(lambda y: y.update(showgrid=True, gridcolor='gray', gridwidth=1))
                 
             bytes_fig = px.bar(
                 throughput_df,
@@ -2331,6 +2352,13 @@ class DashboardApp:
             )
             # Update facet labels to show only the message size value
             bytes_fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
+            # Add consistent gray gridlines to all axes
+            bytes_fig.update_layout(
+                xaxis=dict(showgrid=True, gridcolor='gray', gridwidth=1),
+                yaxis=dict(showgrid=True, gridcolor='gray', gridwidth=1)
+            )
+            bytes_fig.for_each_xaxis(lambda x: x.update(showgrid=True, gridcolor='gray', gridwidth=1))
+            bytes_fig.for_each_yaxis(lambda y: y.update(showgrid=True, gridcolor='gray', gridwidth=1))
         else:
             msgs_fig = go.Figure().add_annotation(
                 text="No throughput data available",
