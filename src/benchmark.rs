@@ -531,6 +531,9 @@ impl BenchmarkRunner {
         for i in 0..self.config.warmup_iterations {
             let message = Message::new(i as u64, payload.clone(), MessageType::OneWay);
             let _ = client_transport.send(&message).await?;
+            if let Some(delay) = self.config.send_delay {
+                sleep(delay).await;
+            }
         }
 
         // Clean up resources
