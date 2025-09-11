@@ -140,6 +140,9 @@ pub struct BenchmarkConfig {
 
     /// Client CPU affinity
     pub client_affinity: Option<usize>,
+
+    /// Optional delay between sending messages
+    pub send_delay: Option<Duration>,
 }
 
 impl BenchmarkConfig {
@@ -200,6 +203,7 @@ impl BenchmarkConfig {
             port: args.port,
             server_affinity: args.server_affinity,
             client_affinity: args.client_affinity,
+            send_delay: args.send_delay,
         })
     }
 }
@@ -248,6 +252,7 @@ impl BenchmarkConfig {
 /// #     streaming_output_csv: None,
 /// #     server_affinity: None,
 /// #     client_affinity: None,
+/// #     send_delay: None,
 /// # };
 /// let config = BenchmarkConfig::from_args(&args)?;
 /// #[cfg(unix)]
@@ -322,6 +327,9 @@ impl BenchmarkRunner {
             info!("  Test Duration:      {:?}", duration);
         } else {
             info!("  Message Count:      {}", self.get_msg_count());
+        }
+        if let Some(delay) = self.config.send_delay {
+            info!("  Send Delay:         {:?}", delay);
         }
         let server_affinity_str = self
             .config
@@ -734,6 +742,9 @@ impl BenchmarkRunner {
                         Ok(Ok(_)) => {
                             latencies.push(send_time.elapsed());
                             i += 1;
+                            if let Some(delay) = client_config.send_delay {
+                                sleep(delay).await;
+                            }
                         }
                         Ok(Err(_)) => break, // Transport error
                         Err(_) => {
@@ -752,6 +763,9 @@ impl BenchmarkRunner {
                     let message = Message::new(i as u64, payload.clone(), MessageType::OneWay);
                     let _ = client_transport.send(&message).await?;
                     latencies.push(send_time.elapsed());
+                    if let Some(delay) = client_config.send_delay {
+                        sleep(delay).await;
+                    }
                 }
             }
 
@@ -915,6 +929,10 @@ impl BenchmarkRunner {
                             // Send succeeded - increment counter immediately to ensure unique message IDs
                             i += 1;
 
+                            if let Some(delay) = client_config.send_delay {
+                                sleep(delay).await;
+                            }
+
                             // Try to receive response with timeout
                             match tokio::time::timeout(
                                 Duration::from_millis(50),
@@ -950,6 +968,10 @@ impl BenchmarkRunner {
                     let send_time = Instant::now();
                     let message = Message::new(i as u64, payload.clone(), MessageType::Request);
                     let _ = client_transport.send(&message).await?;
+
+                    if let Some(delay) = client_config.send_delay {
+                        sleep(delay).await;
+                    }
 
                     let _ = client_transport.receive().await?;
                     latencies.push(send_time.elapsed());
@@ -1532,6 +1554,7 @@ mod tests {
             port: 8080,
             server_affinity: None,
             client_affinity: None,
+            send_delay: None,
         };
 
         assert_eq!(config.message_size, 1024);
@@ -1560,6 +1583,7 @@ mod tests {
             port: 8080,
             server_affinity: None,
             client_affinity: None,
+            send_delay: None,
         };
 
         let runner = BenchmarkRunner::new(config, IpcMechanism::UnixDomainSocket);
@@ -1597,6 +1621,7 @@ mod tests {
             port: 8080,
             server_affinity: None,
             client_affinity: None,
+            send_delay: None,
         };
 
         // Scenario 1: User-provided buffer size is always respected.
@@ -1667,5 +1692,62 @@ mod tests {
                 "Automatic buffer size for PMQ in duration mode should be the safe default"
             );
         }
+    }
+
+    /// Test that the send_delay parameter is correctly applied.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn test_send_delay_is_applied() {
+        let msg_count = 5;
+        let send_delay = Duration::from_millis(20);
+
+        let config = BenchmarkConfig {
+            mechanism: IpcMechanism::UnixDomainSocket,
+            message_size: 64,
+            msg_count: Some(msg_count),
+            duration: None,
+            concurrency: 1,
+            one_way: true,
+            round_trip: false,
+            warmup_iterations: 0,
+            percentiles: vec![],
+            buffer_size: None,
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            server_affinity: None,
+            client_affinity: None,
+            send_delay: Some(send_delay),
+        };
+
+        let runner = BenchmarkRunner::new(config, IpcMechanism::UnixDomainSocket);
+        let transport_config = runner.create_transport_config().unwrap();
+        let mut metrics_collector = MetricsCollector::new(None, vec![]).unwrap();
+
+        let start_time = Instant::now();
+        runner
+            .run_single_threaded_one_way(&transport_config, &mut metrics_collector, None)
+            .await
+            .unwrap();
+        let elapsed = start_time.elapsed();
+
+        // The total time should be at least (n-1) * delay.
+        // We use n-1 because there's no delay after the last message.
+        let expected_min_duration = send_delay * (msg_count as u32 - 1);
+        assert!(
+            elapsed >= expected_min_duration,
+            "Elapsed time {:?} was less than the expected minimum {:?}",
+            elapsed,
+            expected_min_duration
+        );
+
+        // It also shouldn't take excessively long. We'll allow a generous
+        // margin for the actual IPC transport and scheduling overhead.
+        let expected_max_duration = expected_min_duration * 2;
+        assert!(
+            elapsed < expected_max_duration,
+            "Elapsed time {:?} was much longer than the expected maximum {:?}",
+            elapsed,
+            expected_max_duration
+        );
     }
 }

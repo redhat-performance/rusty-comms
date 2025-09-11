@@ -136,6 +136,14 @@ pub struct Args {
     #[arg(short = 'd', long, value_parser = parse_duration, help_heading = TIMING)]
     pub duration: Option<Duration>,
 
+    /// Delay between sending messages (e.g., "10ms", "50us")
+    ///
+    /// When specified, this introduces a fixed pause after each message is sent.
+    /// This is useful for simulating workloads that are not CPU-bound and for
+    /// controlling the message rate, rather than sending as fast as possible.
+    #[arg(long, value_parser = parse_duration_micros, help_heading = TIMING)]
+    pub send_delay: Option<Duration>,
+
     /// Number of concurrent processes/threads
     ///
     /// Controls the level of parallelism during testing. Higher values can reveal
@@ -483,6 +491,9 @@ pub struct BenchmarkConfiguration {
 
     /// Client CPU affinity
     pub client_affinity: Option<usize>,
+
+    /// Delay between sending messages
+    pub send_delay: Option<Duration>,
 }
 
 impl From<&Args> for BenchmarkConfiguration {
@@ -528,6 +539,7 @@ impl From<&Args> for BenchmarkConfiguration {
             port: args.port,
             server_affinity: args.server_affinity,
             client_affinity: args.client_affinity,
+            send_delay: args.send_delay,
         }
     }
 }
@@ -603,6 +615,72 @@ pub fn parse_duration(s: &str) -> Result<Duration, String> {
     Ok(duration)
 }
 
+/// Parse duration from string with microsecond support (e.g., "10s", "50ms", "20us")
+///
+/// This function provides flexible duration parsing that accepts human-readable
+/// time specifications. It supports multiple time units down to microseconds
+/// and handles edge cases gracefully with clear error messages.
+///
+/// ## Supported Formats
+/// - **Microseconds**: "50us", "1000us"
+/// - **Milliseconds**: "50ms"
+/// - **Seconds**: "10s", or just "10" (seconds assumed)
+/// - **Minutes**: "5m"
+/// - **Hours**: "1h"
+///
+/// ## Parameters
+/// - `s`: String slice containing the duration specification
+///
+/// ## Returns
+/// - `Ok(Duration)`: Successfully parsed duration
+/// - `Err(String)`: Error message describing the parsing failure
+pub fn parse_duration_micros(s: &str) -> Result<Duration, String> {
+    let s = s.trim();
+
+    // Check for empty input
+    if s.is_empty() {
+        return Err("Duration cannot be empty".to_string());
+    }
+
+    // Parse the numeric part and unit suffix
+    let (num_str, unit) = if let Some(stripped) = s.strip_suffix("us") {
+        (stripped, "us")
+    } else if let Some(stripped) = s.strip_suffix("ms") {
+        (stripped, "ms")
+    } else if let Some(stripped) = s.strip_suffix('s') {
+        (stripped, "s")
+    } else if let Some(stripped) = s.strip_suffix('m') {
+        (stripped, "m")
+    } else if let Some(stripped) = s.strip_suffix('h') {
+        (stripped, "h")
+    } else {
+        // No unit specified, assume seconds
+        (s, "s")
+    };
+
+    // Parse the numeric portion as a floating-point number
+    let num: f64 = num_str
+        .parse()
+        .map_err(|_| format!("Invalid number in duration: {}", num_str))?;
+
+    // Validate that the number is non-negative
+    if num < 0.0 {
+        return Err("Duration cannot be negative".to_string());
+    }
+
+    // Convert to Duration based on the unit
+    let duration = match unit {
+        "us" => Duration::from_micros(num as u64),
+        "ms" => Duration::from_millis(num as u64),
+        "s" => Duration::from_secs_f64(num),
+        "m" => Duration::from_secs_f64(num * 60.0),
+        "h" => Duration::from_secs_f64(num * 3600.0),
+        _ => return Err(format!("Invalid duration unit: {}", unit)),
+    };
+
+    Ok(duration)
+}
+
 /// Provides a user-friendly, formatted summary of the benchmark configuration.
 ///
 /// This implementation is used to display the settings at the start of a benchmark run,
@@ -663,6 +741,10 @@ impl fmt::Display for Args {
             writeln!(f, "  Test Duration:      {:?}", duration)?;
         } else {
             writeln!(f, "  Message Count:      {}", self.msg_count)?;
+        }
+
+        if let Some(delay) = self.send_delay {
+            writeln!(f, "  Send Delay:         {:?}", delay)?;
         }
 
         writeln!(f, "  Warmup Iterations:  {}", self.warmup_iterations)?;
@@ -784,5 +866,32 @@ mod tests {
         ]);
         assert_eq!(args.server_affinity, Some(2));
         assert_eq!(args.client_affinity, Some(3));
+    }
+
+    /// Test duration parsing with microsecond support
+    #[test]
+    fn test_parse_duration_micros() {
+        // Test microsecond unit
+        assert_eq!(
+            parse_duration_micros("50us").unwrap(),
+            Duration::from_micros(50)
+        );
+        // Test millisecond unit
+        assert_eq!(
+            parse_duration_micros("100ms").unwrap(),
+            Duration::from_millis(100)
+        );
+        // Test second unit
+        assert_eq!(
+            parse_duration_micros("2s").unwrap(),
+            Duration::from_secs(2)
+        );
+        // Test default unit (seconds)
+        assert_eq!(parse_duration_micros("5").unwrap(), Duration::from_secs(5));
+
+        // Test error cases
+        assert!(parse_duration_micros("").is_err());
+        assert!(parse_duration_micros("invalid").is_err());
+        assert!(parse_duration_micros("-10us").is_err());
     }
 }
