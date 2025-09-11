@@ -377,6 +377,12 @@ pub struct TransportConfig {
     /// System identifier for message queue resources. The actual
     /// queue name may be derived from this base to ensure uniqueness.
     pub message_queue_name: String,
+
+    /// Message priority for POSIX Message Queues
+    ///
+    /// Sets the priority for messages sent via PMQ. Higher numbers
+    /// indicate higher priority. This is only used by the PMQ transport.
+    pub pmq_priority: u32,
 }
 
 impl Default for TransportConfig {
@@ -405,6 +411,7 @@ impl Default for TransportConfig {
             max_connections: 16, // Default to support up to 16 concurrent connections
             message_queue_depth: 10, // Default POSIX Message Queue depth
             message_queue_name: "ipc_benchmark_pmq".to_string(), // Default PMQ name
+            pmq_priority: 0,     // Default PMQ message priority
         }
     }
 }

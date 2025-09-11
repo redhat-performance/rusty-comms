@@ -125,6 +125,14 @@ pub struct PosixMessageQueueTransport {
 
     /// Flag to ensure the backpressure warning is only logged once.
     has_warned_backpressure: bool,
+
+    /// Transport configuration, stored after initialization.
+    ///
+    /// This holds a copy of the `TransportConfig` used to initialize the
+    /// transport. It is `None` until `start_server` or `start_client` is
+    /// called. Storing the configuration allows the transport to access
+    /// parameters like `pmq_priority` during its operation.
+    config: Option<TransportConfig>,
 }
 
 impl Default for PosixMessageQueueTransport {
@@ -171,6 +179,7 @@ impl PosixMessageQueueTransport {
             max_msg_count: 10,
             is_creator: false,
             has_warned_backpressure: false,
+            config: None,
         }
     }
 
@@ -294,6 +303,7 @@ impl IpcTransport for PosixMessageQueueTransport {
     async fn start_server(&mut self, config: &TransportConfig) -> Result<()> {
         debug!("Starting POSIX Message Queue server");
 
+        self.config = Some(config.clone());
         self.queue_name = format!("/{}", config.message_queue_name);
         self.max_msg_count = config.message_queue_depth;
         self.max_msg_size = config.buffer_size.max(1024);
@@ -387,6 +397,7 @@ impl IpcTransport for PosixMessageQueueTransport {
     async fn start_client(&mut self, config: &TransportConfig) -> Result<()> {
         debug!("Starting POSIX Message Queue client");
 
+        self.config = Some(config.clone());
         self.queue_name = format!("/{}", config.message_queue_name);
         self.max_msg_count = config.message_queue_depth;
         self.max_msg_size = config.buffer_size.max(1024);
@@ -514,6 +525,9 @@ impl IpcTransport for PosixMessageQueueTransport {
         let raw_fd = fd_ref.as_raw_fd();
         let mut backpressure_detected = false;
 
+        // Get the priority from the config, which was set during transport creation.
+        let priority = self.config.as_ref().map_or(0, |c| c.pmq_priority);
+
         // Use non-blocking send with exponential backoff for queue-full conditions
         let mut retry_delay_ms = 1;
         let max_retries = 100; // More retries since each one is much faster
@@ -526,7 +540,7 @@ impl IpcTransport for PosixMessageQueueTransport {
                     // Reconstruct MqdT from raw fd for the blocking operation
                     let fd = unsafe { MqdT::from_raw_fd(raw_fd) };
                     // std::mem::forget(fd); // Don't close the fd when this MqdT drops
-                    mq_send(&fd, &data, 0)
+                    mq_send(&fd, &data, priority)
                 }
             })
             .await?;
@@ -1090,6 +1104,71 @@ mod tests {
 
         // Signal the server to shut down.
         tx.send(()).unwrap();
+        server_handle.await.unwrap();
+        client.close().await.unwrap();
+    }
+
+    /// Test that messages are sent with the specified priority.
+    #[tokio::test]
+    async fn test_pmq_priority_is_applied() {
+        let queue_name = format!("test-pmq-priority-{}", Uuid::new_v4().as_simple());
+        let priority = 5;
+        let config = TransportConfig {
+            message_queue_name: queue_name,
+            pmq_priority: priority,
+            ..Default::default()
+        };
+
+        let mut server = PosixMessageQueueTransport::new();
+        let mut client = PosixMessageQueueTransport::new();
+
+        // Use a oneshot channel to signal when the server is ready.
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+
+        // Start server in background
+        let server_config = config.clone();
+        let server_handle = tokio::spawn(async move {
+            server.start_server(&server_config).await.unwrap();
+            // Signal that the server is ready.
+            tx.send(()).unwrap();
+
+            // Receive message and check its priority, with retries for EAGAIN.
+            let fd = server.mq_fd.as_ref().unwrap();
+            let mut buffer = vec![0u8; server.max_msg_size];
+            let mut received_priority = 0u32;
+
+            // Retry receiving for a short period to handle timing variations.
+            for _ in 0..10 {
+                let result = mq_receive(fd, &mut buffer, &mut received_priority);
+                if let Ok(bytes_read) = result {
+                    buffer.truncate(bytes_read);
+                    break;
+                } else if result == Err(nix::Error::EAGAIN) {
+                    // Queue is empty, wait briefly and retry.
+                    sleep(Duration::from_millis(10)).await;
+                    continue;
+                }
+                // For any other error, fail the test.
+                result.unwrap();
+            }
+
+            assert_eq!(received_priority, priority);
+
+            let message = Message::from_bytes(&buffer).unwrap();
+            assert_eq!(message.id, 1);
+
+            server.close().await.unwrap();
+        });
+
+        // Wait for the server to be ready before starting the client.
+        rx.await.unwrap();
+
+        // Start client and send a message
+        client.start_client(&config).await.unwrap();
+        let message = Message::new(1, vec![1, 2, 3], MessageType::Request);
+        client.send(&message).await.unwrap();
+
+        // Wait for server to finish its work.
         server_handle.await.unwrap();
         client.close().await.unwrap();
     }

@@ -42,7 +42,6 @@ use clap::{
     Parser, ValueEnum,
 };
 use serde::{Deserialize, Serialize};
-use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -134,6 +133,14 @@ pub struct Args {
     /// This mode is useful for consistent test durations across different mechanisms.
     #[arg(short = 'd', long, value_parser = parse_duration, help_heading = TIMING)]
     pub duration: Option<Duration>,
+
+    /// Delay between sending messages (e.g., "10ms", "50us")
+    ///
+    /// When specified, this introduces a fixed pause after each message is sent.
+    /// This is useful for simulating workloads that are not CPU-bound and for
+    /// controlling the message rate, rather than sending as fast as possible.
+    #[arg(long, value_parser = parse_duration_micros, help_heading = TIMING)]
+    pub send_delay: Option<Duration>,
 
     /// Number of concurrent processes/threads
     ///
@@ -258,6 +265,24 @@ pub struct Args {
     /// to avoid conflicts when testing multiple mechanisms.
     #[arg(long, default_value_t = 8080, help_heading = ADVANCED)]
     pub port: u16,
+
+    /// Message priority for POSIX Message Queues (PMQ)
+    ///
+    /// This option is only used when the 'pmq' mechanism is selected.
+    /// It sets the priority for each message sent, where higher numbers
+    /// indicate higher priority. The OS will deliver higher-priority
+    /// messages before lower-priority ones.
+    #[arg(long, default_value_t = 0, help_heading = ADVANCED)]
+    pub pmq_priority: u32,
+
+    /// Include the first message in the results.
+    ///
+    /// By default, the benchmark sends one message before starting measurements
+    /// to warm up caches and memory allocations. This first message is
+    /// discarded to prevent its typically higher latency from skewing the
+    /// results. Use this flag to include it in the final statistics.
+    #[arg(long, help_heading = ADVANCED)]
+    pub include_first_message: bool,
 }
 
 /// Available IPC mechanisms for benchmarking
@@ -462,6 +487,15 @@ pub struct BenchmarkConfiguration {
 
     /// Port number for network-based mechanisms
     pub port: u16,
+
+    /// Delay between sending messages
+    pub send_delay: Option<Duration>,
+
+    /// Message priority for PMQ
+    pub pmq_priority: u32,
+
+    /// Whether to include the first message in results
+    pub include_first_message: bool,
 }
 
 impl From<&Args> for BenchmarkConfiguration {
@@ -505,6 +539,9 @@ impl From<&Args> for BenchmarkConfiguration {
             buffer_size: args.buffer_size,
             host: args.host.clone(),
             port: args.port,
+            send_delay: args.send_delay,
+            pmq_priority: args.pmq_priority,
+            include_first_message: args.include_first_message,
         }
     }
 }
@@ -580,92 +617,69 @@ pub fn parse_duration(s: &str) -> Result<Duration, String> {
     Ok(duration)
 }
 
-/// Provides a user-friendly, formatted summary of the benchmark configuration.
+/// Parse duration from string with microsecond support (e.g., "10s", "50ms", "20us")
 ///
-/// This implementation is used to display the settings at the start of a benchmark run,
-/// ensuring the user can verify the configuration at a glance. It handles special
-/// cases like expanding the "all" mechanism and showing which test types will run
-/// based on the default behavior (running both if neither is specified).
-impl fmt::Display for Args {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Expand the "all" mechanism to show the user the full list of tests that will be run.
-        let mechanisms = IpcMechanism::expand_all(self.mechanisms.clone());
-
-        // Determine the test types to be run, accounting for the default behavior.
-        // If neither --one-way nor --round-trip is specified, both tests are run by default.
-        // This logic ensures the displayed configuration matches the actual execution plan.
-        let test_types = {
-            let (one_way, round_trip) = if !self.one_way && !self.round_trip {
-                (true, true)
-            } else {
-                (self.one_way, self.round_trip)
-            };
-
-            let mut types = Vec::new();
-            if one_way {
-                types.push("One-Way");
-            }
-            if round_trip {
-                types.push("Round-Trip");
-            }
-            types.join(", ")
-        };
-
-        // Write the formatted configuration summary.
-        writeln!(f, "\nBenchmark Configuration:")?;
-        writeln!(
-            f,
-            "-----------------------------------------------------------------"
-        )?;
-        // Format the list of mechanisms into a user-friendly, comma-separated string.
-        // This is the idiomatic way to format a Vec of items that implement Display.
-        let mechanisms_str = mechanisms
-            .iter()
-            .map(|m| m.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        writeln!(f, "  Mechanisms:         {}", mechanisms_str)?;
-        writeln!(f, "  Message Size:       {} bytes", self.message_size)?;
-
-        // Display buffer size information
-        let buffer_size_str = if let Some(size) = self.buffer_size {
-            format!("{} bytes (User-provided)", size)
-        } else {
-            "Automatic (mechanism-specific)".to_string()
-        };
-        writeln!(f, "  Buffer Size:        {}", buffer_size_str)?;
-
-        // Display duration if specified, as it takes precedence over message count.
-        if let Some(duration) = self.duration {
-            writeln!(f, "  Test Duration:      {:?}", duration)?;
-        } else {
-            writeln!(f, "  Message Count:      {}", self.msg_count)?;
-        }
-
-        writeln!(f, "  Warmup Iterations:  {}", self.warmup_iterations)?;
-        writeln!(f, "  Test Types:         {}", test_types)?;
-        // Conditionally display the path for the main JSON output file.
-        if let Some(output_dest) = self.output_file.as_ref() {
-            writeln!(f, "  Output File:        {}", output_dest.display())?;
-        }
-        // Conditionally display the log file path if it has been specified.
-        if let Some(log_dest) = self.log_file.as_ref() {
-            writeln!(f, "  Log File:           {}", log_dest)?;
-        }
-        // Conditionally display the streaming output file if it has been specified.
-        if let Some(path) = self.streaming_output_json.as_ref() {
-            writeln!(f, "  Streaming JSON Output:   {}", path.display())?;
-        }
-        // Conditionally display the streaming CSV output file if it has been specified.
-        if let Some(path) = self.streaming_output_csv.as_ref() {
-            writeln!(f, "  Streaming CSV Output:    {}", path.display())?;
-        }
-        writeln!(f, "  Continue on Error:  {}", self.continue_on_error)?;
-        write!(
-            f,
-            "-----------------------------------------------------------------"
-        )
+/// This function provides flexible duration parsing that accepts human-readable
+/// time specifications. It supports multiple time units down to microseconds
+/// and handles edge cases gracefully with clear error messages.
+///
+/// ## Supported Formats
+/// - **Microseconds**: "50us", "1000us"
+/// - **Milliseconds**: "50ms"
+/// - **Seconds**: "10s", or just "10" (seconds assumed)
+/// - **Minutes**: "5m"
+/// - **Hours**: "1h"
+///
+/// ## Parameters
+/// - `s`: String slice containing the duration specification
+///
+/// ## Returns
+/// - `Ok(Duration)`: Successfully parsed duration
+/// - `Err(String)`: Error message describing the parsing failure
+pub fn parse_duration_micros(s: &str) -> Result<Duration, String> {
+    let s = s.trim();
+    // Check for empty input
+    if s.is_empty() {
+        return Err("Duration cannot be empty".to_string());
     }
+    
+    // Parse the numeric part and unit suffix
+    let (num_str, unit) = if let Some(stripped) = s.strip_suffix("us") {
+        (stripped, "us")
+    } else if let Some(stripped) = s.strip_suffix("ms") {
+        (stripped, "ms")
+    } else if let Some(stripped) = s.strip_suffix('s') {
+        (stripped, "s")
+    } else if let Some(stripped) = s.strip_suffix('m') {
+        (stripped, "m")
+    } else if let Some(stripped) = s.strip_suffix('h') {
+        (stripped, "h")
+    } else {
+        // No unit specified, assume seconds
+        (s, "s")
+    };
+
+    // Parse the numeric portion as a floating-point number
+    let num: f64 = num_str
+        .parse()
+        .map_err(|_| format!("Invalid number in duration: {}", num_str))?;
+
+    // Validate that the number is non-negative
+    if num < 0.0 {
+        return Err("Duration cannot be negative".to_string());
+    }
+
+    // Convert to Duration based on the unit
+    let duration = match unit {
+        "us" => Duration::from_micros(num as u64),
+        "ms" => Duration::from_millis(num as u64),
+        "s" => Duration::from_secs_f64(num),
+        "m" => Duration::from_secs_f64(num * 60.0),
+        "h" => Duration::from_secs_f64(num * 3600.0),
+        _ => return Err(format!("Invalid duration unit: {}", unit)),
+    };
+
+    Ok(duration)
 }
 
 #[cfg(test)]
@@ -736,5 +750,41 @@ mod tests {
             IpcMechanism::expand_all(vec![IpcMechanism::UnixDomainSocket, IpcMechanism::All]),
             all_mechanisms
         );
+    }
+
+    /// Test duration parsing with microsecond support
+    #[test]
+    fn test_parse_duration_micros() {
+        // Test microsecond unit
+        assert_eq!(
+            parse_duration_micros("50us").unwrap(),
+            Duration::from_micros(50)
+        );
+        // Test millisecond unit
+        assert_eq!(
+            parse_duration_micros("100ms").unwrap(),
+            Duration::from_millis(100)
+        );
+        // Test second unit
+        assert_eq!(parse_duration_micros("2s").unwrap(), Duration::from_secs(2));
+        // Test default unit (seconds)
+        assert_eq!(parse_duration_micros("5").unwrap(), Duration::from_secs(5));
+
+        // Test error cases
+        assert!(parse_duration_micros("").is_err());
+        assert!(parse_duration_micros("invalid").is_err());
+        assert!(parse_duration_micros("-10us").is_err());
+    }
+
+    /// Test parsing of the PMQ priority argument.
+    #[test]
+    fn test_pmq_priority_arg() {
+        // Test default value
+        let args_default = Args::parse_from(["ipc-benchmark"]);
+        assert_eq!(args_default.pmq_priority, 0);
+
+        // Test custom value
+        let args_custom = Args::parse_from(["ipc-benchmark", "--pmq-priority", "5"]);
+        assert_eq!(args_custom.pmq_priority, 5);
     }
 }
