@@ -411,7 +411,7 @@ impl Default for TransportConfig {
             max_connections: 16, // Default to support up to 16 concurrent connections
             message_queue_depth: 10, // Default POSIX Message Queue depth
             message_queue_name: "ipc_benchmark_pmq".to_string(), // Default PMQ name
-            pmq_priority: 0,         // Default PMQ message priority
+            pmq_priority: 0,     // Default PMQ message priority
         }
     }
 }

@@ -48,6 +48,78 @@ use tokio::time::{sleep, timeout};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+/// A helper struct to provide a consistent, single source of truth for displaying
+/// the per-mechanism benchmark configuration.
+struct BenchmarkConfigDisplay<'a> {
+    config: &'a BenchmarkConfig,
+    mechanism: IpcMechanism,
+    transport_config: &'a TransportConfig,
+}
+
+impl<'a> std::fmt::Display for BenchmarkConfigDisplay<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let buffer_size_str = if self.config.buffer_size.is_some() {
+            format!(
+                "{} bytes (User-provided)",
+                self.transport_config.buffer_size
+            )
+        } else {
+            format!("{} bytes (Automatic)", self.transport_config.buffer_size)
+        };
+
+        writeln!(
+            f,
+            "-----------------------------------------------------------------"
+        )?;
+        writeln!(f, "Starting Benchmark for: {}", self.mechanism)?;
+        writeln!(
+            f,
+            "  Message Size:       {} bytes",
+            self.config.message_size
+        )?;
+        writeln!(f, "  Buffer Size:        {}", buffer_size_str)?;
+        if let Some(duration) = self.config.duration {
+            writeln!(f, "  Test Duration:      {:?}", duration)?;
+        } else {
+            writeln!(
+                f,
+                "  Message Count:      {}",
+                self.config.msg_count.unwrap_or_default()
+            )?;
+        }
+        if let Some(delay) = self.config.send_delay {
+            writeln!(f, "  Send Delay:         {:?}", delay)?;
+        }
+
+        #[cfg(target_os = "linux")]
+        if self.mechanism == IpcMechanism::PosixMessageQueue {
+            writeln!(f, "  PMQ Priority:       {}", self.config.pmq_priority)?;
+        }
+
+        let server_affinity_str = self
+            .config
+            .server_affinity
+            .map_or("Not set".to_string(), |c| c.to_string());
+        let client_affinity_str = self
+            .config
+            .client_affinity
+            .map_or("Not set".to_string(), |c| c.to_string());
+        writeln!(f, "  Server Affinity:    {}", server_affinity_str)?;
+        writeln!(f, "  Client Affinity:    {}", client_affinity_str)?;
+
+        let first_message_status = if self.config.include_first_message {
+            "Included in results"
+        } else {
+            "Discarded (default)"
+        };
+        writeln!(f, "  First Message:      {}", first_message_status)?;
+        write!(
+            f,
+            "-----------------------------------------------------------------"
+        )
+    }
+}
+
 /// Configuration for benchmark execution
 ///
 /// This structure encapsulates all parameters needed to execute a benchmark test.
@@ -323,49 +395,15 @@ impl BenchmarkRunner {
     ) -> Result<BenchmarkResults> {
         let transport_config = self.create_transport_config()?;
 
-        let buffer_size_str = if self.config.buffer_size.is_some() {
-            format!("{} bytes (User-provided)", transport_config.buffer_size)
-        } else {
-            format!("{} bytes (Automatic)", transport_config.buffer_size)
-        };
-
-        info!("-----------------------------------------------------------------");
-        info!("Starting Benchmark for: {}", self.mechanism);
-        info!("  Message Size:       {} bytes", self.config.message_size);
-        info!("  Buffer Size:        {}", buffer_size_str);
-        if let Some(duration) = self.config.duration {
-            info!("  Test Duration:      {:?}", duration);
-        } else {
-            info!("  Message Count:      {}", self.get_msg_count());
-        }
-        if let Some(delay) = self.config.send_delay {
-            info!("  Send Delay:         {:?}", delay);
-        }
-
-        // Only show PMQ priority if the pmq mechanism is actually being used.
-        #[cfg(target_os = "linux")]
-        if self.mechanism == IpcMechanism::PosixMessageQueue {
-            info!("  PMQ Priority:       {}", self.config.pmq_priority);
-        }
-
-        let server_affinity_str = self
-            .config
-            .server_affinity
-            .map_or("Not set".to_string(), |c| c.to_string());
-        let client_affinity_str = self
-            .config
-            .client_affinity
-            .map_or("Not set".to_string(), |c| c.to_string());
-        info!("  Server Affinity:    {}", server_affinity_str);
-        info!("  Client Affinity:    {}", client_affinity_str);
-
-        let first_message_status = if self.config.include_first_message {
-            "Included in results"
-        } else {
-            "Discarded (default)"
-        };
-        info!("  First Message:      {}", first_message_status);
-        info!("-----------------------------------------------------------------");
+        // Use the new display struct for UI output.
+        info!(
+            "{}",
+            BenchmarkConfigDisplay {
+                config: &self.config,
+                mechanism: self.mechanism,
+                transport_config: &transport_config,
+            }
+        );
 
         // Initialize results structure with test configuration
         let mut results = BenchmarkResults::new(
@@ -763,7 +801,8 @@ impl BenchmarkRunner {
 
                 // Send one "canary" message before the timer starts to warm up the code path.
                 if !client_config.include_first_message {
-                    let canary_message = Message::new(u64::MAX, payload.clone(), MessageType::OneWay);
+                    let canary_message =
+                        Message::new(u64::MAX, payload.clone(), MessageType::OneWay);
                     let _ = client_transport.send(&canary_message).await;
                 }
 
@@ -974,7 +1013,8 @@ impl BenchmarkRunner {
 
                 // Send one "canary" message before the timer starts to warm up the code path.
                 if !client_config.include_first_message {
-                    let canary_message = Message::new(u64::MAX, payload.clone(), MessageType::Request);
+                    let canary_message =
+                        Message::new(u64::MAX, payload.clone(), MessageType::Request);
                     if client_transport.send(&canary_message).await.is_ok() {
                         let _ = client_transport.receive().await;
                     }

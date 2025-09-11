@@ -42,7 +42,6 @@ use clap::{
     Parser, ValueEnum,
 };
 use serde::{Deserialize, Serialize};
-use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -705,123 +704,6 @@ pub fn parse_duration_micros(s: &str) -> Result<Duration, String> {
     };
 
     Ok(duration)
-}
-
-/// Provides a user-friendly, formatted summary of the benchmark configuration.
-///
-/// This implementation is used to display the settings at the start of a benchmark run,
-/// ensuring the user can verify the configuration at a glance. It handles special
-/// cases like expanding the "all" mechanism and showing which test types will run
-/// based on the default behavior (running both if neither is specified).
-impl fmt::Display for Args {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Expand the "all" mechanism to show the user the full list of tests that will be run.
-        let mechanisms = IpcMechanism::expand_all(self.mechanisms.clone());
-
-        // Determine the test types to be run, accounting for the default behavior.
-        // If neither --one-way nor --round-trip is specified, both tests are run by default.
-        // This logic ensures the displayed configuration matches the actual execution plan.
-        let test_types = {
-            let (one_way, round_trip) = if !self.one_way && !self.round_trip {
-                (true, true)
-            } else {
-                (self.one_way, self.round_trip)
-            };
-
-            let mut types = Vec::new();
-            if one_way {
-                types.push("One-Way");
-            }
-            if round_trip {
-                types.push("Round-Trip");
-            }
-            types.join(", ")
-        };
-
-        // Write the formatted configuration summary.
-        writeln!(f, "\nBenchmark Configuration:")?;
-        writeln!(
-            f,
-            "-----------------------------------------------------------------"
-        )?;
-        // Format the list of mechanisms into a user-friendly, comma-separated string.
-        // This is the idiomatic way to format a Vec of items that implement Display.
-        let mechanisms_str = mechanisms
-            .iter()
-            .map(|m| m.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        writeln!(f, "  Mechanisms:         {}", mechanisms_str)?;
-        writeln!(f, "  Message Size:       {} bytes", self.message_size)?;
-
-        // Display buffer size information
-        let buffer_size_str = if let Some(size) = self.buffer_size {
-            format!("{} bytes (User-provided)", size)
-        } else {
-            "Automatic (mechanism-specific)".to_string()
-        };
-        writeln!(f, "  Buffer Size:        {}", buffer_size_str)?;
-
-        // Display duration if specified, as it takes precedence over message count.
-        if let Some(duration) = self.duration {
-            writeln!(f, "  Test Duration:      {:?}", duration)?;
-        } else {
-            writeln!(f, "  Message Count:      {}", self.msg_count)?;
-        }
-
-        if let Some(delay) = self.send_delay {
-            writeln!(f, "  Send Delay:         {:?}", delay)?;
-        }
-
-        writeln!(f, "  Warmup Iterations:  {}", self.warmup_iterations)?;
-        writeln!(f, "  Test Types:         {}", test_types)?;
-
-        // Display CPU affinity settings
-        let server_affinity_str = self
-            .server_affinity
-            .map_or("Not set".to_string(), |c| c.to_string());
-        let client_affinity_str = self
-            .client_affinity
-            .map_or("Not set".to_string(), |c| c.to_string());
-        writeln!(f, "  Server Affinity:    {}", server_affinity_str)?;
-        writeln!(f, "  Client Affinity:    {}", client_affinity_str)?;
-
-        // Conditionally display the path for the main JSON output file.
-        if let Some(output_dest) = self.output_file.as_ref() {
-            writeln!(f, "  Output File:        {}", output_dest.display())?;
-        }
-        // Conditionally display the log file path if it has been specified.
-        if let Some(log_dest) = self.log_file.as_ref() {
-            writeln!(f, "  Log File:           {}", log_dest)?;
-        }
-        // Conditionally display the streaming output file if it has been specified.
-        if let Some(path) = self.streaming_output_json.as_ref() {
-            writeln!(f, "  Streaming JSON Output:   {}", path.display())?;
-        }
-        // Conditionally display the streaming CSV output file if it has been specified.
-        if let Some(path) = self.streaming_output_csv.as_ref() {
-            writeln!(f, "  Streaming CSV Output:    {}", path.display())?;
-        }
-
-        // Only show PMQ priority if the pmq mechanism is actually being used.
-        #[cfg(target_os = "linux")]
-        if mechanisms.contains(&IpcMechanism::PosixMessageQueue) {
-            writeln!(f, "  PMQ Priority:       {}", self.pmq_priority)?;
-        }
-
-        let first_message_status = if self.include_first_message {
-            "Included in results"
-        } else {
-            "Discarded (default)"
-        };
-        writeln!(f, "  First Message:      {}", first_message_status)?;
-
-        writeln!(f, "  Continue on Error:  {}", self.continue_on_error)?;
-        write!(
-            f,
-            "-----------------------------------------------------------------"
-        )
-    }
 }
 
 #[cfg(test)]
