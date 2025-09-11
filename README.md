@@ -137,9 +137,81 @@ ipc-benchmark --percentiles 50 90 95 99 99.9 99.99
 # TCP-specific configuration
 ipc-benchmark -m tcp --host 127.0.0.1 --port 9090
 
-# Shared memory configuration
+# POSIX Message Queue-specific configuration
+ipc-benchmark -m pmq --pmq-priority 1
+
+# Shared memory configuration (demonstrating a user-provided buffer size)
 ipc-benchmark -m shm --buffer-size 16384
 ```
+
+### First-Message Latency (Canary)
+
+The first message in any benchmark often has a higher latency than subsequent messages due to "cold start" effects like CPU cache misses, memory allocation, and branch prediction misses. To provide more stable and representative results, this tool automatically sends one "canary" message before starting the measurement loop. This message and its latency are discarded by default.
+
+If you need to analyze the raw performance data, including the first-message spike, you can use the `--include-first-message` flag to disable this behavior.
+
+```bash
+# Include the first message in the final results
+ipc-benchmark --include-first-message
+```
+
+### CPU Affinity
+
+For the most stable and repeatable results, you can pin the server and client processes to specific CPU cores. This minimizes performance noise from OS scheduling, context switching, and cache misses.
+
+- `--server-affinity <CORE_ID>`: Pins the server process to a specific CPU core.
+- `--client-affinity <CORE_ID>`: Pins the client process to a specific CPU core.
+
+```bash
+# Pin the server to core 2 and the client to core 3
+ipc-benchmark \
+  -m uds \
+  -i 100000 \
+  --server-affinity 2 \
+  --client-affinity 3
+```
+
+### Understanding Test Types: Throughput vs. Latency
+
+This benchmark suite can be used to measure two primary aspects of IPC performance: **throughput** and **latency**. The configuration you choose will determine which of these you are primarily testing.
+
+#### Throughput-Focused Testing (Default Behavior)
+
+By default, this tool is a **throughput benchmark**. It attempts to send messages as fast as the system will allow, with no artificial delays. This is ideal for answering questions like:
+
+-   "What is the maximum message rate this IPC mechanism can handle?"
+-   "How many megabytes per second can I transfer?"
+
+This mode is most useful for stress-testing the system and finding its performance limits under heavy load.
+
+```bash
+# Throughput test: Send 100,000 messages as fast as possible
+./target/release/ipc-benchmark -m uds -i 100000 -s 4096
+```
+
+#### Latency-Focused Testing (Using `--send-delay`)
+
+Sometimes, you are more interested in the latency of individual messages under a controlled, predictable load, rather than the maximum possible throughput. The `--send-delay` flag allows you to introduce a fixed pause between each message sent.
+
+This is a **latency-focused test**. It is ideal for answering questions like:
+
+-   "When my application sends a message every 10 milliseconds, what is the typical time it takes for that message to be delivered?"
+-   "Does latency remain stable or does it spike under a consistent, non-maximal load?"
+
+This mode simulates applications that are not constantly sending data at maximum speed, which is a very common real-world scenario.
+
+```bash
+# Latency test: Send messages with a 10 millisecond delay between each one
+./target/release/ipc-benchmark \
+  -m pmq \
+  -i 10000 \
+  -s 116 \
+  --send-delay 10ms \
+  --server-affinity 2 \
+  --client-affinity 3
+```
+
+By using `--send-delay`, you can more accurately measure the base "travel time" of a message without the confounding factor of queue backpressure that occurs during high-throughput tests.
 
 ### Test Configuration Examples
 
@@ -153,6 +225,7 @@ ipc-benchmark \
   --buffer-size 1048576
 ```
 
+
 #### Low-Latency Testing
 ```bash
 ipc-benchmark \
@@ -160,7 +233,10 @@ ipc-benchmark \
   --message-size 64 \
   --msg-count 100000 \
   --warmup-iterations 10000 \
-  --percentiles 50 95 99 99.9 99.99
+  --percentiles 50 95 99 99.9 99.99 \
+  --send-delay 10ms \
+  --server-affinity 2 \
+  --client-affinity 3
 ```
 
 #### Comparative Analysis
@@ -299,16 +375,21 @@ Benchmark Results:
 -----------------------------------------------------------------
 Mechanism: UnixDomainSocket
   Message Size: 1024 bytes
-  Latency:
+  Buffer Size:  8192 bytes
+  One-Way Latency:
       Mean: 3.15 us, P95: 5.21 us, P99: 8.43 us
       Min:  1.50 us, Max: 45.12 us
+  Round-Trip Latency:
+      Mean: 5.82 us, P95: 9.11 us, P99: 14.50 us
+      Min:  4.20 us, Max: 88.30 us
   Throughput:
-      Average: 310.50 MB/s, Peak: 312.80 MB/s
+      Average: 155.30 MB/s, Peak: 156.40 MB/s
   Totals:
       Messages: 20000, Data: 19.53 MB
 -----------------------------------------------------------------
 Mechanism: SharedMemory
   Message Size: 1024 bytes
+  Buffer Size:  10240000 bytes
   Status: FAILED
     Error: Timed out waiting for client to connect
 -----------------------------------------------------------------
@@ -340,6 +421,20 @@ taskset -c 0-3 ipc-benchmark --concurrency 4
 - **Duration**: Longer test durations provide more stable results
 - **Noise**: Run tests on idle systems for best accuracy
 - **Repetition**: Run multiple test executions and average results
+
+### Backpressure Warnings
+
+During high-throughput tests, it's possible for the sender to produce data faster than the receiver can consume it. When the underlying OS buffers or message queues become full, the send operation will slow down or block. This condition is known as **backpressure**.
+
+This benchmark tool automatically detects backpressure and will issue a warning message the first time it occurs for a given transport, for example:
+
+```
+WARN rusty_comms::ipc::shared_memory: Shared memory buffer is full; backpressure is occurring. 
+This may impact latency and throughput measurements. 
+Consider increasing the buffer size if this is not the desired scenario.
+```
+
+When you see this warning, it means your benchmark may be measuring a backpressure-limited scenario rather than the pure, unconstrained performance of the IPC mechanism. This is a valid and important scenario to test, but it's crucial for interpreting the results correctly. If your goal is to measure maximum throughput, you may need to increase the buffer sizes (`--buffer-size`) or investigate the receiver's performance.
 
 ## Troubleshooting
 
@@ -498,32 +593,22 @@ ipc-benchmark -m shm -c 4 -i 1000 -s 1024
 - **Shared Memory**: The ring buffer implementation has inherent race conditions with multiple concurrent access
 - **TCP/UDS**: True concurrent connections require complex server architecture beyond the current scope
 
-### Buffer Size Validation
+### Buffer Size Configuration
 
-The benchmark now validates buffer sizes for shared memory to prevent buffer overflow errors:
+The `--buffer-size` flag controls the size of internal buffers. Its behavior is designed to be both user-friendly by default and flexible for advanced testing.
+
+- **Automatic Sizing (Default)**: When the `--buffer-size` flag is omitted, the benchmark calculates an optimal buffer size large enough to handle all messages without backpressure. This is the recommended mode for measuring maximum throughput.
+  - For **POSIX Message Queues**, the automatic default is a safe `8192` bytes to stay within common OS limits.
+
+- **User-Provided Size**: You can provide a specific size to test how a system behaves under backpressure (when the data volume is larger than the buffer). This is a valid testing scenario, and the tool will warn you when this condition is met.
 
 ```bash
-# This will show a warning:
+# Example of intentionally setting a small buffer to test backpressure:
 ipc-benchmark -m shm -i 10000 -s 1024 --buffer-size 8192
 
-# Warning: Buffer size (8192 bytes) may be too small for 10000 messages 
-# of 1024 byte messages. Consider using --buffer-size 20971520
-```
-
-### Recommended Usage
-
-```bash
-# ✅ Optimal for latency measurement
-ipc-benchmark -m all -c 1 -i 10000 -s 1024
-
-# ✅ Good for throughput analysis (TCP/UDS only)
-ipc-benchmark -m tcp,uds -c 4 -i 10000 -s 1024
-
-# ✅ Shared memory with adequate buffer
-ipc-benchmark -m shm -i 10000 -s 1024 --buffer-size 50000000
-
-# ⚠️ Will automatically use c=1 for shared memory
-ipc-benchmark -m shm -c 4 -i 10000 -s 1024
+# The tool will issue a warning to confirm this is the intended scenario:
+# Warning: Buffer size (8192 bytes) is smaller than the total data size (10560000 bytes). 
+# This may cause backpressure, which is a valid test scenario.
 ```
 
 ### Error Prevention
@@ -539,4 +624,3 @@ Common issues and solutions:
 - **Single-threaded** (`-c 1`): Most accurate latency measurements
 - **Simulated concurrency** (`-c 2+`): Good for throughput scaling analysis
 - **Shared memory**: Always single-threaded for reliability
-
