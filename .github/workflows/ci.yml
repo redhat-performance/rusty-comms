@@ -359,8 +359,9 @@ jobs:
 
       - name: Check for uncovered lines in PR
         id: pr_coverage_check
-        run: | 
-          echo "PR_COVERAGE_REPORT=$(/home/dblack/git/redhat-performance/rusty-comms/.github/scripts/check_pr_coverage.py ${{ github.base_ref }})" >> $GITHUB_OUTPUT
+        run: |
+          set -e
+          echo "PR_COVERAGE_REPORT=$(./.github/scripts/check_pr_coverage.py ${{ github.base_ref }})" >> $GITHUB_OUTPUT
 
       - name: Post Coverage Comment
         env:
