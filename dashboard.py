@@ -458,7 +458,7 @@ def list_directories(path: str = ".") -> List[Dict]:
                 'is_parent': True,
                 'is_directory': True,
                 'is_file': False,
-                'icon': '📁',
+                'icon': '',
                 'type': 'parent'
             })
         
@@ -483,7 +483,7 @@ def list_directories(path: str = ".") -> List[Dict]:
                         'is_parent': False,
                         'is_directory': True,
                         'is_file': False,
-                        'icon': '📁',
+                        'icon': '',
                         'type': 'directory'
                     })
                 
@@ -505,13 +505,13 @@ def list_directories(path: str = ".") -> List[Dict]:
                         
                         # Determine file type and icon
                         if file_ext == '.json':
-                            icon = '📄'
+                            icon = ''
                             if '_results.json' in item.name:
-                                icon = '📊'  # Summary results
+                                icon = ''  # Summary results
                             elif '_streaming.json' in item.name:
-                                icon = '📈'  # Streaming data
+                                icon = ''  # Streaming data
                         else:  # .csv
-                            icon = '📋'
+                            icon = ''
                             
                         files.append({
                             'name': item.name + size_info,
@@ -543,7 +543,7 @@ def get_directory_breadcrumbs(path: str) -> List[Dict]:
         
         # Add home as the root
         breadcrumbs.append({
-            'name': '🏠 Home',
+            'name': 'Home',
             'path': str(Path.home())
         })
         
@@ -562,7 +562,7 @@ def get_directory_breadcrumbs(path: str) -> List[Dict]:
                     })
             except ValueError:
                 # Path is not under home, show absolute path components
-                breadcrumbs = [{'name': '💻 Root', 'path': '/'}]
+                breadcrumbs = [{'name': 'Root', 'path': '/'}]
                 current_path = Path('/')
                 
                 for part in resolved_path.parts[1:]:  # Skip empty root part
@@ -575,7 +575,7 @@ def get_directory_breadcrumbs(path: str) -> List[Dict]:
         return breadcrumbs
     except Exception as e:
         logger.error(f"Error generating breadcrumbs: {e}")
-        return [{'name': '🏠 Home', 'path': str(Path.home())}]
+        return [{'name': 'Home', 'path': str(Path.home())}]
 
 class DashboardApp:
     """Main Dash application for interactive benchmark visualization."""
@@ -609,6 +609,54 @@ class DashboardApp:
         '''
         self.setup_layout()
         self.setup_callbacks()
+    
+    def apply_dark_theme(self, fig):
+        """Apply Grafana-inspired dark theme to Plotly figures."""
+        fig.update_layout(
+            # Background colors
+            paper_bgcolor='#0d1117',
+            plot_bgcolor='#21262d',
+            
+            # Font styling
+            font=dict(color='#f0f6fc', family='Inter, sans-serif'),
+            
+            # Grid and axes styling
+            xaxis=dict(
+                gridcolor='#30363d',
+                linecolor='#30363d',
+                tickcolor='#30363d',
+                color='#f0f6fc'
+            ),
+            yaxis=dict(
+                gridcolor='#30363d',
+                linecolor='#30363d',
+                tickcolor='#30363d',
+                color='#f0f6fc'
+            ),
+            
+            # Legend styling
+            legend=dict(
+                bgcolor='rgba(33, 38, 45, 0.8)',
+                bordercolor='#30363d',
+                borderwidth=1,
+                font=dict(color='#f0f6fc')
+            ),
+            
+            # Hover styling
+            hoverlabel=dict(
+                bgcolor='#161b22',
+                bordercolor='#30363d',
+                font_color='#f0f6fc'
+            )
+        )
+        
+        # Update all traces for dark theme
+        for trace in fig.data:
+            if hasattr(trace, 'marker') and trace.marker:
+                if hasattr(trace.marker, 'line'):
+                    trace.marker.line.color = '#30363d'
+        
+        return fig
     
     def reload_data(self, directory_path: str) -> tuple:
         """Reload data from a new directory and update the data store."""
@@ -696,7 +744,6 @@ class DashboardApp:
                         
                         html.Button(
                             [
-                                html.Span('🚀', style={'margin-right': '8px'}), 
                                 html.Span(id='run-analysis-button-text', children='Run Analysis')
                             ],
                             id='run-analysis-button',
@@ -704,32 +751,34 @@ class DashboardApp:
                             style={
                                 'width': '100%',
                                 'padding': '12px 20px',
-                                'background-color': '#7c2d12',
+                                'background': 'linear-gradient(135deg, #1f6feb 0%, #0969da 100%)',
                                 'color': 'white',
                                 'border': 'none',
-                                'border-radius': '8px',
+                                'border-radius': '6px',
                                 'cursor': 'pointer',
                                 'font-size': '1rem',
                                 'font-weight': '700',
                                 'margin-bottom': '10px',
-                                'box-shadow': '0 2px 4px rgba(0, 0, 0, 0.1)'
+                                'box-shadow': '0 2px 8px rgba(31, 111, 235, 0.3)',
+                                'transition': 'all 0.2s ease'
                             }
                         ),
                         
                         html.Button(
-                            [html.Span('🗑️', style={'margin-right': '8px'}), 'Clear Cache'],
+                            ['Clear Cache'],
                             id='clear-cache-button',
                             n_clicks=0,
                             style={
                                 'width': '100%',
                                 'padding': '8px 16px',
-                                'background-color': '#6b7280',
+                                'background': 'linear-gradient(135deg, #6c7293 0%, #57606a 100%)',
                                 'color': 'white',
                                 'border': 'none',
                                 'border-radius': '6px',
                                 'cursor': 'pointer',
                                 'font-size': '0.9rem',
-                                'font-weight': '500'
+                                'font-weight': '500',
+                                'transition': 'all 0.2s ease'
                             }
                         ),
                         
@@ -747,51 +796,56 @@ class DashboardApp:
                         html.Div([
                             html.P(
                                 id='current-directory-display',
-                                children=f"📁 {self.initial_dir}",
+                                children=f"{self.initial_dir}",
                                 style={
-                                    'background-color': '#f3f4f6',
+                                    'background': 'linear-gradient(135deg, #21262d 0%, #161b22 100%)',
                                     'padding': '8px 12px',
                                     'border-radius': '6px',
-                                    'border': '1px solid #d1d5db',
+                                    'border': '1px solid #30363d',
                                     'font-family': 'monospace',
                                     'font-size': '0.85rem',
                                     'margin-bottom': '10px',
-                                    'word-break': 'break-all'
+                                    'word-break': 'break-all',
+                                    'color': '#f0f6fc'
                                 }
                             ),
                             
                             html.Button(
-                                [html.Span('📁', style={'margin-right': '8px'}), 'Browse Directory...'],
+                                ['Browse Directory...'],
                                 id='browse-directory-button',
                                 n_clicks=0,
                                 style={
                                     'width': '100%',
                                     'padding': '10px 16px',
-                                    'background-color': '#10b981',
+                                    'background': 'linear-gradient(135deg, #2da44e 0%, #1a7f37 100%)',
                                     'color': 'white',
                                     'border': 'none',
                                     'border-radius': '6px',
                                     'cursor': 'pointer',
                                     'font-size': '0.95rem',
                                     'font-weight': '600',
-                                    'margin-bottom': '10px'
+                                    'margin-bottom': '10px',
+                                    'transition': 'all 0.2s ease',
+                                    'box-shadow': '0 2px 8px rgba(45, 164, 78, 0.3)'
                                 }
                             ),
                             
                             html.Button(
-                                [html.Span('🔄', style={'margin-right': '8px'}), 'Reload Data'],
+                                ['Reload Data'],
                                 id='reload-data-button',
                                 n_clicks=0,
                                 style={
                                     'width': '100%',
                                     'padding': '10px 16px',
-                                    'background-color': '#3b82f6',
+                                    'background': 'linear-gradient(135deg, #1f6feb 0%, #0969da 100%)',
                                     'color': 'white',
                                     'border': 'none',
                                     'border-radius': '6px',
                                     'cursor': 'pointer',
                                     'font-size': '0.95rem',
-                                    'font-weight': '600'
+                                    'font-weight': '600',
+                                    'transition': 'all 0.2s ease',
+                                    'box-shadow': '0 2px 8px rgba(31, 111, 235, 0.3)'
                                 }
                             ),
                         ], style={'margin-bottom': '20px'}),
@@ -833,20 +887,50 @@ class DashboardApp:
                         value="summary-tab",
                         style={
                             'height': '50px',
-                            'marginBottom': '25px'
+                            'marginBottom': '25px',
+                            'backgroundColor': '#21262d',
+                            'borderBottom': '1px solid #30363d'
                         },
                         children=[
                             dcc.Tab(
                                 label="Summary", 
                                 value="summary-tab",
-                                style={'padding': '12px 24px', 'fontWeight': '500'},
-                                selected_style={'padding': '12px 24px', 'fontWeight': '600', 'color': '#667eea'}
+                                style={
+                                    'padding': '12px 24px', 
+                                    'fontWeight': '500',
+                                    'backgroundColor': '#21262d',
+                                    'color': '#8b949e',
+                                    'border': '1px solid #30363d',
+                                    'borderBottom': 'none'
+                                },
+                                selected_style={
+                                    'padding': '12px 24px', 
+                                    'fontWeight': '600', 
+                                    'color': '#f0f6fc',
+                                    'backgroundColor': '#0d1117',
+                                    'border': '1px solid #58a6ff',
+                                    'borderBottom': '1px solid #0d1117'
+                                }
                             ),
                             dcc.Tab(
                                 label="Time Series", 
                                 value="timeseries-tab",
-                                style={'padding': '12px 24px', 'fontWeight': '500'},
-                                selected_style={'padding': '12px 24px', 'fontWeight': '600', 'color': '#667eea'}
+                                style={
+                                    'padding': '12px 24px', 
+                                    'fontWeight': '500',
+                                    'backgroundColor': '#21262d',
+                                    'color': '#8b949e',
+                                    'border': '1px solid #30363d',
+                                    'borderBottom': 'none'
+                                },
+                                selected_style={
+                                    'padding': '12px 24px', 
+                                    'fontWeight': '600', 
+                                    'color': '#f0f6fc',
+                                    'backgroundColor': '#0d1117',
+                                    'border': '1px solid #58a6ff',
+                                    'borderBottom': '1px solid #0d1117'
+                                }
                             ),
 
                         ]
@@ -862,7 +946,7 @@ class DashboardApp:
                     html.Div([
                         # Modal Header
                         html.Div([
-                            html.H3("📁 Browse Directory", style={'margin': 0, 'color': '#1f2937'}),
+                            html.H3("Browse Directory", style={'margin': 0, 'color': '#f0f6fc'}),
                             html.Button(
                                 "×",
                                 id="file-browser-close",
@@ -887,10 +971,10 @@ class DashboardApp:
                                 style={
                                     'max-height': '400px',
                                     'overflow-y': 'auto',
-                                    'border': '1px solid #e5e7eb',
+                                    'border': '1px solid #30363d',
                                     'border-radius': '8px',
                                     'padding': '10px',
-                                    'background-color': '#ffffff'
+                                    'background': 'linear-gradient(135deg, #21262d 0%, #161b22 100%)'
                                 }
                             )
                         ], style={'margin-bottom': '20px'}),
@@ -899,12 +983,12 @@ class DashboardApp:
                         html.Div([
                             html.P("File Types:", style={'font-size': '12px', 'color': '#6b7280', 'margin': '0 0 5px 0', 'font-weight': 'bold'}),
                             html.Div([
-                                html.Span('📁 Folders', style={'font-size': '11px', 'color': '#6b7280', 'margin-right': '15px'}),
-                                html.Span('📊 Summary JSON', style={'font-size': '11px', 'color': '#6b7280', 'margin-right': '15px'}),
-                                html.Span('📈 Streaming JSON', style={'font-size': '11px', 'color': '#6b7280', 'margin-right': '15px'}),
-                                html.Span('📋 CSV Files', style={'font-size': '11px', 'color': '#6b7280'})
+                                html.Span('Folders', style={'font-size': '11px', 'color': '#6b7280', 'margin-right': '15px'}),
+                                html.Span('Summary JSON', style={'font-size': '11px', 'color': '#6b7280', 'margin-right': '15px'}),
+                                html.Span('Streaming JSON', style={'font-size': '11px', 'color': '#6b7280', 'margin-right': '15px'}),
+                                html.Span('CSV Files', style={'font-size': '11px', 'color': '#6b7280'})
                             ])
-                        ], style={'margin-bottom': '15px', 'padding': '8px', 'background-color': '#f9fafb', 'border-radius': '6px'}),
+                        ], style={'margin-bottom': '15px', 'padding': '8px', 'background': 'linear-gradient(135deg, #21262d 0%, #161b22 100%)', 'border-radius': '6px', 'border': '1px solid #30363d'}),
                         
                         # Modal Footer
                         html.Div([
@@ -914,12 +998,13 @@ class DashboardApp:
                                 n_clicks=0,
                                 style={
                                     'padding': '8px 16px',
-                                    'background-color': '#6b7280',
+                                    'background': 'linear-gradient(135deg, #6c7293 0%, #57606a 100%)',
                                     'color': 'white',
                                     'border': 'none',
                                     'border-radius': '6px',
                                     'cursor': 'pointer',
-                                    'margin-right': '10px'
+                                    'margin-right': '10px',
+                                    'transition': 'all 0.2s ease'
                                 }
                             ),
                             html.Button(
@@ -928,20 +1013,24 @@ class DashboardApp:
                                 n_clicks=0,
                                 style={
                                     'padding': '8px 16px',
-                                    'background-color': '#10b981',
+                                    'background': 'linear-gradient(135deg, #2da44e 0%, #1a7f37 100%)',
                                     'color': 'white',
                                     'border': 'none',
                                     'border-radius': '6px',
-                                    'cursor': 'pointer'
+                                    'cursor': 'pointer',
+                                    'transition': 'all 0.2s ease',
+                                    'box-shadow': '0 2px 8px rgba(45, 164, 78, 0.3)'
                                 }
                             )
                         ], style={'display': 'flex', 'justify-content': 'flex-end'})
                         
                     ], style={
-                        'background': 'white',
+                        'background': 'linear-gradient(135deg, #21262d 0%, #161b22 100%)',
                         'padding': '30px',
-                        'border-radius': '12px',
-                        'box-shadow': '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+                        'border-radius': '8px',
+                        'box-shadow': '0 16px 64px rgba(0, 0, 0, 0.6)',
+                        'border': '1px solid #30363d',
+                        'color': '#f0f6fc',
                         'width': '90%',
                         'max-width': '600px',
                         'max-height': '80vh',
@@ -965,7 +1054,7 @@ class DashboardApp:
             dcc.Store(id='current-directory-store', data=self.initial_dir),
             dcc.Store(id='selected-directory-store', data=self.initial_dir)
             
-        ], style={'background': 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)', 'minHeight': '100vh'})
+        ], style={'background': '#0d1117', 'minHeight': '100vh', 'color': '#f0f6fc'})
     
     def setup_callbacks(self):
         """Setup all dashboard callbacks."""
@@ -980,8 +1069,8 @@ class DashboardApp:
             if n_clicks > 0:
                 dashboard_cache.clear()
                 return html.Div([
-                    html.Span("✅ Cache cleared", style={'color': '#10b981', 'font-weight': 'bold'})
-                ], style={'padding': '8px', 'background-color': '#f0fdf4', 'border-radius': '4px', 'border': '1px solid #10b981'})
+                    html.Span("Cache cleared", style={'color': '#2da44e', 'font-weight': 'bold'})
+                ], style={'padding': '8px', 'background': 'linear-gradient(135deg, #0d4d21 0%, #0a3b1c 100%)', 'border-radius': '4px', 'border': '1px solid #2da44e'})
             return html.Div()
 
         # Main content callback - now only responds to Run Analysis button
@@ -998,21 +1087,15 @@ class DashboardApp:
             if n_clicks == 0:
                 return html.Div([
                     html.Div([
-                        html.H2("🚀 Ready for Analysis", style={'color': '#1f2937', 'margin-bottom': '20px'}),
+                        html.H2("Ready for Analysis", style={'color': '#f0f6fc', 'margin-bottom': '20px'}),
                         html.P("Select your filters and click the 'Run Analysis' button to generate insights and visualizations.", 
-                               style={'color': '#6b7280', 'font-size': '1.1rem', 'line-height': '1.6'}),
+                               style={'color': '#8b949e', 'font-size': '1.1rem', 'line-height': '1.6'}),
                         html.Ul([
                             html.Li("Choose mechanisms to analyze (PMQ, SHM, UDS)"),
                             html.Li("Select message sizes for comparison"),
                             html.Li("Click 'Run Analysis' to start processing")
-                        ], style={'color': '#374151', 'padding-left': '20px'})
-                    ], style={
-                        'text-align': 'center', 
-                        'padding': '60px 40px',
-                        'background': 'linear-gradient(135deg, #f3f4f6 0%, #e5e7eb 100%)',
-                        'border-radius': '12px',
-                        'margin': '20px'
-                    })
+                        ], style={'color': '#f0f6fc', 'padding-left': '20px'})
+                    ], className='performance-card', style={'text-align': 'center', 'padding': '60px 40px'})
                 ])
             
             try:
@@ -1026,8 +1109,8 @@ class DashboardApp:
             except Exception as e:
                 logger.error(f"Error rendering tab content: {str(e)}")
                 return html.Div([
-                    html.H3("⚠️ Analysis Error", style={'color': '#dc2626'}),
-                    html.P(f"Error: {str(e)}", style={'color': '#6b7280'})
+                    html.H3("Analysis Error", style={'color': '#f85149'}),
+                    html.P(f"Error: {str(e)}", style={'color': '#8b949e'})
                 ], style={'padding': '20px', 'text-align': 'center'})
 
         # Simple button status callback 
@@ -1054,7 +1137,7 @@ class DashboardApp:
                     'margin-bottom': '10px',
                     'box-shadow': '0 2px 4px rgba(0, 0, 0, 0.1)'
                 }
-                reset_style['background-color'] = '#7c2d12'  # Original color
+                reset_style['background'] = 'linear-gradient(135deg, #1f6feb 0%, #0969da 100%)'  # Grafana blue
                 return 'Run Analysis', reset_style
             
             return 'Run Analysis', current_style
@@ -1091,18 +1174,18 @@ class DashboardApp:
             if not (n_clicks > 0 and active_tab == "timeseries-tab"):
                 return html.Div([
                     html.Div([
-                        html.H3("📊 Time Series Charts Ready", style={'color': '#1f2937', 'margin-bottom': '20px'}),
+                        html.H3("Time Series Charts Ready", style={'color': '#f0f6fc', 'margin-bottom': '20px'}),
                         html.P("Configure your analysis settings above and click 'Run Analysis' to generate interactive time series charts.", 
                                style={'color': '#6b7280', 'font-size': '1.1rem', 'line-height': '1.6', 'margin-bottom': '20px'}),
                         html.Div([
-                            html.H4("Chart Features Available:", style={'color': '#374151', 'margin-bottom': '15px'}),
+                            html.H4("Chart Features Available:", style={'color': '#f0f6fc', 'margin-bottom': '15px'}),
                             html.Ul([
-                                html.Li("🔍 Interactive zoom and pan across all charts"),
-                                html.Li("📈 Multiple statistical overlays and anomaly detection"),
-                                html.Li("⚙️ Flexible layout options and sampling strategies"),
-                                html.Li("🎯 Performance zones and percentile indicators"),
-                                html.Li("📊 Real-time statistics and distribution analysis")
-                            ], style={'color': '#374151', 'padding-left': '20px', 'line-height': '1.8'})
+                                html.Li("Interactive zoom and pan across all charts"),
+                                html.Li("Multiple statistical overlays and anomaly detection"),
+                                html.Li("Flexible layout options and sampling strategies"),
+                                html.Li("Performance zones and percentile indicators"),
+                                html.Li("Real-time statistics and distribution analysis")
+                            ], style={'color': '#f0f6fc', 'padding-left': '20px', 'line-height': '1.8'})
                         ])
                     ], style={
                         'text-align': 'center', 
@@ -1201,14 +1284,30 @@ class DashboardApp:
                         
                         table = html.Div([
                             html.H5(f"{mechanism} - {type_label} Latency", 
-                                   style={'margin-bottom': '10px', 'color': '#1f2937', 'font-weight': 'bold'}),
+                                   style={'margin-bottom': '10px', 'color': '#f0f6fc', 'font-weight': 'bold'}),
                             dash_table.DataTable(
                                 data=stats_data,
                                 columns=[{"name": col, "id": col} for col in stats_data[0].keys()],
-                                style_cell={'textAlign': 'left', 'padding': '8px', 'font-size': '0.8rem'},
-                                style_header={'backgroundColor': '#f8fafc', 'fontWeight': 'bold', 'border': '1px solid #e2e8f0'},
-                                style_data={'backgroundColor': mechanism_colors.get(mechanism, '#ffffff'), 'border': '1px solid #e2e8f0'},
-                                style_table={'border-radius': '8px', 'overflow': 'hidden'},
+                                style_cell={
+                                    'textAlign': 'left', 
+                                    'padding': '8px', 
+                                    'font-size': '0.8rem',
+                                    'backgroundColor': '#21262d',
+                                    'color': '#f0f6fc',
+                                    'border': '1px solid #30363d'
+                                },
+                                style_header={
+                                    'backgroundColor': '#161b22', 
+                                    'fontWeight': 'bold', 
+                                    'color': '#f0f6fc',
+                                    'border': '1px solid #30363d'
+                                },
+                                style_data={
+                                    'backgroundColor': '#21262d', 
+                                    'color': '#f0f6fc',
+                                    'border': '1px solid #30363d'
+                                },
+                                style_table={'border-radius': '8px', 'overflow': 'hidden', 'backgroundColor': '#21262d'},
                                 style_cell_conditional=[
                                     {'if': {'column_id': 'Message Size (bytes)'}, 'textAlign': 'right', 'font-weight': 'bold'},
                                     {'if': {'column_id': 'Count'}, 'textAlign': 'right'},
@@ -1396,9 +1495,8 @@ class DashboardApp:
                 file_summary = html.Div([
                     html.Hr(style={'margin': '10px 0', 'border': 'none', 'border-top': '1px solid #e5e7eb'}),
                     html.Div([
-                        html.Span('📁 ', style={'font-size': '12px'}),
                         html.Span(f"Found {file_count} data file{'s' if file_count != 1 else ''}", 
-                                 style={'font-size': '12px', 'color': '#10b981', 'font-weight': 'bold'})
+                                 style={'font-size': '12px', 'color': '#3fb950', 'font-weight': 'bold'})
                     ], style={'text-align': 'center', 'padding': '5px'})
                 ], style={'margin-top': '10px'})
                 listing_items.append(file_summary)
@@ -1460,7 +1558,7 @@ class DashboardApp:
                 raise PreventUpdate
                 
             # Close the modal and update the selected directory
-            return f"📁 {current_dir}", current_dir, {'display': 'none'}
+            return f"{current_dir}", current_dir, {'display': 'none'}
         
         # Data reload callback
         @self.app.callback(
@@ -1770,14 +1868,14 @@ class DashboardApp:
             html.Div([
                 html.H4("Best Overall", style={'margin': '0', 'color': '#059669', 'font-size': '0.9rem'}),
                 html.H2(insights.get('best_mechanism', 'N/A'), style={'margin': '5px 0', 'color': '#065f46'}),
-                html.P(f"P50: {insights.get('best_latency', 0):.1f}μs", style={'margin': '0', 'color': '#6b7280', 'font-size': '0.9rem'})
+                html.P(f"P50: {insights.get('best_latency', 0):.1f}μs", style={'margin': '0', 'color': '#8b949e', 'font-size': '0.9rem'})
             ], style={
                 'background': 'linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%)',
                 'padding': '20px', 'border-radius': '12px', 'text-align': 'center',
                 'box-shadow': '0 4px 6px rgba(0, 0, 0, 0.1)', 'border': '1px solid #10b981'
             }),
             html.P("The mechanism with the best balance of typical performance (P50) and consistency. Combines low latency with predictable behavior - ideal for most applications.", 
-                   style={'margin': '8px 0 0 0', 'font-size': '0.75rem', 'color': '#6b7280', 'font-style': 'italic', 'line-height': '1.3', 'text-align': 'center'})
+                   style={'margin': '8px 0 0 0', 'font-size': '0.75rem', 'color': '#8b949e', 'font-style': 'italic', 'line-height': '1.3', 'text-align': 'center'})
         ], style={'flex': '1', 'min-width': '0'})
         
         # Performance Range Card for Best Mechanism
@@ -1807,14 +1905,14 @@ class DashboardApp:
             html.Div([
                 html.H4("Performance Range", style={'margin': '0', 'color': '#1e40af', 'font-size': '0.9rem'}),
                 html.H2(f"{min_latency:.1f} - {max_latency:.1f}μs", style={'margin': '5px 0', 'color': '#1e3a8a'}),
-                html.P(f"{best_mechanism} (P99: {p99_latency:.1f}μs)", style={'margin': '0', 'color': '#6b7280', 'font-size': '0.9rem'})
+                html.P(f"{best_mechanism} (P99: {p99_latency:.1f}μs)", style={'margin': '0', 'color': '#8b949e', 'font-size': '0.9rem'})
             ], style={
                 'background': 'linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%)',
                 'padding': '20px', 'border-radius': '12px', 'text-align': 'center',
                 'box-shadow': '0 4px 6px rgba(0, 0, 0, 0.1)', 'border': '1px solid #3b82f6'
             }),
             html.P("Shows the latency spread for the best mechanism. Smaller ranges indicate more predictable performance. P99 represents near-worst-case latency.", 
-                   style={'margin': '8px 0 0 0', 'font-size': '0.75rem', 'color': '#6b7280', 'font-style': 'italic', 'line-height': '1.3', 'text-align': 'center'})
+                   style={'margin': '8px 0 0 0', 'font-size': '0.75rem', 'color': '#8b949e', 'font-style': 'italic', 'line-height': '1.3', 'text-align': 'center'})
         ], style={'flex': '1', 'min-width': '0'})
         
         # Throughput Card
@@ -1823,14 +1921,14 @@ class DashboardApp:
             html.Div([
                 html.H4("Peak Throughput", style={'margin': '0', 'color': '#7c2d12', 'font-size': '0.9rem'}),
                 html.H2(f"{throughput_info.get('msgs_per_sec', 0):,.0f}", style={'margin': '5px 0', 'color': '#92400e'}),
-                html.P(f"msgs/sec ({throughput_info.get('mechanism', 'N/A')})", style={'margin': '0', 'color': '#6b7280', 'font-size': '0.9rem'})
+                html.P(f"msgs/sec ({throughput_info.get('mechanism', 'N/A')})", style={'margin': '0', 'color': '#8b949e', 'font-size': '0.9rem'})
             ], style={
                 'background': 'linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)',
                 'padding': '20px', 'border-radius': '12px', 'text-align': 'center',
                 'box-shadow': '0 4px 6px rgba(0, 0, 0, 0.1)', 'border': '1px solid #f59e0b'
             }),
             html.P("Highest message rate achieved across all mechanisms. Important for high-volume applications that prioritize throughput over latency.", 
-                   style={'margin': '8px 0 0 0', 'font-size': '0.75rem', 'color': '#6b7280', 'font-style': 'italic', 'line-height': '1.3', 'text-align': 'center'})
+                   style={'margin': '8px 0 0 0', 'font-size': '0.75rem', 'color': '#8b949e', 'font-style': 'italic', 'line-height': '1.3', 'text-align': 'center'})
         ], style={'flex': '1', 'min-width': '0'})
         
         # Max Latency Card
@@ -1845,14 +1943,14 @@ class DashboardApp:
                     html.Div([
                         html.H4("Best Max Latency", style={'margin': '0', 'color': '#dc2626', 'font-size': '0.9rem'}),
                         html.H2(f"{best_max_latency:.1f}μs", style={'margin': '5px 0', 'color': '#991b1b'}),
-                        html.P(f"{best_max_mechanism}", style={'margin': '0', 'color': '#6b7280', 'font-size': '0.9rem'})
+                        html.P(f"{best_max_mechanism}", style={'margin': '0', 'color': '#8b949e', 'font-size': '0.9rem'})
                     ], style={
                         'background': 'linear-gradient(135deg, #fee2e2 0%, #fecaca 100%)',
                         'padding': '20px', 'border-radius': '12px', 'text-align': 'center',
                         'box-shadow': '0 4px 6px rgba(0, 0, 0, 0.1)', 'border': '1px solid #dc2626'
                     }),
                     html.P("Mechanism with the lowest worst-case latency. Critical for real-time systems where maximum response time must be guaranteed.", 
-                           style={'margin': '8px 0 0 0', 'font-size': '0.75rem', 'color': '#6b7280', 'font-style': 'italic', 'line-height': '1.3', 'text-align': 'center'})
+                           style={'margin': '8px 0 0 0', 'font-size': '0.75rem', 'color': '#8b949e', 'font-style': 'italic', 'line-height': '1.3', 'text-align': 'center'})
                 ], style={'flex': '1', 'min-width': '0'})
         
         # Insights Card (adjusted width)
@@ -2271,22 +2369,26 @@ class DashboardApp:
                 id='percentile-table',
                 data=display_percentiles.to_dict('records'),
                 columns=[{"name": i, "id": i} for i in display_percentiles.columns],
-                style_table={'overflowX': 'auto'},
+                style_table={'overflowX': 'auto', 'backgroundColor': '#21262d'},
                 style_cell={
                     'textAlign': 'left',
                     'padding': '10px',
-                    'fontFamily': 'Arial, sans-serif',
-                    'fontSize': '14px'
+                    'fontFamily': 'Inter, sans-serif',
+                    'fontSize': '14px',
+                    'backgroundColor': '#21262d',
+                    'color': '#f0f6fc',
+                    'border': '1px solid #30363d'
                 },
                 style_header={
-                    'backgroundColor': '#f8f9fa',
+                    'backgroundColor': '#161b22',
                     'fontWeight': 'bold',
-                    'color': '#495057'
+                    'color': '#f0f6fc',
+                    'border': '1px solid #30363d'
                 },
                 style_data_conditional=[
                     {
                         'if': {'row_index': 'odd'},
-                        'backgroundColor': '#f8f9fa'
+                        'backgroundColor': '#161b22'
                     }
                 ],
                 sort_action="native",
@@ -2324,12 +2426,25 @@ class DashboardApp:
             avg_oneway_pivot = self.create_pivot_table(avg_oneway_data.to_dict('records'), 'latency_us')
             avg_roundtrip_pivot = self.create_pivot_table(avg_roundtrip_data.to_dict('records'), 'latency_us')
             
-            # Common table style
+            # Common table style - Grafana dark theme
             table_style = {
-                'style_table': {'overflowX': 'auto', 'width': '100%'},
-                'style_cell': {'textAlign': 'center', 'padding': '8px', 'fontFamily': 'Arial, sans-serif', 'fontSize': '12px'},
-                'style_header': {'backgroundColor': '#f8f9fa', 'fontWeight': 'bold', 'color': '#495057'},
-                'style_data_conditional': [{'if': {'row_index': 'odd'}, 'backgroundColor': '#f8f9fa'}],
+                'style_table': {'overflowX': 'auto', 'width': '100%', 'backgroundColor': '#21262d'},
+                'style_cell': {
+                    'textAlign': 'center', 
+                    'padding': '8px', 
+                    'fontFamily': 'Inter, sans-serif', 
+                    'fontSize': '12px',
+                    'backgroundColor': '#21262d',
+                    'color': '#f0f6fc',
+                    'border': '1px solid #30363d'
+                },
+                'style_header': {
+                    'backgroundColor': '#161b22', 
+                    'fontWeight': 'bold', 
+                    'color': '#f0f6fc',
+                    'border': '1px solid #30363d'
+                },
+                'style_data_conditional': [{'if': {'row_index': 'odd'}, 'backgroundColor': '#161b22'}],
                 'sort_action': "native"
             }
             
@@ -2339,28 +2454,28 @@ class DashboardApp:
             # Max Latency Tables (side by side)
             if not max_oneway_pivot.empty or not max_roundtrip_pivot.empty:
                 max_tables_row = html.Div([
-                    html.H4("Maximum Latency (μs)", style={'color': '#dc2626', 'margin-bottom': '15px', 'text-align': 'center'}),
+                    html.H4("Maximum Latency (μs)", style={'color': '#f85149', 'margin-bottom': '15px', 'text-align': 'center'}),
                     html.Div([
                         # One-way max latency table
                         html.Div([
-                            html.H5("One-way", style={'color': '#374151', 'margin-bottom': '10px', 'text-align': 'center'}),
+                            html.H5("One-way", style={'color': '#f0f6fc', 'margin-bottom': '10px', 'text-align': 'center'}),
                             dash_table.DataTable(
                                 id='max-oneway-latency-table',
                                 data=max_oneway_pivot.to_dict('records') if not max_oneway_pivot.empty else [],
                                 columns=[{"name": i, "id": i} for i in max_oneway_pivot.columns] if not max_oneway_pivot.empty else [],
                                 **table_style
-                            ) if not max_oneway_pivot.empty else html.Div("No data available", style={'text-align': 'center', 'color': '#6b7280'})
+                            ) if not max_oneway_pivot.empty else html.Div("No data available", style={'text-align': 'center', 'color': '#8b949e'})
                         ], style={'width': '48%', 'display': 'inline-block', 'margin-right': '4%'}),
                         
                         # Round-trip max latency table
                         html.Div([
-                            html.H5("Round-trip", style={'color': '#374151', 'margin-bottom': '10px', 'text-align': 'center'}),
+                            html.H5("Round-trip", style={'color': '#f0f6fc', 'margin-bottom': '10px', 'text-align': 'center'}),
                             dash_table.DataTable(
                                 id='max-roundtrip-latency-table',
                                 data=max_roundtrip_pivot.to_dict('records') if not max_roundtrip_pivot.empty else [],
                                 columns=[{"name": i, "id": i} for i in max_roundtrip_pivot.columns] if not max_roundtrip_pivot.empty else [],
                                 **table_style
-                            ) if not max_roundtrip_pivot.empty else html.Div("No data available", style={'text-align': 'center', 'color': '#6b7280'})
+                            ) if not max_roundtrip_pivot.empty else html.Div("No data available", style={'text-align': 'center', 'color': '#8b949e'})
                         ], style={'width': '48%', 'display': 'inline-block'})
                     ], style={'margin-bottom': '30px'})
                 ])
@@ -2369,28 +2484,28 @@ class DashboardApp:
             # Average Latency Tables (side by side)
             if not avg_oneway_pivot.empty or not avg_roundtrip_pivot.empty:
                 avg_tables_row = html.Div([
-                    html.H4("Average Latency (μs)", style={'color': '#059669', 'margin-bottom': '15px', 'text-align': 'center'}),
+                    html.H4("Average Latency (μs)", style={'color': '#3fb950', 'margin-bottom': '15px', 'text-align': 'center'}),
                     html.Div([
                         # One-way average latency table
                         html.Div([
-                            html.H5("One-way", style={'color': '#374151', 'margin-bottom': '10px', 'text-align': 'center'}),
+                            html.H5("One-way", style={'color': '#f0f6fc', 'margin-bottom': '10px', 'text-align': 'center'}),
                             dash_table.DataTable(
                                 id='avg-oneway-latency-table',
                                 data=avg_oneway_pivot.to_dict('records') if not avg_oneway_pivot.empty else [],
                                 columns=[{"name": i, "id": i} for i in avg_oneway_pivot.columns] if not avg_oneway_pivot.empty else [],
                                 **table_style
-                            ) if not avg_oneway_pivot.empty else html.Div("No data available", style={'text-align': 'center', 'color': '#6b7280'})
+                            ) if not avg_oneway_pivot.empty else html.Div("No data available", style={'text-align': 'center', 'color': '#8b949e'})
                         ], style={'width': '48%', 'display': 'inline-block', 'margin-right': '4%'}),
                         
                         # Round-trip average latency table
                         html.Div([
-                            html.H5("Round-trip", style={'color': '#374151', 'margin-bottom': '10px', 'text-align': 'center'}),
+                            html.H5("Round-trip", style={'color': '#f0f6fc', 'margin-bottom': '10px', 'text-align': 'center'}),
                             dash_table.DataTable(
                                 id='avg-roundtrip-latency-table',
                                 data=avg_roundtrip_pivot.to_dict('records') if not avg_roundtrip_pivot.empty else [],
                                 columns=[{"name": i, "id": i} for i in avg_roundtrip_pivot.columns] if not avg_roundtrip_pivot.empty else [],
                                 **table_style
-                            ) if not avg_roundtrip_pivot.empty else html.Div("No data available", style={'text-align': 'center', 'color': '#6b7280'})
+                            ) if not avg_roundtrip_pivot.empty else html.Div("No data available", style={'text-align': 'center', 'color': '#8b949e'})
                         ], style={'width': '48%', 'display': 'inline-block'})
                     ])
                 ])
@@ -2398,8 +2513,8 @@ class DashboardApp:
             
             latency_table_div = html.Div([
                 html.H3("Latency Performance Data"),
-                html.P(f"Latency measurements organized by message size and mechanism. Lower values indicate better performance.",
-                       style={'color': '#6b7280', 'margin-bottom': '20px', 'fontSize': '0.95rem'}),
+                html.P("Latency measurements organized by message size and mechanism. Lower values indicate better performance.",
+                       style={'color': '#8b949e', 'margin-bottom': '20px', 'fontSize': '0.95rem'}),
                 *tables
             ], className="dash-table-container")
         
@@ -2426,12 +2541,25 @@ class DashboardApp:
             oneway_bytes_pivot = self.create_pivot_table(oneway_throughput_mb.to_dict('records'), 'bytes_per_sec', round_digits=1)
             roundtrip_bytes_pivot = self.create_pivot_table(roundtrip_throughput_mb.to_dict('records'), 'bytes_per_sec', round_digits=1)
             
-            # Common table style for throughput tables
+            # Common table style for throughput tables - Grafana dark theme
             throughput_table_style = {
-                'style_table': {'overflowX': 'auto', 'width': '100%'},
-                'style_cell': {'textAlign': 'center', 'padding': '8px', 'fontFamily': 'Arial, sans-serif', 'fontSize': '12px'},
-                'style_header': {'backgroundColor': '#e0f2fe', 'fontWeight': 'bold', 'color': '#0277bd'},
-                'style_data_conditional': [{'if': {'row_index': 'odd'}, 'backgroundColor': '#f8f9fa'}],
+                'style_table': {'overflowX': 'auto', 'width': '100%', 'backgroundColor': '#21262d'},
+                'style_cell': {
+                    'textAlign': 'center', 
+                    'padding': '8px', 
+                    'fontFamily': 'Inter, sans-serif', 
+                    'fontSize': '12px',
+                    'backgroundColor': '#21262d',
+                    'color': '#f0f6fc',
+                    'border': '1px solid #30363d'
+                },
+                'style_header': {
+                    'backgroundColor': '#161b22', 
+                    'fontWeight': 'bold', 
+                    'color': '#f0f6fc',
+                    'border': '1px solid #30363d'
+                },
+                'style_data_conditional': [{'if': {'row_index': 'odd'}, 'backgroundColor': '#161b22'}],
                 'sort_action': "native"
             }
             
@@ -2440,28 +2568,28 @@ class DashboardApp:
             # Messages/sec Tables (side by side)
             if not oneway_msgs_pivot.empty or not roundtrip_msgs_pivot.empty:
                 msgs_tables_row = html.Div([
-                    html.H4("Message Throughput (messages/sec)", style={'color': '#0277bd', 'margin-bottom': '15px', 'text-align': 'center'}),
+                    html.H4("Message Throughput (messages/sec)", style={'color': '#58a6ff', 'margin-bottom': '15px', 'text-align': 'center'}),
                     html.Div([
                         # One-way messages/sec table
                         html.Div([
-                            html.H5("One-way", style={'color': '#374151', 'margin-bottom': '10px', 'text-align': 'center'}),
+                            html.H5("One-way", style={'color': '#f0f6fc', 'margin-bottom': '10px', 'text-align': 'center'}),
                             dash_table.DataTable(
                                 id='oneway-msgs-throughput-table',
                                 data=oneway_msgs_pivot.to_dict('records') if not oneway_msgs_pivot.empty else [],
                                 columns=[{"name": i, "id": i} for i in oneway_msgs_pivot.columns] if not oneway_msgs_pivot.empty else [],
                                 **throughput_table_style
-                            ) if not oneway_msgs_pivot.empty else html.Div("No data available", style={'text-align': 'center', 'color': '#6b7280'})
+                            ) if not oneway_msgs_pivot.empty else html.Div("No data available", style={'text-align': 'center', 'color': '#8b949e'})
                         ], style={'width': '48%', 'display': 'inline-block', 'margin-right': '4%'}),
                         
                         # Round-trip messages/sec table
                         html.Div([
-                            html.H5("Round-trip", style={'color': '#374151', 'margin-bottom': '10px', 'text-align': 'center'}),
+                            html.H5("Round-trip", style={'color': '#f0f6fc', 'margin-bottom': '10px', 'text-align': 'center'}),
                             dash_table.DataTable(
                                 id='roundtrip-msgs-throughput-table',
                                 data=roundtrip_msgs_pivot.to_dict('records') if not roundtrip_msgs_pivot.empty else [],
                                 columns=[{"name": i, "id": i} for i in roundtrip_msgs_pivot.columns] if not roundtrip_msgs_pivot.empty else [],
                                 **throughput_table_style
-                            ) if not roundtrip_msgs_pivot.empty else html.Div("No data available", style={'text-align': 'center', 'color': '#6b7280'})
+                            ) if not roundtrip_msgs_pivot.empty else html.Div("No data available", style={'text-align': 'center', 'color': '#8b949e'})
                         ], style={'width': '48%', 'display': 'inline-block'})
                     ], style={'margin-bottom': '30px'})
                 ])
@@ -2470,28 +2598,28 @@ class DashboardApp:
             # Bytes/sec Tables (side by side)
             if not oneway_bytes_pivot.empty or not roundtrip_bytes_pivot.empty:
                 bytes_tables_row = html.Div([
-                    html.H4("Data Throughput (MB/sec)", style={'color': '#0277bd', 'margin-bottom': '15px', 'text-align': 'center'}),
+                    html.H4("Data Throughput (MB/sec)", style={'color': '#58a6ff', 'margin-bottom': '15px', 'text-align': 'center'}),
                     html.Div([
                         # One-way bytes/sec table
                         html.Div([
-                            html.H5("One-way", style={'color': '#374151', 'margin-bottom': '10px', 'text-align': 'center'}),
+                            html.H5("One-way", style={'color': '#f0f6fc', 'margin-bottom': '10px', 'text-align': 'center'}),
                             dash_table.DataTable(
                                 id='oneway-bytes-throughput-table',
                                 data=oneway_bytes_pivot.to_dict('records') if not oneway_bytes_pivot.empty else [],
                                 columns=[{"name": i, "id": i} for i in oneway_bytes_pivot.columns] if not oneway_bytes_pivot.empty else [],
                                 **throughput_table_style
-                            ) if not oneway_bytes_pivot.empty else html.Div("No data available", style={'text-align': 'center', 'color': '#6b7280'})
+                            ) if not oneway_bytes_pivot.empty else html.Div("No data available", style={'text-align': 'center', 'color': '#8b949e'})
                         ], style={'width': '48%', 'display': 'inline-block', 'margin-right': '4%'}),
                         
                         # Round-trip bytes/sec table
                         html.Div([
-                            html.H5("Round-trip", style={'color': '#374151', 'margin-bottom': '10px', 'text-align': 'center'}),
+                            html.H5("Round-trip", style={'color': '#f0f6fc', 'margin-bottom': '10px', 'text-align': 'center'}),
                             dash_table.DataTable(
                                 id='roundtrip-bytes-throughput-table',
                                 data=roundtrip_bytes_pivot.to_dict('records') if not roundtrip_bytes_pivot.empty else [],
                                 columns=[{"name": i, "id": i} for i in roundtrip_bytes_pivot.columns] if not roundtrip_bytes_pivot.empty else [],
                                 **throughput_table_style
-                            ) if not roundtrip_bytes_pivot.empty else html.Div("No data available", style={'text-align': 'center', 'color': '#6b7280'})
+                            ) if not roundtrip_bytes_pivot.empty else html.Div("No data available", style={'text-align': 'center', 'color': '#8b949e'})
                         ], style={'width': '48%', 'display': 'inline-block'})
                     ])
                 ])
@@ -2500,7 +2628,7 @@ class DashboardApp:
             throughput_table_div = html.Div([
                 html.H3("Throughput Performance Data"),
                 html.P(f"Throughput measurements organized by message size and mechanism. Higher values indicate better performance.",
-                       style={'color': '#6b7280', 'margin-bottom': '20px', 'fontSize': '0.95rem'}),
+                       style={'color': '#8b949e', 'margin-bottom': '20px', 'fontSize': '0.95rem'}),
                 *throughput_tables
             ], className="dash-table-container")
 
@@ -2528,21 +2656,34 @@ class DashboardApp:
                     id='p50-comparison-table',
                     data=p50_display.to_dict('records'),
                     columns=[{"name": str(i), "id": str(i)} for i in p50_display.columns],
-                    style_table={'overflowX': 'auto'},
-                    style_cell={'textAlign': 'center', 'padding': '12px', 'fontFamily': 'Arial, sans-serif', 'fontSize': '14px'},
-                    style_header={'backgroundColor': '#e0f2fe', 'fontWeight': 'bold', 'color': '#0277bd'},
+                    style_table={'overflowX': 'auto', 'backgroundColor': '#21262d'},
+                    style_cell={
+                        'textAlign': 'center', 
+                        'padding': '12px', 
+                        'fontFamily': 'Inter, sans-serif', 
+                        'fontSize': '14px',
+                        'backgroundColor': '#21262d',
+                        'color': '#f0f6fc',
+                        'border': '1px solid #30363d'
+                    },
+                    style_header={
+                        'backgroundColor': '#161b22',
+                        'fontWeight': 'bold',
+                        'color': '#58a6ff',
+                        'border': '1px solid #30363d'
+                    },
                     style_data_conditional=[
-                        {'if': {'row_index': 'odd'}, 'backgroundColor': '#f8f9fa'},
+                        {'if': {'row_index': 'odd'}, 'backgroundColor': '#161b22'},
                         {'if': {'column_id': 'mechanism'}, 'textAlign': 'left', 'fontWeight': 'bold'},
-                        {'if': {'column_id': 'Overall Score'}, 'backgroundColor': '#fff3cd', 'fontWeight': 'bold'},
+                        {'if': {'column_id': 'Overall Score'}, 'backgroundColor': '#2d2013', 'fontWeight': 'bold', 'color': '#ffd700'},
                     ],
                     sort_action="native",
                 )
                 
                 matrix_tables.append(html.Div([
-                    html.H4("P50 Latency Comparison", style={'color': '#1565c0', 'margin-bottom': '10px'}),
+                    html.H4("P50 Latency Comparison", style={'color': '#58a6ff', 'margin-bottom': '10px'}),
                     html.P("Relative P50 latency performance. Lower percentages = better typical performance.",
-                           style={'color': '#6b7280', 'margin-bottom': '15px', 'fontSize': '0.9rem'}),
+                           style={'color': '#8b949e', 'margin-bottom': '15px', 'fontSize': '0.9rem'}),
                     p50_table
                 ], style={'margin-bottom': '30px'}))
             
@@ -2562,26 +2703,39 @@ class DashboardApp:
                     id='max-comparison-table',
                     data=max_display.to_dict('records'),
                     columns=[{"name": str(i), "id": str(i)} for i in max_display.columns],
-                    style_table={'overflowX': 'auto'},
-                    style_cell={'textAlign': 'center', 'padding': '12px', 'fontFamily': 'Arial, sans-serif', 'fontSize': '14px'},
-                    style_header={'backgroundColor': '#fee2e2', 'fontWeight': 'bold', 'color': '#b91c1c'},
+                    style_table={'overflowX': 'auto', 'backgroundColor': '#21262d'},
+                    style_cell={
+                        'textAlign': 'center',
+                        'padding': '12px',
+                        'fontFamily': 'Inter, sans-serif',
+                        'fontSize': '14px',
+                        'backgroundColor': '#21262d',
+                        'color': '#f0f6fc',
+                        'border': '1px solid #30363d'
+                    },
+                    style_header={
+                        'backgroundColor': '#161b22',
+                        'fontWeight': 'bold',
+                        'color': '#f85149',
+                        'border': '1px solid #30363d'
+                    },
                     style_data_conditional=[
-                        {'if': {'row_index': 'odd'}, 'backgroundColor': '#f8f9fa'},
+                        {'if': {'row_index': 'odd'}, 'backgroundColor': '#161b22'},
                         {'if': {'column_id': 'mechanism'}, 'textAlign': 'left', 'fontWeight': 'bold'},
-                        {'if': {'column_id': 'Overall Score'}, 'backgroundColor': '#fed7d7', 'fontWeight': 'bold'},
+                        {'if': {'column_id': 'Overall Score'}, 'backgroundColor': '#2d1b1b', 'fontWeight': 'bold', 'color': '#f85149'},
                     ],
                     sort_action="native",
                 )
                 
                 matrix_tables.append(html.Div([
-                    html.H4("Max Latency Comparison", style={'color': '#b91c1c', 'margin-bottom': '10px'}),
+                    html.H4("Max Latency Comparison", style={'color': '#f85149', 'margin-bottom': '10px'}),
                     html.P("Relative maximum latency performance. Lower percentages = better worst-case performance.",
-                           style={'color': '#6b7280', 'margin-bottom': '15px', 'fontSize': '0.9rem'}),
+                           style={'color': '#8b949e', 'margin-bottom': '15px', 'fontSize': '0.9rem'}),
                     max_table
                 ], style={'margin-bottom': '20px'}))
             
             comparison_matrix_div = html.Div([
-                html.H3("Performance Comparison Matrix", style={'color': '#1565c0', 'margin-bottom': '15px'}),
+                html.H3("Performance Comparison Matrix", style={'color': '#f0f6fc', 'margin-bottom': '15px'}),
                 html.P("Comprehensive performance comparison across latency metrics. Lower percentages indicate better performance.",
                        style={'color': '#6b7280', 'margin-bottom': '25px', 'fontSize': '0.95rem'}),
                 html.Div(matrix_tables)
@@ -2594,7 +2748,7 @@ class DashboardApp:
                 id="performance-overview-loading",
                 type="circle",
                 children=html.Div([
-                    html.H2("Performance Overview", style={'color': '#1f2937', 'margin-bottom': '20px', 'font-size': '1.5rem'}),
+                    html.H2("Performance Overview", style={'color': '#f0f6fc', 'margin-bottom': '20px', 'font-size': '1.5rem'}),
                     summary_cards
                 ], style={'margin-bottom': '40px'}),
                 style={'minHeight': '150px'}
@@ -2605,7 +2759,7 @@ class DashboardApp:
                 id="comparison-matrix-loading",
                 type="cube",
                 children=html.Div([
-                    html.H2("Head-to-Head Comparison", style={'color': '#1f2937', 'margin-bottom': '20px', 'font-size': '1.5rem'}),
+                    html.H2("Head-to-Head Comparison", style={'color': '#f0f6fc', 'margin-bottom': '20px', 'font-size': '1.5rem'}),
                     comparison_matrix_div
                 ], style={'margin-bottom': '40px'}),
                 style={'minHeight': '200px'}
@@ -2613,18 +2767,18 @@ class DashboardApp:
             
             # === INSIGHTS SECTION ===
             html.Div([
-                html.H2("Performance Insights", style={'color': '#1f2937', 'margin-bottom': '20px', 'font-size': '1.5rem'}),
+                html.H2("Performance Insights", style={'color': '#f0f6fc', 'margin-bottom': '20px', 'font-size': '1.5rem'}),
                 html.Div([
                     html.Div([
-                        html.H4("Recommendations:", style={'color': '#059669', 'margin-bottom': '15px'}),
+                        html.H4("Recommendations:", style={'color': '#3fb950', 'margin-bottom': '15px'}),
                         html.Ul([
-                            html.Li(rec, style={'margin-bottom': '8px', 'color': '#374151'}) 
+                            html.Li(rec, style={'margin-bottom': '8px', 'color': '#f0f6fc'}) 
                             for rec in insights.get('recommendations', ['Select data to see recommendations'])
                         ], style={'padding-left': '20px'})
                     ], style={
-                        'background': 'linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%)',
+                        'background': 'linear-gradient(135deg, #21262d 0%, #161b22 100%)',
                         'padding': '25px', 'border-radius': '12px',
-                        'box-shadow': '0 4px 6px rgba(0, 0, 0, 0.1)', 'border': '1px solid #10b981'
+                        'box-shadow': '0 4px 6px rgba(0, 0, 0, 0.3)', 'border': '1px solid #3fb950'
                     })
                 ], className="chart-container")
             ], style={'margin-bottom': '40px'}),
@@ -2634,12 +2788,12 @@ class DashboardApp:
                 id="latency-analysis-loading",
                 type="default",
                 children=html.Div([
-                    html.H2("Latency Analysis", style={'color': '#1f2937', 'margin-bottom': '20px', 'font-size': '1.5rem'}),
+                    html.H2("Latency Analysis", style={'color': '#f0f6fc', 'margin-bottom': '20px', 'font-size': '1.5rem'}),
                 html.Div([
-                    dcc.Graph(id='avg-latency-chart', figure=avg_latency_fig)
+                    dcc.Graph(id='avg-latency-chart', figure=self.apply_dark_theme(avg_latency_fig))
             ], className="chart-container"),
                 html.Div([
-                    dcc.Graph(id='max-latency-chart', figure=max_latency_fig)
+                    dcc.Graph(id='max-latency-chart', figure=self.apply_dark_theme(max_latency_fig))
                 ], className="chart-container"),
                     latency_table_div if latency_data else html.Div()
                 ], style={'margin-bottom': '40px'}),
@@ -2651,12 +2805,12 @@ class DashboardApp:
                 id="throughput-analysis-loading",
                 type="default",
                 children=html.Div([
-                    html.H2("Throughput Analysis", style={'color': '#1f2937', 'margin-bottom': '20px', 'font-size': '1.5rem'}),
+                    html.H2("Throughput Analysis", style={'color': '#f0f6fc', 'margin-bottom': '20px', 'font-size': '1.5rem'}),
             html.Div([
-                dcc.Graph(id='throughput-msgs-chart', figure=msgs_fig)
+                dcc.Graph(id='throughput-msgs-chart', figure=self.apply_dark_theme(msgs_fig))
             ], className="chart-container"),
             html.Div([
-                dcc.Graph(id='throughput-bytes-chart', figure=bytes_fig)
+                dcc.Graph(id='throughput-bytes-chart', figure=self.apply_dark_theme(bytes_fig))
             ], className="chart-container"),
                     throughput_table_div if throughput_data else html.Div()
                 ], style={'margin-bottom': '40px'}),
@@ -2694,8 +2848,8 @@ class DashboardApp:
             logger.error(f"Error in {tab_name} rendering: {str(e)}")
             return html.Div([
                 html.Div([
-                    html.H3(f"⚠️ {tab_name} Analysis Error", style={'color': '#dc2626', 'margin-bottom': '15px'}),
-                    html.P(f"An error occurred during {tab_name.lower()} analysis:", style={'color': '#374151', 'margin-bottom': '10px'}),
+                    html.H3(f"{tab_name} Analysis Error", style={'color': '#f85149', 'margin-bottom': '15px'}),
+                    html.P(f"An error occurred during {tab_name.lower()} analysis:", style={'color': '#f0f6fc', 'margin-bottom': '10px'}),
                     html.Code(str(e), style={'background-color': '#fee2e2', 'padding': '8px', 'border-radius': '4px', 'color': '#991b1b'}),
                     html.P("Please check your data and filters, then try again.", style={'color': '#6b7280', 'margin-top': '15px', 'font-style': 'italic'})
                 ], style={
@@ -2742,11 +2896,12 @@ class DashboardApp:
     @safe_computation(default_return=go.Figure())
     def _create_error_chart(self, error_message):
         """Create an error chart for display when chart generation fails."""
-        return go.Figure().add_annotation(
-            text=f"⚠️ {error_message}",
+        fig = go.Figure().add_annotation(
+            text=f"Error: {error_message}",
             x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False,
-            font=dict(size=14, color="#dc2626")
+            font=dict(size=14, color="#f85149")
         )
+        return self.apply_dark_theme(fig)
     
     def render_timeseries_tab(self, mechanisms: List, message_sizes: List):
         """Render time series analysis tab."""
@@ -2780,15 +2935,15 @@ class DashboardApp:
                               className="preset-btn-secondary", style={'margin-bottom': '8px'},
                               title="Reset all controls to default settings (preserves statistics panel state)"),
                 ]),
-            ], style={'margin-bottom': '20px', 'padding': '15px', 'background': '#fef7cd', 'border-radius': '8px', 'border': '1px solid #f59e0b'}),
+            ], style={'margin-bottom': '20px', 'padding': '15px', 'background': 'linear-gradient(135deg, #21262d 0%, #161b22 100%)', 'border-radius': '8px', 'border': '1px solid #30363d'}),
             
             # Chart Layout & Statistical Controls
             html.Div([
-                html.Label("Chart Layout & Statistical Overlays:", style={'margin-bottom': '15px', 'display': 'block', 'font-weight': 'bold', 'font-size': '1.1em'}),
+                html.Label("Chart Layout & Statistical Overlays:", style={'margin-bottom': '15px', 'display': 'block', 'font-weight': 'bold', 'font-size': '1.1em', 'color': '#f0f6fc'}),
                 html.Div([
                     # Chart Layout
                     html.Div([
-                        html.Label("Chart Layout:", style={'margin-bottom': '10px', 'display': 'block', 'font-weight': 'bold'}),
+                        html.Label("Chart Layout:", style={'margin-bottom': '10px', 'display': 'block', 'font-weight': 'bold', 'color': '#f0f6fc'}),
                         html.Div([
                             dcc.RadioItems(
                                 id='ts-chart-layout',
@@ -2803,7 +2958,7 @@ class DashboardApp:
                         ], title="Choose how to organize charts: separate charts for each mechanism, or separate charts for each message size"),
                         
                         # Statistical Overlays in same column
-                        html.Label("Statistical Overlays:", style={'margin-bottom': '10px', 'display': 'block', 'font-weight': 'bold'}),
+                        html.Label("Statistical Overlays:", style={'margin-bottom': '10px', 'display': 'block', 'font-weight': 'bold', 'color': '#f0f6fc'}),
                         html.Div([
                             dcc.Checklist(
                                 id='ts-statistical-overlays',
@@ -2822,7 +2977,7 @@ class DashboardApp:
                     
                     # View Options and Latency Type
                     html.Div([
-                        html.Label("View Options:", style={'margin-bottom': '10px', 'display': 'block', 'font-weight': 'bold'}),
+                        html.Label("View Options:", style={'margin-bottom': '10px', 'display': 'block', 'font-weight': 'bold', 'color': '#f0f6fc'}),
                         html.Div([
                             dcc.Checklist(
                                 id='ts-view-options',
@@ -2838,7 +2993,7 @@ class DashboardApp:
                         ], title="View options: sync zoom/pan across charts, show detailed statistics, enable interactive filtering, highlight performance zones"),
                         
                         html.Br(),
-                        html.Label("Latency Type:", style={'margin-bottom': '10px', 'display': 'block', 'font-weight': 'bold'}),
+                        html.Label("Latency Type:", style={'margin-bottom': '10px', 'display': 'block', 'font-weight': 'bold', 'color': '#f0f6fc'}),
                         html.Div([
                             dcc.Checklist(
                                 id='ts-latency-types',
@@ -2852,7 +3007,7 @@ class DashboardApp:
                         ], title="Select which latency types to display in charts and statistics: one-way (send only) or round-trip (send + receive)"),
                     ], style={'width': '48%', 'display': 'inline-block', 'vertical-align': 'top', 'margin-left': '4%'}),
                 ])
-            ], style={'margin-bottom': '30px', 'padding': '15px', 'background': '#f8fafc', 'border-radius': '8px', 'border': '1px solid #e2e8f0'}),
+            ], style={'margin-bottom': '30px', 'padding': '15px', 'background': 'linear-gradient(135deg, #21262d 0%, #161b22 100%)', 'border-radius': '8px', 'border': '1px solid #30363d'}),
             
             html.Div([
                 html.Div([
@@ -2968,18 +3123,18 @@ class DashboardApp:
         if streaming_df.empty:
             no_data_message = html.Div([
                 html.Div([
-                    html.H3("📊 Time Series Analysis Ready", style={'color': '#1f2937', 'margin-bottom': '20px'}),
+                    html.H3("Time Series Analysis Ready", style={'color': '#f0f6fc', 'margin-bottom': '20px'}),
                     html.P("Configure your time series analysis settings above and click 'Run Analysis' to visualize latency patterns over time.", 
-                           style={'color': '#6b7280', 'font-size': '1.1rem', 'line-height': '1.6', 'margin-bottom': '20px'}),
+                           style={'color': '#8b949e', 'font-size': '1.1rem', 'line-height': '1.6', 'margin-bottom': '20px'}),
                     html.Div([
-                        html.H4("Available Analysis Features:", style={'color': '#374151', 'margin-bottom': '15px'}),
+                        html.H4("Available Analysis Features:", style={'color': '#f0f6fc', 'margin-bottom': '15px'}),
                         html.Ul([
-                            html.Li("📈 Interactive latency trends visualization"),
-                            html.Li("🔍 Statistical overlays and anomaly detection"),
-                            html.Li("📊 Performance zones and percentile bands"),
-                            html.Li("🎛️ Flexible chart layouts and sampling options"),
-                            html.Li("⚙️ Real-time statistics and distribution analysis")
-                        ], style={'color': '#374151', 'padding-left': '20px', 'line-height': '1.8'})
+                            html.Li("Interactive latency trends visualization"),
+                            html.Li("Statistical overlays and anomaly detection"),
+                            html.Li("Performance zones and percentile bands"),
+                            html.Li("Flexible chart layouts and sampling options"),
+                            html.Li("Real-time statistics and distribution analysis")
+                        ], style={'color': '#f0f6fc', 'padding-left': '20px', 'line-height': '1.8'})
                     ])
                 ], style={
                     'text-align': 'center', 
@@ -3133,13 +3288,13 @@ class DashboardApp:
                     current_strategy['definition']
                 ], style={'font-size': '0.85rem', 'margin-bottom': '5px'}),
                 html.P([
-                    html.Strong("Pros: ", style={'color': 'black'}), 
+                    html.Strong("Pros: ", style={'color': '#f0f6fc'}), 
                     current_strategy['pros']
-                ], style={'font-size': '0.85rem', 'margin-bottom': '3px'}),
+                ], style={'font-size': '0.85rem', 'margin-bottom': '3px', 'color': '#f0f6fc'}),
                 html.P([
-                    html.Strong("Cons: ", style={'color': 'black'}), 
+                    html.Strong("Cons: ", style={'color': '#f0f6fc'}), 
                     current_strategy['cons']
-                ], style={'font-size': '0.85rem', 'color': 'black'})
+                ], style={'font-size': '0.85rem', 'color': '#f0f6fc'})
             ], className="performance-note")
 
         # Advanced Chart Generation with Multiple Layout Options
@@ -3240,10 +3395,10 @@ class DashboardApp:
                                 mode='markers',
                                 name=f'Spikes ({mechanism} {type_label})',
                                 marker=dict(
-                                    color='#ec4899',  # Magenta - distinct from all mechanism colors
-                                    size=8,
+                                    color='#ff6b9d',  # Brighter pink/magenta - more visible
+                                    size=10,
                                     symbol='triangle-up',
-                                    line=dict(width=2, color='#be185d')  # Dark magenta border
+                                    line=dict(width=2, color='#ff1744')  # Bright red border for high contrast
                                 ),
                                 showlegend=True,
                                 hovertemplate=f'<b>Spike Detected</b><br>%{{x}}<br>%{{y:.2f}} μs<extra></extra>'
@@ -3540,7 +3695,7 @@ class DashboardApp:
                     )
             
                     charts.append(html.Div([
-                        dcc.Graph(figure=fig, id=f'faceted-chart-{msg_size}')
+                        dcc.Graph(figure=self.apply_dark_theme(fig), id=f'faceted-chart-{msg_size}')
                     ], className="chart-container", style={'width': '100%', 'margin-bottom': '20px'}))
         
         else:
@@ -3686,7 +3841,7 @@ class DashboardApp:
                 )
                 
                 charts.append(html.Div([
-                    dcc.Graph(figure=fig, id=f'separate-chart-{mechanism}')
+                    dcc.Graph(figure=self.apply_dark_theme(fig), id=f'separate-chart-{mechanism}')
                 ], className="chart-container"))
         
         # Combine all elements
@@ -3828,10 +3983,10 @@ class DashboardApp:
 
         return html.Div([
             html.Div([
-                dcc.Graph(figure=msgs_fig)
+                dcc.Graph(figure=self.apply_dark_theme(msgs_fig))
             ], className="chart-container"),
             html.Div([
-                dcc.Graph(figure=mbps_fig)
+                dcc.Graph(figure=self.apply_dark_theme(mbps_fig))
             ], className="chart-container"),
             agg_table_div
         ])
@@ -3874,210 +4029,239 @@ def main():
 
 # Modern CSS styling
 app_css = """
-/* Import modern fonts */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+/* Import modern fonts - Grafana uses Inter */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
 
-/* Global styles */
+/* Grafana-inspired Dark Theme */
 * {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
 }
 
 body {
     margin: 0;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background: #0d1117;
+    color: #f0f6fc;
     min-height: 100vh;
 }
 
 .header-title {
     text-align: center;
-    color: #ffffff;
+    color: #f0f6fc;
     margin: 0 0 30px 0;
     font-size: 2.5rem;
-    font-weight: 700;
-    text-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    font-weight: 800;
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+    background: linear-gradient(135deg, #21262d 0%, #161b22 100%);
     padding: 30px 0;
     margin: -20px -20px 30px -20px;
-    border-radius: 0 0 20px 20px;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+    border-radius: 0;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+    border-bottom: 1px solid #30363d;
 }
 
 .dashboard-container {
     display: flex;
     height: 100vh;
-    background: #f8fafc;
+    background: #0d1117;
 }
 
 .sidebar {
-    width: 240px;
-    padding: 16px;
-    background: rgba(255, 255, 255, 0.95);
-    backdrop-filter: blur(10px);
-    border-right: none;
-    box-shadow: 4px 0 20px rgba(0,0,0,0.08);
+    width: 260px;
+    padding: 20px;
+    background: linear-gradient(180deg, #21262d 0%, #161b22 100%);
+    border-right: 1px solid #30363d;
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.4);
     overflow-y: auto;
-    border-radius: 0 20px 20px 0;
-    margin: 20px 0 20px 20px;
+    border-radius: 0;
+    margin: 0;
 }
 
 .main-content {
     flex: 1;
     padding: 25px;
     overflow-y: auto;
-    background: #f8fafc;
+    background: #0d1117;
 }
 
-/* Filter sections */
+/* Grafana-style Filter Sections */
 .filter-section {
-    background: white;
-    border-radius: 16px;
+    background: linear-gradient(135deg, #21262d 0%, #161b22 100%);
+    border: 1px solid #30363d;
+    border-radius: 8px;
     padding: 20px;
     margin-bottom: 20px;
-    box-shadow: 0 4px 15px rgba(0,0,0,0.08);
-    border: 1px solid rgba(255,255,255,0.2);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    transition: all 0.2s ease;
+}
+
+.filter-section:hover {
+    border-color: #58a6ff;
+    box-shadow: 0 4px 20px rgba(88, 166, 255, 0.1);
 }
 
 .filter-checklist {
     margin-bottom: 15px;
+    background: transparent;
+    border: none;
+    padding: 0;
 }
 
 .filter-checklist label {
     font-weight: 500;
-    color: #374151;
+    color: #f0f6fc;
     margin-bottom: 12px;
     display: block;
     font-size: 0.9rem;
+    transition: color 0.2s ease;
 }
 
-/* Slider styling */
+.filter-checklist label:hover {
+    color: #58a6ff;
+}
+
+/* Grafana-style Slider */
 .slider {
     margin-bottom: 20px;
 }
 
 .slider .rc-slider {
-    border-radius: 8px;
+    border-radius: 6px;
+    background-color: #21262d;
 }
 
 .slider .rc-slider-track {
-    background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-    border-radius: 8px;
-    height: 6px;
+    background: linear-gradient(90deg, #1f6feb 0%, #0969da 100%);
+    border-radius: 6px;
+    height: 4px;
 }
 
 .slider .rc-slider-handle {
-    background: white;
-    border: 3px solid #667eea;
-    width: 20px;
-    height: 20px;
-    margin-top: -7px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    background: #f0f6fc;
+    border: 2px solid #1f6feb;
+    width: 16px;
+    height: 16px;
+    margin-top: -6px;
+    box-shadow: 0 2px 8px rgba(31, 111, 235, 0.3);
 }
 
-/* Tab styling */
+/* Grafana-style Tab Content */
 .tab-content {
-    background: white;
-    border-radius: 20px;
-    padding: 30px;
-    box-shadow: 0 8px 32px rgba(0,0,0,0.12);
+    background: linear-gradient(135deg, #21262d 0%, #161b22 100%);
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 25px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
     margin-bottom: 20px;
-    border: 1px solid rgba(255,255,255,0.2);
+    color: #f0f6fc;
 }
 
-/* Chart containers */
+/* Grafana-style Chart Containers */
 .chart-container {
-    background: white;
-    border-radius: 16px;
-    padding: 25px;
-    margin-bottom: 25px;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.08);
-    border: 1px solid rgba(255,255,255,0.2);
-    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    background: linear-gradient(135deg, #21262d 0%, #161b22 100%);
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 20px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    transition: all 0.2s ease;
 }
 
 .chart-container:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 8px 30px rgba(0,0,0,0.12);
+    border-color: #58a6ff;
+    box-shadow: 0 4px 20px rgba(88, 166, 255, 0.1);
+    transform: translateY(-1px);
 }
 
-/* Table styling */
+/* Grafana-style Table styling */
 .dash-table-container {
-    background: white;
-    border-radius: 16px;
+    background: linear-gradient(135deg, #21262d 0%, #161b22 100%);
+    border: 1px solid #30363d;
+    border-radius: 8px;
     padding: 20px;
-    margin: 25px 0;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.08);
-    border: 1px solid rgba(255,255,255,0.2);
+    margin: 20px 0;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    color: #f0f6fc;
 }
 
 .dash-table-container .dash-spreadsheet-container {
-    border-radius: 12px;
+    border-radius: 8px;
     overflow: hidden;
+    background: transparent;
 }
 
 .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner table {
-    border-radius: 12px;
+    border-radius: 8px;
+    background: transparent;
+    color: #f0f6fc;
 }
 
-/* Performance note styling */
+/* Grafana-style Performance Note */
 .performance-note {
-    background: linear-gradient(135deg, #fef7cd 0%, #fef3c7 100%);
-    border: 1px solid #f59e0b;
-    border-radius: 12px;
+    background: linear-gradient(135deg, #332701 0%, #1f1606 100%);
+    border: 1px solid #f78166;
+    border-radius: 8px;
     padding: 16px 20px;
-    margin-bottom: 25px;
-    box-shadow: 0 2px 8px rgba(245, 158, 11, 0.1);
+    margin-bottom: 20px;
+    box-shadow: 0 2px 8px rgba(247, 129, 102, 0.2);
+    color: #f0f6fc;
 }
 
 .performance-note p {
     margin: 0;
-    color: black;
+    color: #f0f6fc;
     font-weight: 500;
 }
 
-/* Section headers */
+/* Grafana-style Section Headers */
 h3 {
-    color: #1f2937;
+    color: #f0f6fc;
     font-weight: 600;
-    font-size: 1.5rem;
+    font-size: 1.4rem;
     margin-bottom: 16px;
     display: flex;
     align-items: center;
     gap: 8px;
 }
 
-/* Labels */
+h4, h5, h6 {
+    color: #f0f6fc;
+    font-weight: 600;
+}
+
+/* Grafana-style Labels */
 label {
-    color: #374151;
+    color: #f0f6fc;
     font-weight: 500;
     font-size: 0.9rem;
     margin-bottom: 8px;
     display: block;
 }
 
-/* Checkboxes and inputs */
+/* Grafana-style Checkboxes and Inputs */
 input[type="checkbox"] {
-    accent-color: #667eea;
+    accent-color: #1f6feb;
     transform: scale(1.1);
-    margin-right: 8px;
+    margin-right: 10px;
 }
 
-/* Scrollbar styling */
+/* Grafana-style Scrollbar */
 ::-webkit-scrollbar {
     width: 8px;
 }
 
 ::-webkit-scrollbar-track {
-    background: #f1f5f9;
+    background: #161b22;
     border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background: #30363d;
     border-radius: 4px;
+    transition: background 0.2s ease;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-    background: linear-gradient(135deg, #5a6fd8 0%, #6b4190 100%);
+    background: #484f58;
 }
 
 /* Modern card effect for graphs */
@@ -4144,44 +4328,45 @@ input[type="checkbox"] {
     }
 }
 
-/* New Time Series Tab Styles */
+/* Grafana-style Preset Buttons */
 .preset-btn {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background: linear-gradient(135deg, #f78166 0%, #fd7e14 100%);
     color: white;
     border: none;
-    padding: 8px 16px;
-    border-radius: 8px;
+    padding: 10px 18px;
+    border-radius: 6px;
     font-size: 0.9rem;
-    font-weight: 500;
+    font-weight: 600;
     cursor: pointer;
-    transition: all 0.3s ease;
+    transition: all 0.2s ease;
     min-width: 140px;
-    box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+    box-shadow: 0 2px 8px rgba(247, 129, 102, 0.3);
 }
 
 .preset-btn:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+    background: linear-gradient(135deg, #fd7e14 0%, #e8590c 100%);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(247, 129, 102, 0.4);
 }
 
 .preset-btn-secondary {
-    background: #6b7280;
+    background: linear-gradient(135deg, #6c7293 0%, #57606a 100%);
     color: white;
     border: none;
-    padding: 8px 16px;
-    border-radius: 8px;
+    padding: 10px 18px;
+    border-radius: 6px;
     font-size: 0.9rem;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.3s ease;
+    transition: all 0.2s ease;
     min-width: 140px;
-    box-shadow: 0 2px 8px rgba(107, 114, 128, 0.3);
+    box-shadow: 0 2px 8px rgba(108, 114, 147, 0.3);
 }
 
 .preset-btn-secondary:hover {
-    background: #4b5563;
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(107, 114, 128, 0.4);
+    background: linear-gradient(135deg, #8085a3 0%, #6c7584 100%);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(108, 114, 147, 0.4);
 }
 
 .chart-layout-radio .form-check-input {
@@ -4190,7 +4375,7 @@ input[type="checkbox"] {
 
 .chart-layout-radio .form-check-label {
     font-size: 0.9rem;
-    color: #374151;
+    color: #f0f6fc;
     font-weight: 500;
 }
 
@@ -4216,70 +4401,57 @@ input[type="checkbox"] {
     box-shadow: 0 4px 12px rgba(0,0,0,0.1);
 }
 
-/* Performance note styling */
-.performance-note {
-    background: #fef3c7;
-    border: 1px solid #f59e0b;
-    border-radius: 8px;
-    padding: 12px 16px;
-    margin-bottom: 20px;
-    font-size: 0.9rem;
-    color: black;
-}
+/* Performance note styling - removed duplicate light theme */
 
-/* Enhanced chart container */
-.chart-container {
-    background: white;
-    border-radius: 12px;
-    padding: 15px;
-    margin-bottom: 20px;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.05);
-    border: 1px solid #e5e7eb;
-}
+/* Enhanced chart container - removed duplicate light theme */
 
-/* Statistical overlays section styling */
+/* Statistical overlays section styling - Grafana dark theme */
 .statistical-controls {
-    background: #f1f5f9;
-    border: 1px solid #cbd5e1;
+    background: linear-gradient(135deg, #21262d 0%, #161b22 100%);
+    border: 1px solid #30363d;
     border-radius: 8px;
     padding: 15px;
     margin-bottom: 20px;
+    color: #f0f6fc;
 }
 
 .preset-controls {
-    background: #fef7cd;
-    border: 1px solid #f59e0b;
+    background: linear-gradient(135deg, #21262d 0%, #161b22 100%);
+    border: 1px solid #30363d;
     border-radius: 8px;
     padding: 15px;
     margin-bottom: 20px;
+    color: #f0f6fc;
 }
 
-/* Real-time stats table enhancements */
+/* Real-time stats table enhancements - Grafana dark theme */
 .stats-panel {
-    background: #f8fafc;
-    border: 1px solid #e2e8f0;
+    background: linear-gradient(135deg, #21262d 0%, #161b22 100%);
+    border: 1px solid #30363d;
     border-radius: 8px;
     padding: 20px;
     margin-bottom: 30px;
+    color: #f0f6fc;
 }
 
 .stats-panel h4 {
-    color: #1f2937;
+    color: #f0f6fc;
     margin-bottom: 15px;
     font-weight: 600;
 }
 
-/* Anomaly alert styling */
+/* Anomaly alert styling - Grafana dark theme */
 .anomaly-alert {
-    background: #fef2f2;
-    border: 1px solid #fecaca;
+    background: linear-gradient(135deg, #2d1b1b 0%, #1f1313 100%);
+    border: 1px solid #f85149;
     border-radius: 8px;
     padding: 15px;
     margin-bottom: 20px;
+    color: #f0f6fc;
 }
 
 .anomaly-alert h5 {
-    color: #dc2626;
+    color: #f85149;
     margin-bottom: 10px;
     font-weight: 600;
 }
@@ -4290,49 +4462,85 @@ input[type="checkbox"] {
 }
 
 .anomaly-alert li {
-    color: #374151;
+    color: #f0f6fc;
     margin-bottom: 5px;
 }
 
-/* File Browser Styles */
+/* Grafana-style File Browser */
 .directory-item:hover {
-    background-color: #f3f4f6 !important;
-    border: 1px solid #d1d5db !important;
+    background: linear-gradient(135deg, #30363d 0%, #21262d 100%) !important;
+    border: 1px solid #58a6ff !important;
+    color: #58a6ff !important;
     transform: translateX(2px);
     transition: all 0.2s ease;
 }
 
 .file-item {
     opacity: 0.7;
+    color: #8b949e !important;
 }
 
 .file-item:hover {
     opacity: 1 !important;
-    background-color: #f0f9ff !important;
-    border: 1px solid #bfdbfe !important;
+    background: linear-gradient(135deg, #0f3460 0%, #0c2d50 100%) !important;
+    border: 1px solid #58a6ff !important;
+    color: #58a6ff !important;
     transition: all 0.2s ease;
 }
 
 #directory-listing {
     scrollbar-width: thin;
-    scrollbar-color: #cbd5e0 transparent;
-}
-
-#directory-listing::-webkit-scrollbar {
-    width: 6px;
-}
-
-#directory-listing::-webkit-scrollbar-track {
+    scrollbar-color: #30363d #161b22;
     background: transparent;
 }
 
+#directory-listing::-webkit-scrollbar {
+    width: 8px;
+}
+
+#directory-listing::-webkit-scrollbar-track {
+    background: #161b22;
+    border-radius: 4px;
+}
+
 #directory-listing::-webkit-scrollbar-thumb {
-    background-color: #cbd5e0;
-    border-radius: 3px;
+    background-color: #30363d;
+    border-radius: 4px;
+    transition: background 0.2s ease;
 }
 
 #directory-listing::-webkit-scrollbar-thumb:hover {
-    background-color: #a0aec0;
+    background-color: #484f58;
+}
+
+/* Additional Grafana-style components */
+.js-plotly-plot, .plotly {
+    background-color: transparent !important;
+}
+
+.status-ready { color: #2da44e !important; }
+.status-processing { color: #f78166 !important; }
+.status-error { color: #f85149 !important; }
+.status-info { color: #58a6ff !important; }
+
+p, span, div {
+    color: #f0f6fc;
+}
+
+.performance-card {
+    background: linear-gradient(135deg, #21262d 0%, #161b22 100%);
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 20px;
+    margin: 10px;
+    transition: all 0.2s ease;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.performance-card:hover {
+    border-color: #58a6ff;
+    box-shadow: 0 4px 20px rgba(88, 166, 255, 0.1);
+    transform: translateY(-2px);
 }
 """
 
