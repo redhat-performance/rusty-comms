@@ -233,7 +233,10 @@ ipc-benchmark \
   --message-size 64 \
   --msg-count 100000 \
   --warmup-iterations 10000 \
-  --percentiles 50 95 99 99.9 99.99
+  --percentiles 50 95 99 99.9 99.99 \
+  --send-delay 10ms \
+  --server-affinity 2 \
+  --client-affinity 3
 ```
 
 #### Comparative Analysis
@@ -606,22 +609,6 @@ ipc-benchmark -m shm -i 10000 -s 1024 --buffer-size 8192
 # The tool will issue a warning to confirm this is the intended scenario:
 # Warning: Buffer size (8192 bytes) is smaller than the total data size (10560000 bytes). 
 # This may cause backpressure, which is a valid test scenario.
-```
-
-### Recommended Usage
-
-```bash
-# ✅ Optimal for latency measurement
-ipc-benchmark -m all -c 1 -i 10000 -s 1024
-
-# ✅ Good for throughput analysis (TCP/UDS only)
-ipc-benchmark -m tcp,uds -c 4 -i 10000 -s 1024
-
-# ✅ Shared memory test
-ipc-benchmark -m shm -i 10000 -s 1024
-
-# ⚠️ Will automatically use c=1 for shared memory
-ipc-benchmark -m shm -c 4 -i 10000 -s 1024
 ```
 
 ### Error Prevention
