@@ -371,10 +371,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_COVERAGE_REPORT: ${{ steps.pr_coverage_check.outputs.PR_COVERAGE_REPORT }}
         run: |
           MARKER="<!-- gemini-coverage-comment -->"
           BODY=$(cat ./coverage-reports/coverage-summary.md)
-          PR_COVERAGE_REPORT="${{ steps.pr_coverage_check.outputs.PR_COVERAGE_REPORT }}"
           
           COMMENT_BODY="$MARKER
           $PR_COVERAGE_REPORT
