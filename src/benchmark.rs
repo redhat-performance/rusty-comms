@@ -42,9 +42,7 @@ use crate::{
     results::BenchmarkResults,
 };
 use anyhow::Result;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::Barrier;
 use tokio::time::{sleep, timeout};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -122,7 +120,7 @@ pub struct BenchmarkConfig {
     ///
     /// Controls internal buffer sizes for shared memory ring buffers,
     /// socket buffers, and message queue depths. Affects memory usage and throughput.
-    pub buffer_size: usize,
+    pub buffer_size: Option<usize>,
 
     /// Host address for network-based transports (TCP sockets)
     ///
@@ -229,7 +227,7 @@ impl BenchmarkConfig {
 /// #     round_trip: true,
 /// #     warmup_iterations: 100,
 /// #     percentiles: vec![50.0, 95.0, 99.0],
-/// #     buffer_size: 8192,
+/// #     buffer_size: Some(8192),
 /// #     host: "127.0.0.1".to_string(),
 /// #     port: 8080,
 /// #     output_file: None,
@@ -297,29 +295,42 @@ impl BenchmarkRunner {
         &self,
         mut results_manager: Option<&mut crate::results::ResultsManager>,
     ) -> Result<BenchmarkResults> {
-        info!("Starting benchmark for {} mechanism", self.mechanism);
+        let transport_config = self.create_transport_config()?;
+
+        let buffer_size_str = if self.config.buffer_size.is_some() {
+            format!("{} bytes (User-provided)", transport_config.buffer_size)
+        } else {
+            format!("{} bytes (Automatic)", transport_config.buffer_size)
+        };
+
+        info!("-----------------------------------------------------------------");
+        info!("Starting Benchmark for: {}", self.mechanism);
+        info!("  Message Size:       {} bytes", self.config.message_size);
+        info!("  Buffer Size:        {}", buffer_size_str);
+        if let Some(duration) = self.config.duration {
+            info!("  Test Duration:      {:?}", duration);
+        } else {
+            info!("  Message Count:      {}", self.get_msg_count());
+        }
+        info!("-----------------------------------------------------------------");
 
         // Initialize results structure with test configuration
         let mut results = BenchmarkResults::new(
             self.mechanism,
             self.config.message_size,
+            transport_config.buffer_size,
             self.config.concurrency,
             self.config.msg_count,
             self.config.duration,
         );
 
         // Run warmup if configured
-        // Warmup helps stabilize performance by allowing:
-        // - CPU caches to fill with relevant data
-        // - Network connections to establish properly
-        // - JIT compilation to optimize hot code paths
-        // - OS buffers and scheduling to reach steady state
         if self.config.warmup_iterations > 0 {
             info!(
                 "Running warmup with {} iterations",
                 self.config.warmup_iterations
             );
-            self.run_warmup().await?;
+            self.run_warmup(&transport_config).await?;
         }
 
         // Check if we need to run in combined mode for streaming
@@ -331,28 +342,26 @@ impl BenchmarkRunner {
         if combined_streaming && self.config.one_way && self.config.round_trip {
             info!("Running combined one-way and round-trip test for streaming");
             let combined_results = self
-                .run_combined_test(results_manager.as_deref_mut())
+                .run_combined_test(&transport_config, results_manager.as_deref_mut())
                 .await?;
             results.add_one_way_results(combined_results.0);
             results.add_round_trip_results(combined_results.1);
         } else {
             // Run one-way latency test if enabled
-            // One-way tests measure pure transmission latency without
-            // waiting for responses, providing baseline performance metrics
             if self.config.one_way {
                 info!("Running one-way latency test");
                 let one_way_results = self
-                    .run_one_way_test(results_manager.as_deref_mut())
+                    .run_one_way_test(&transport_config, results_manager.as_deref_mut())
                     .await?;
                 results.add_one_way_results(one_way_results);
             }
 
             // Run round-trip latency test if enabled
-            // Round-trip tests measure request-response cycles,
-            // providing insights into interactive communication patterns
             if self.config.round_trip {
                 info!("Running round-trip latency test");
-                let round_trip_results = self.run_round_trip_test(results_manager).await?;
+                let round_trip_results = self
+                    .run_round_trip_test(&transport_config, results_manager)
+                    .await?;
                 results.add_round_trip_results(round_trip_results);
             }
         }
@@ -370,23 +379,21 @@ impl BenchmarkRunner {
     /// ## Warmup Process
     ///
     /// 1. **Transport Setup**: Create and configure client/server transports
-    /// 2. **Connection Establishment**: Use barriers to synchronize startup
+    /// 2. **Connection Establishment**: Use a `oneshot` channel to ensure the server is fully started before the client connects.
     /// 3. **Message Exchange**: Send warmup messages without measurement
     /// 4. **Resource Cleanup**: Properly close connections after warmup
     ///
     /// ## Synchronization
     ///
-    /// The function uses Tokio barriers to ensure proper synchronization
-    /// between client and server tasks, preventing race conditions during startup.
-    async fn run_warmup(&self) -> Result<()> {
-        let transport_config = self.create_transport_config()?;
+    /// The function uses a Tokio `oneshot` channel to ensure the server task has successfully
+    /// initialized the transport and is ready to accept connections before the client
+    /// proceeds. This prevents race conditions and ensures startup errors are propagated immediately.
+    async fn run_warmup(&self, transport_config: &TransportConfig) -> Result<()> {
         let _server_transport = TransportFactory::create(&self.mechanism)?;
         let mut client_transport = TransportFactory::create(&self.mechanism)?;
 
-        // Use a barrier to synchronize server startup
-        // This ensures the server is ready before the client attempts to connect
-        let server_ready = Arc::new(Barrier::new(2));
-        let server_ready_clone = Arc::clone(&server_ready);
+        // Use a oneshot channel to signal server readiness and propagate startup errors.
+        let (tx, rx) = tokio::sync::oneshot::channel();
 
         // Start server in background task
         let server_handle = {
@@ -395,10 +402,13 @@ impl BenchmarkRunner {
             let warmup_iterations = self.config.warmup_iterations;
             tokio::spawn(async move {
                 let mut transport = TransportFactory::create(&mechanism)?;
-                transport.start_server(&config).await?;
+                if let Err(e) = transport.start_server(&config).await {
+                    let _ = tx.send(Err(e));
+                    return Err(anyhow::anyhow!("Server failed to start"));
+                }
 
                 // Signal that server is ready to accept connections
-                server_ready_clone.wait().await;
+                let _ = tx.send(Ok(()));
                 debug!("Server signaled ready for warmup");
 
                 // Receive warmup messages without measuring performance
@@ -412,11 +422,11 @@ impl BenchmarkRunner {
         };
 
         // Wait for server to be ready before starting client
-        server_ready.wait().await;
+        rx.await??;
         debug!("Client received server ready signal for warmup");
 
         // Connect client and send warmup messages
-        client_transport.start_client(&transport_config).await?;
+        client_transport.start_client(transport_config).await?;
 
         let payload = vec![0u8; self.config.message_size];
         for i in 0..self.config.warmup_iterations {
@@ -456,9 +466,9 @@ impl BenchmarkRunner {
     /// - `Err(anyhow::Error)`: Test execution failure
     async fn run_one_way_test(
         &self,
+        transport_config: &TransportConfig,
         results_manager: Option<&mut crate::results::ResultsManager>,
     ) -> Result<PerformanceMetrics> {
-        let transport_config = self.create_transport_config()?;
         let mut metrics_collector =
             MetricsCollector::new(Some(LatencyType::OneWay), self.config.percentiles.clone())?;
 
@@ -471,21 +481,21 @@ impl BenchmarkRunner {
             );
             // Run single-threaded instead
             self.run_single_threaded_one_way(
-                &transport_config,
+                transport_config,
                 &mut metrics_collector,
                 results_manager,
             )
             .await?;
         } else if self.config.concurrency == 1 {
             self.run_single_threaded_one_way(
-                &transport_config,
+                transport_config,
                 &mut metrics_collector,
                 results_manager,
             )
             .await?;
         } else {
             self.run_multi_threaded_one_way(
-                &transport_config,
+                transport_config,
                 &mut metrics_collector,
                 results_manager,
             )
@@ -518,9 +528,9 @@ impl BenchmarkRunner {
     /// - `Err(anyhow::Error)`: Test execution failure
     async fn run_round_trip_test(
         &self,
+        transport_config: &TransportConfig,
         results_manager: Option<&mut crate::results::ResultsManager>,
     ) -> Result<PerformanceMetrics> {
-        let transport_config = self.create_transport_config()?;
         let mut metrics_collector = MetricsCollector::new(
             Some(LatencyType::RoundTrip),
             self.config.percentiles.clone(),
@@ -533,21 +543,21 @@ impl BenchmarkRunner {
             );
             // Run single-threaded instead
             self.run_single_threaded_round_trip(
-                &transport_config,
+                transport_config,
                 &mut metrics_collector,
                 results_manager,
             )
             .await?;
         } else if self.config.concurrency == 1 {
             self.run_single_threaded_round_trip(
-                &transport_config,
+                transport_config,
                 &mut metrics_collector,
                 results_manager,
             )
             .await?;
         } else {
             self.run_multi_threaded_round_trip(
-                &transport_config,
+                transport_config,
                 &mut metrics_collector,
                 results_manager,
             )
@@ -590,9 +600,8 @@ impl BenchmarkRunner {
         let _server_transport = TransportFactory::create(&self.mechanism)?;
         let mut client_transport = TransportFactory::create(&self.mechanism)?;
 
-        // Use a barrier to synchronize server startup
-        let server_ready = Arc::new(Barrier::new(2));
-        let server_ready_clone = Arc::clone(&server_ready);
+        // Use a oneshot channel to signal server readiness and propagate startup errors.
+        let (tx, rx) = tokio::sync::oneshot::channel();
 
         // Start server in background task
         let server_handle = {
@@ -603,10 +612,13 @@ impl BenchmarkRunner {
 
             tokio::spawn(async move {
                 let mut transport = TransportFactory::create(&mechanism)?;
-                transport.start_server(&config).await?;
+                if let Err(e) = transport.start_server(&config).await {
+                    let _ = tx.send(Err(e));
+                    return Err(anyhow::anyhow!("Server failed to start"));
+                }
 
                 // Signal that server is ready
-                server_ready_clone.wait().await;
+                let _ = tx.send(Ok(()));
                 debug!("Server signaled ready for one-way test");
 
                 let start_time = Instant::now();
@@ -646,7 +658,7 @@ impl BenchmarkRunner {
         };
 
         // Wait for server to be ready
-        server_ready.wait().await;
+        rx.await??;
         debug!("Client received server ready signal for one-way test");
 
         // Connect client
@@ -756,9 +768,8 @@ impl BenchmarkRunner {
         let _server_transport = TransportFactory::create(&self.mechanism)?;
         let mut client_transport = TransportFactory::create(&self.mechanism)?;
 
-        // Use a barrier to synchronize server startup
-        let server_ready = Arc::new(Barrier::new(2));
-        let server_ready_clone = Arc::clone(&server_ready);
+        // Use a oneshot channel to signal server readiness and propagate startup errors.
+        let (tx, rx) = tokio::sync::oneshot::channel();
 
         // Start server in background task
         let server_handle = {
@@ -769,10 +780,13 @@ impl BenchmarkRunner {
 
             tokio::spawn(async move {
                 let mut transport = TransportFactory::create(&mechanism)?;
-                transport.start_server(&config).await?;
+                if let Err(e) = transport.start_server(&config).await {
+                    let _ = tx.send(Err(e));
+                    return Err(anyhow::anyhow!("Server failed to start"));
+                }
 
                 // Signal that server is ready
-                server_ready_clone.wait().await;
+                let _ = tx.send(Ok(()));
                 debug!("Server signaled ready for round-trip test");
 
                 let start_time = Instant::now();
@@ -821,7 +835,7 @@ impl BenchmarkRunner {
         };
 
         // Wait for server to be ready
-        server_ready.wait().await;
+        rx.await??;
         debug!("Client received server ready signal for round-trip test");
 
         // Connect client
@@ -1082,9 +1096,9 @@ impl BenchmarkRunner {
     /// - `Err(anyhow::Error)`: Test execution failure
     async fn run_combined_test(
         &self,
+        transport_config: &TransportConfig,
         results_manager: Option<&mut crate::results::ResultsManager>,
     ) -> Result<(PerformanceMetrics, PerformanceMetrics)> {
-        let transport_config = self.create_transport_config()?;
         let mut one_way_metrics =
             MetricsCollector::new(Some(LatencyType::OneWay), self.config.percentiles.clone())?;
         let mut round_trip_metrics = MetricsCollector::new(
@@ -1101,7 +1115,7 @@ impl BenchmarkRunner {
 
         // For combined testing, we always use single-threaded to ensure synchronized message IDs
         self.run_single_threaded_combined(
-            &transport_config,
+            transport_config,
             &mut one_way_metrics,
             &mut round_trip_metrics,
             results_manager,
@@ -1128,9 +1142,8 @@ impl BenchmarkRunner {
         let _server_transport = TransportFactory::create(&self.mechanism)?;
         let mut client_transport = TransportFactory::create(&self.mechanism)?;
 
-        // Use a barrier to synchronize server startup
-        let server_ready = Arc::new(Barrier::new(2));
-        let server_ready_clone = Arc::clone(&server_ready);
+        // Use a oneshot channel to signal server readiness and propagate startup errors.
+        let (tx, rx) = tokio::sync::oneshot::channel();
 
         // Start server in background task
         let server_handle = {
@@ -1141,10 +1154,13 @@ impl BenchmarkRunner {
 
             tokio::spawn(async move {
                 let mut transport = TransportFactory::create(&mechanism)?;
-                transport.start_server(&config).await?;
+                if let Err(e) = transport.start_server(&config).await {
+                    let _ = tx.send(Err(e));
+                    return Err(anyhow::anyhow!("Server failed to start"));
+                }
 
                 // Signal that server is ready
-                server_ready_clone.wait().await;
+                let _ = tx.send(Ok(()));
                 debug!("Server signaled ready for combined test");
 
                 let start_time = Instant::now();
@@ -1191,7 +1207,7 @@ impl BenchmarkRunner {
         };
 
         // Wait for server to be ready
-        server_ready.wait().await;
+        rx.await??;
         debug!("Client received server ready signal for combined test");
 
         // Connect client
@@ -1323,63 +1339,110 @@ impl BenchmarkRunner {
     ///
     /// ## Buffer Size Calculation
     ///
-    /// Buffer sizes are calculated based on message size, iteration count,
-    /// and concurrency level to optimize for the specific workload being tested.
+    /// - If a buffer size is provided by the user, it is always used.
+    /// - If a duration is specified, a large default buffer (1 GB) is used to
+    ///   prevent backpressure from becoming a bottleneck.
+    /// - Otherwise, the buffer size is calculated based on message size and count
+    ///   to fit the expected data volume.
     fn create_transport_config(&self) -> Result<TransportConfig> {
-        let unique_id = Uuid::new_v4();
+        const DURATION_MODE_BUFFER_SIZE: usize = 1_073_741_824; // 1 GB
+        const PMQ_SAFE_DEFAULT_BUFFER_SIZE: usize = 8192;
 
-        // Use a unique port for TCP to avoid conflicts when running multiple mechanisms
+        let unique_id = Uuid::new_v4();
         let unique_port = self.config.port + (unique_id.as_u128() as u16 % 1000);
 
-        // Adaptive buffer sizing for high-throughput scenarios
-        let adaptive_buffer_size = self.calculate_adaptive_buffer_size();
+        // Determine if the current mechanism is PMQ
+        let is_pmq = {
+            #[cfg(target_os = "linux")]
+            {
+                self.mechanism == IpcMechanism::PosixMessageQueue
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                false
+            }
+        };
+
+        // New buffer size logic:
+        // 1. If user provides --buffer-size, use it directly.
+        // 2. If the mechanism is PMQ, always use a safe, small default.
+        // 3. If in duration mode, use a large fixed size to avoid backpressure.
+        // 4. Otherwise, calculate based on message count.
+        let buffer_size = self.config.buffer_size.unwrap_or_else(|| {
+            if is_pmq {
+                PMQ_SAFE_DEFAULT_BUFFER_SIZE
+            } else if self.config.duration.is_some() {
+                DURATION_MODE_BUFFER_SIZE
+            } else {
+                // For message-count mode, size the buffer to fit all messages.
+                self.get_msg_count() * (self.config.message_size + 64)
+            }
+        });
+
+        // Add a specific validation for PMQ, as it's often limited by the OS.
+        // This check is important regardless of how the buffer size was determined.
+        #[cfg(target_os = "linux")]
+        if self.mechanism == IpcMechanism::PosixMessageQueue {
+            // PMQ has small system limits, so warn if the buffer is large.
+            if buffer_size > PMQ_SAFE_DEFAULT_BUFFER_SIZE {
+                warn!(
+                "The specified buffer size ({} bytes) exceeds the typical system limit of 8192 bytes for POSIX Message Queues. The benchmark may fail if the system is not configured for larger message sizes.",
+                buffer_size
+            );
+            }
+        }
 
         // Validate buffer size for shared memory to prevent EOF errors
-        if self.mechanism == IpcMechanism::SharedMemory {
-            let total_message_data = self.get_msg_count() * (self.config.message_size + 32); // 32 bytes overhead per message
-            if adaptive_buffer_size < total_message_data {
+        if self.mechanism == IpcMechanism::SharedMemory && self.config.duration.is_none() {
+            // Overhead includes Message struct metadata and ring buffer length prefix.
+            const SHARED_MEMORY_MESSAGE_OVERHEAD: usize = 32;
+            let total_message_data =
+                self.get_msg_count() * (self.config.message_size + SHARED_MEMORY_MESSAGE_OVERHEAD);
+            if buffer_size < total_message_data {
                 warn!(
-                    "Buffer size ({} bytes) may be too small for {} messages of {} byte messages. \
-                     Consider using --buffer-size {} or reducing message count/message size.",
-                    adaptive_buffer_size,
-                    self.get_msg_count(),
-                    self.config.message_size,
-                    total_message_data * 2 // Suggest 2x the calculated size
+                    "Buffer size ({} bytes) is smaller than the total data size ({} bytes). This may cause backpressure, which is a valid test scenario.",
+                    buffer_size,
+                    total_message_data
                 );
             }
         }
 
         // Conservative queue depth for PMQ - most systems have very low limits (often just 10)
-        #[cfg(target_os = "linux")]
-        let adaptive_queue_depth = if self.mechanism == IpcMechanism::PosixMessageQueue {
-            let msg_count = self.get_msg_count();
+        let adaptive_queue_depth = {
+            #[cfg(target_os = "linux")]
+            {
+                if self.mechanism == IpcMechanism::PosixMessageQueue {
+                    let msg_count = self.get_msg_count();
 
-            // Warn about PMQ limitations for high-throughput tests
-            if msg_count > 10000 {
-                warn!(
-                    "PMQ with {} messages may be very slow due to system queue depth limits (typically 10). \
-                     Consider using fewer messages or a different mechanism for high-throughput testing.",
-                    msg_count
-                );
+                    // Warn about PMQ limitations for high-throughput tests
+                    if msg_count > 10000 {
+                        warn!(
+                            "PMQ with {} messages may be very slow due to system queue depth limits (typically 10). Consider using fewer messages or a different mechanism for high-throughput testing.",
+                            msg_count
+                        );
+                    }
+
+                    // Use conservative values that work within typical system limits
+                    // Most systems default to msg_max=10, so we'll stay at that limit
+                    let queue_depth = 10; // Always use system default
+
+                    debug!(
+                        "PMQ using conservative queue depth: {} messages -> depth {}",
+                        msg_count, queue_depth
+                    );
+                    queue_depth
+                } else {
+                    10 // Default for other mechanisms
+                }
             }
-
-            // Use conservative values that work within typical system limits
-            // Most systems default to msg_max=10, so we'll stay at that limit
-            let queue_depth = 10; // Always use system default
-
-            debug!(
-                "PMQ using conservative queue depth: {} messages -> depth {}",
-                msg_count, queue_depth
-            );
-            queue_depth
-        } else {
-            10 // Default for other mechanisms
+            #[cfg(not(target_os = "linux"))]
+            {
+                10
+            }
         };
-        #[cfg(not(target_os = "linux"))]
-        let adaptive_queue_depth = 10;
 
         Ok(TransportConfig {
-            buffer_size: adaptive_buffer_size,
+            buffer_size,
             host: self.config.host.clone(),
             port: unique_port,
             socket_path: format!("/tmp/ipc_benchmark_{}.sock", unique_id),
@@ -1388,57 +1451,6 @@ impl BenchmarkRunner {
             message_queue_depth: adaptive_queue_depth,
             message_queue_name: format!("ipc_benchmark_pmq_{}", unique_id),
         })
-    }
-
-    /// Calculate adaptive buffer size based on test parameters
-    ///
-    /// This function intelligently calculates buffer sizes based on the specific
-    /// test parameters to optimize performance. Different mechanisms have different
-    /// optimal buffer sizing strategies.
-    ///
-    /// ## Sizing Strategy
-    ///
-    /// - **Base Size**: User-specified buffer size as minimum
-    /// - **Message-Based Scaling**: Account for message size and count
-    /// - **Mechanism-Specific**: Apply transport-specific optimizations
-    /// - **Memory Limits**: Cap at reasonable maximum to prevent excessive usage
-    ///
-    /// ## Shared Memory Optimization
-    ///
-    /// For shared memory with high iteration counts, buffer size is increased
-    /// more aggressively to accommodate the ring buffer requirements and
-    /// reduce the likelihood of buffer overflow conditions.
-    fn calculate_adaptive_buffer_size(&self) -> usize {
-        let base_buffer_size = self.config.buffer_size;
-        let msg_count = self.get_msg_count();
-        let message_size = self.config.message_size;
-
-        // For shared memory with high message counts, increase buffer size more aggressively
-        if self.mechanism == IpcMechanism::SharedMemory && msg_count > 8000 {
-            // Calculate buffer size to hold more messages for high throughput
-            let messages_to_buffer = if msg_count >= 50_000 {
-                300 // Buffer for 300 messages for very high counts
-            } else if msg_count >= 20_000 {
-                200 // Buffer for 200 messages for high counts
-            } else {
-                150 // Buffer for 150 messages for moderate-high counts
-            };
-
-            let calculated_size = message_size * messages_to_buffer + 2048; // Extra for metadata
-
-            // Use the larger of: user-specified size or calculated size
-            // But cap at 2MB to avoid excessive memory usage
-            let adaptive_size = calculated_size.max(base_buffer_size).min(2 * 1024 * 1024);
-
-            debug!(
-                "Adaptive buffer sizing for {} messages: {} bytes (was {} bytes)",
-                msg_count, adaptive_size, base_buffer_size
-            );
-
-            adaptive_size
-        } else {
-            base_buffer_size
-        }
     }
 
     /// Get the number of messages to run
@@ -1472,7 +1484,7 @@ mod tests {
             round_trip: false,
             warmup_iterations: 100,
             percentiles: vec![50.0, 95.0, 99.0],
-            buffer_size: 8192,
+            buffer_size: Some(8192),
             host: "127.0.0.1".to_string(),
             port: 8080,
         };
@@ -1498,12 +1510,113 @@ mod tests {
             round_trip: false,
             warmup_iterations: 10,
             percentiles: vec![50.0, 95.0, 99.0],
-            buffer_size: 8192,
+            buffer_size: Some(8192),
             host: "127.0.0.1".to_string(),
             port: 8080,
         };
 
         let runner = BenchmarkRunner::new(config, IpcMechanism::UnixDomainSocket);
         assert_eq!(runner.mechanism, IpcMechanism::UnixDomainSocket);
+    }
+
+    /// Test the buffer size logic in `create_transport_config` is platform-aware.
+    #[test]
+    fn test_transport_config_buffer_size_logic() {
+        const DURATION_MODE_BUFFER_SIZE: usize = 1_073_741_824; // 1 GB
+        const PMQ_SAFE_DEFAULT_BUFFER_SIZE: usize = 8192;
+
+        // Helper to get only the mechanisms available on the current platform.
+        fn get_platform_mechanisms() -> Vec<IpcMechanism> {
+            let mut mechanisms = vec![IpcMechanism::SharedMemory, IpcMechanism::TcpSocket];
+            #[cfg(unix)]
+            mechanisms.push(IpcMechanism::UnixDomainSocket);
+            #[cfg(target_os = "linux")]
+            mechanisms.push(IpcMechanism::PosixMessageQueue);
+            mechanisms
+        }
+
+        let mut base_config = BenchmarkConfig {
+            mechanism: IpcMechanism::SharedMemory, // Placeholder, will be overridden
+            message_size: 1024,
+            msg_count: Some(10000),
+            duration: None,
+            concurrency: 1,
+            one_way: true,
+            round_trip: false,
+            warmup_iterations: 100,
+            percentiles: vec![],
+            buffer_size: None,
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+        };
+
+        // Scenario 1: User-provided buffer size is always respected.
+        let user_size = 9999;
+        base_config.buffer_size = Some(user_size);
+        for mechanism in get_platform_mechanisms() {
+            let runner = BenchmarkRunner::new(base_config.clone(), mechanism);
+            let transport_config = runner.create_transport_config().unwrap();
+            assert_eq!(
+                transport_config.buffer_size, user_size,
+                "User-provided buffer size should be respected for {:?}",
+                mechanism
+            );
+        }
+        base_config.buffer_size = None; // Reset for next tests
+
+        // Scenario 2: Automatic buffer size for message-count mode (non-PMQ).
+        let expected_msg_count_auto_size = 10000 * (1024 + 64);
+        let mut auto_sized_mechanisms = vec![IpcMechanism::SharedMemory, IpcMechanism::TcpSocket];
+        #[cfg(unix)]
+        auto_sized_mechanisms.push(IpcMechanism::UnixDomainSocket);
+
+        for mechanism in &auto_sized_mechanisms {
+            let runner = BenchmarkRunner::new(base_config.clone(), *mechanism);
+            let transport_config = runner.create_transport_config().unwrap();
+            assert_eq!(
+                transport_config.buffer_size, expected_msg_count_auto_size,
+                "Automatic buffer size should be large for message-count mode on {:?}",
+                mechanism
+            );
+        }
+
+        // Scenario 3: Automatic buffer size for duration mode (non-PMQ).
+        base_config.duration = Some(Duration::from_secs(1));
+        base_config.msg_count = None;
+        for mechanism in &auto_sized_mechanisms {
+            let runner = BenchmarkRunner::new(base_config.clone(), *mechanism);
+            let transport_config = runner.create_transport_config().unwrap();
+            assert_eq!(
+                transport_config.buffer_size, DURATION_MODE_BUFFER_SIZE,
+                "Automatic buffer size should be the large default for duration mode on {:?}",
+                mechanism
+            );
+        }
+
+        // Scenario 4: Automatic buffer size for PMQ always falls back to the safe default.
+        #[cfg(target_os = "linux")]
+        {
+            // Test PMQ in message-count mode
+            base_config.duration = None;
+            base_config.msg_count = Some(10000);
+            let runner_pmq_msg =
+                BenchmarkRunner::new(base_config.clone(), IpcMechanism::PosixMessageQueue);
+            let transport_config_pmq_msg = runner_pmq_msg.create_transport_config().unwrap();
+            assert_eq!(
+                transport_config_pmq_msg.buffer_size, PMQ_SAFE_DEFAULT_BUFFER_SIZE,
+                "Automatic buffer size for PMQ in message-count mode should be the safe default"
+            );
+
+            // Test PMQ in duration mode
+            base_config.duration = Some(Duration::from_secs(1));
+            base_config.msg_count = None;
+            let runner_pmq_dur =
+                BenchmarkRunner::new(base_config.clone(), IpcMechanism::PosixMessageQueue);
+            let transport_config_pmq_dur = runner_pmq_dur.create_transport_config().unwrap();
+            assert_eq!(
+                transport_config_pmq_dur.buffer_size, PMQ_SAFE_DEFAULT_BUFFER_SIZE,
+                "Automatic buffer size for PMQ in duration mode should be the safe default"
+            );
+        }
     }
 }

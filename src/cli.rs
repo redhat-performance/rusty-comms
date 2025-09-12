@@ -235,10 +235,13 @@ pub struct Args {
     /// Buffer size for message queues and shared memory
     ///
     /// Controls the size of internal buffers used by IPC mechanisms.
+    ///
     /// Larger buffers can improve throughput but increase memory usage.
-    /// The optimal size depends on message size and concurrency level.
-    #[arg(long, default_value_t = 8192, help_heading = ADVANCED)]
-    pub buffer_size: usize,
+    /// If not specified, a smart default is calculated based on message count and size
+    /// to avoid backpressure, except for PMQ which uses a safe 8192-byte default
+    /// to stay within typical OS limits.
+    #[arg(long, help_heading = ADVANCED)]
+    pub buffer_size: Option<usize>,
 
     /// Host address for TCP sockets
     ///
@@ -452,7 +455,7 @@ pub struct BenchmarkConfiguration {
     pub percentiles: Vec<f64>,
 
     /// Buffer size for internal data structures
-    pub buffer_size: usize,
+    pub buffer_size: Option<usize>,
 
     /// Host address for network-based mechanisms
     pub host: String,
@@ -623,6 +626,14 @@ impl fmt::Display for Args {
             .join(", ");
         writeln!(f, "  Mechanisms:         {}", mechanisms_str)?;
         writeln!(f, "  Message Size:       {} bytes", self.message_size)?;
+
+        // Display buffer size information
+        let buffer_size_str = if let Some(size) = self.buffer_size {
+            format!("{} bytes (User-provided)", size)
+        } else {
+            "Automatic (mechanism-specific)".to_string()
+        };
+        writeln!(f, "  Buffer Size:        {}", buffer_size_str)?;
 
         // Display duration if specified, as it takes precedence over message count.
         if let Some(duration) = self.duration {
