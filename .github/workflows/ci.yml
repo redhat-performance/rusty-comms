@@ -361,7 +361,11 @@ jobs:
         id: pr_coverage_check
         run: |
           set -e
-          echo "PR_COVERAGE_REPORT=$(./.github/scripts/check_pr_coverage.py ${{ github.base_ref }})" >> $GITHUB_OUTPUT
+          {
+            echo 'PR_COVERAGE_REPORT<<EOF'
+            ./.github/scripts/check_pr_coverage.py ${{ github.base_ref }}
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
 
       - name: Post Coverage Comment
         env:
