@@ -243,7 +243,6 @@ jobs:
           --verbose \
           --all-features \
           --workspace \
-          --branch \
           --engine llvm \
           --timeout 120 \
           --out Xml \
@@ -269,15 +268,35 @@ jobs:
         import xml.etree.ElementTree as ET
         import os
 
+        def to_ranges(numbers):
+            if not numbers:
+                return ""
+            numbers = sorted([int(n) for n in numbers])
+            ranges = []
+            start = end = numbers[0]
+            for n in numbers[1:]:
+                if n == end + 1:
+                    end = n
+                else:
+                    if start == end:
+                        ranges.append(str(start))
+                    else:
+                        ranges.append(f"{start}-{end}")
+                    start = end = n
+            if start == end:
+                ranges.append(str(start))
+            else:
+                ranges.append(f"{start}-{end}")
+            return ", ".join(ranges)
+
         tree = ET.parse("./coverage-reports/cobertura.xml")
         root = tree.getroot()
         line_rate = float(root.attrib["line-rate"]) * 100
-        branch_rate = float(root.attrib["branch-rate"]) * 100
 
         with open("./coverage-reports/coverage-summary.md", "w") as f:
             f.write("### 📊 Code Coverage Summary\n\n")
-            f.write("| File | Line Coverage | Branch Coverage | Uncovered Lines |\n")
-            f.write("|------|---------------|-----------------|-----------------|\n")
+            f.write("| File | Line Coverage | Uncovered Lines |\n")
+            f.write("|------|---------------|-----------------|\n")
 
             packages = root.find("packages")
             all_classes = []
@@ -295,7 +314,6 @@ jobs:
                 if "target/debug/build" in filename:
                     continue
                 line_rate_class = float(klass.attrib["line-rate"]) * 100
-                branch_rate_class = float(klass.attrib["branch-rate"]) * 100
                 
                 uncovered_lines = []
                 lines = klass.find("lines")
@@ -304,10 +322,10 @@ jobs:
                         if line.attrib["hits"] == "0":
                             uncovered_lines.append(line.attrib["number"])
                 
-                uncovered_lines_str = ", ".join(uncovered_lines)
-                f.write(f"| `{filename}` | {line_rate_class:.2f}% | {branch_rate_class:.2f}% | `{uncovered_lines_str}` |\n")
+                uncovered_lines_str = to_ranges(uncovered_lines)
+                f.write(f"| `{filename}` | {line_rate_class:.2f}% | `{uncovered_lines_str}` |\n")
 
-            f.write(f"| **Total** | **{line_rate:.2f}%** | **{branch_rate:.2f}%** | | \n")
+            f.write(f"| **Total** | **{line_rate:.2f}%** | | \n")
         '
     - name: Add Markdown summary table to Job Summary
       run: |
@@ -330,11 +348,20 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # Fetch the full history to allow diff-coverage checking
+          fetch-depth: 0
       - name: Download coverage report artifact
         uses: actions/download-artifact@v4
         with:
           name: coverage-reports
           path: ./coverage-reports/
+
+      - name: Check for uncovered lines in PR
+        id: pr_coverage_check
+        run: |
+          set -e
+          echo "PR_COVERAGE_REPORT=$(./.github/scripts/check_pr_coverage.py ${{ github.base_ref }})" >> $GITHUB_OUTPUT
 
       - name: Post Coverage Comment
         env:
@@ -343,8 +370,13 @@ jobs:
         run: |
           MARKER="<!-- gemini-coverage-comment -->"
           BODY=$(cat ./coverage-reports/coverage-summary.md)
+          PR_COVERAGE_REPORT="${{ steps.pr_coverage_check.outputs.PR_COVERAGE_REPORT }}"
+          
           COMMENT_BODY="$MARKER
+          $PR_COVERAGE_REPORT
+
           $BODY"
+          
           gh pr comment "$PR_NUMBER" --body "$COMMENT_BODY"
 
   benchmarks:
