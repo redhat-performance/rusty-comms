@@ -1394,7 +1394,10 @@ impl BenchmarkRunner {
 
         // Validate buffer size for shared memory to prevent EOF errors
         if self.mechanism == IpcMechanism::SharedMemory && self.config.duration.is_none() {
-            let total_message_data = self.get_msg_count() * (self.config.message_size + 32); // 32 bytes overhead per message
+            // Overhead includes Message struct metadata and ring buffer length prefix.
+            const SHARED_MEMORY_MESSAGE_OVERHEAD: usize = 32;
+            let total_message_data =
+                self.get_msg_count() * (self.config.message_size + SHARED_MEMORY_MESSAGE_OVERHEAD);
             if buffer_size < total_message_data {
                 warn!(
                     "Buffer size ({} bytes) is smaller than the total data size ({} bytes). This may cause backpressure, which is a valid test scenario.",
