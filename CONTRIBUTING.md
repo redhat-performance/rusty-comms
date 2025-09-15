@@ -120,6 +120,15 @@ Use descriptive branch names:
 - `docs/improve-readme` - Documentation
 - `perf/optimize-serialization` - Performance improvements
 
+### Implementing a New Transport
+
+When adding a new IPC transport mechanism, it must implement the `IpcTransport` trait defined in `src/ipc/mod.rs`. Key requirements include:
+
+- **Asynchronous Operations**: All I/O methods must be `async`.
+- **Bidirectional Support**: The transport should ideally support sending and receiving.
+- **Backpressure Detection**: The `send` method is required to detect when the transport's buffer is full and the operation is blocked. It must return `Ok(true)` when backpressure is detected. See the existing implementations for examples.
+- **Resource Cleanup**: The `close` method and the `Drop` trait must be implemented to ensure all system resources (files, memory segments, etc.) are properly cleaned up.
+
 ## Code Style
 
 ### Rust Style Guidelines
