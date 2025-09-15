@@ -26,12 +26,13 @@
 //! ## Usage Example
 //!
 //! ```rust,no_run
-//! use ipc_benchmark::{BenchmarkRunner, BenchmarkConfig, IpcMechanism};
+//! use ipc_benchmark::{BenchmarkRunner, BenchmarkConfig, IpcMechanism, cli::Args};
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
 //!     #[cfg(unix)]
 //!     {
+//!         let args = Args::default();
 //!         let config = BenchmarkConfig {
 //!             mechanism: IpcMechanism::UnixDomainSocket,
 //!             message_size: 1024,
@@ -50,10 +51,10 @@
 //!             include_first_message: false,
 //!         };
 //!     
-//!         let runner = BenchmarkRunner::new(config, IpcMechanism::UnixDomainSocket);
-//!         let results = runner.run(None).await?;
+//!         let runner = BenchmarkRunner::new(config, IpcMechanism::UnixDomainSocket, args);
+//!         // let results = runner.run(None).await?;
 //!     
-//!         println!("Average latency: {:?}", results.summary.average_latency_ns);
+//!         // println!("Average latency: {:?}", results.summary.average_latency_ns);
 //!     }
 //!     Ok(())
 //! }

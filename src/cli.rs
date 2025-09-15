@@ -99,7 +99,7 @@ fn get_default_ipc_mechanism() -> Vec<IpcMechanism> {
     }
 }
 
-#[derive(Parser, Debug, Clone)]
+#[derive(Parser, Debug, Clone, Default)]
 #[command(author, version, about, long_about = None, styles = styles())]
 pub struct Args {
     /// IPC mechanisms to benchmark (space-separated: uds, shm, tcp, or all)
@@ -283,6 +283,27 @@ pub struct Args {
     /// results. Use this flag to include it in the final statistics.
     #[arg(long, help_heading = ADVANCED)]
     pub include_first_message: bool,
+
+    /// (Internal) Run the process in server-only mode.
+    ///
+    /// This is a hidden flag used by the benchmark runner to spawn a child
+    /// process that acts only as the server. It is not intended for direct
+    /// use by users.
+    #[arg(long, hide = true)]
+    pub internal_run_as_server: bool,
+
+    // --- Transport-specific arguments for internal use ---
+    /// (Internal) Specifies the exact socket path for UDS.
+    #[arg(long, hide = true)]
+    pub socket_path: Option<String>,
+
+    /// (Internal) Specifies the exact name for Shared Memory.
+    #[arg(long, hide = true)]
+    pub shared_memory_name: Option<String>,
+
+    /// (Internal) Specifies the exact name for the POSIX Message Queue.
+    #[arg(long, hide = true)]
+    pub message_queue_name: Option<String>,
 }
 
 /// Available IPC mechanisms for benchmarking

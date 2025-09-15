@@ -31,18 +31,22 @@
 //! - Non-blocking I/O operations for all IPC mechanisms  
 //! - Resource cleanup between benchmark runs
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use ipc_benchmark::{
     benchmark::{BenchmarkConfig, BenchmarkRunner},
     cli::{Args, IpcMechanism},
+    ipc::{Message, MessageType, TransportFactory},
     results::{BenchmarkResults, ResultsManager},
 };
+use std::io::{self, Write};
+use tokio::time::{timeout, Duration};
 use tracing::{error, info};
 
 use tracing_subscriber::{filter::LevelFilter, prelude::*, Layer};
 
 mod logging;
+use ipc_benchmark::cli;
 use logging::ColorizedFormatter;
 
 /// Main application entry point
@@ -105,7 +109,9 @@ async fn main() -> Result<()> {
     // This layer sends clean, user-facing output to stdout.
     // It is only enabled if the --quiet flag is NOT present.
     // Its verbosity is controlled by the `log_level` derived from `-v` flags.
-    let stdout_log = if !args.quiet {
+    // Disable stdout logging when running as the spawned server process to
+    // keep stdout reserved for the readiness byte signaling.
+    let stdout_log = if !args.quiet && !args.internal_run_as_server {
         Some(
             tracing_subscriber::fmt::layer()
                 .with_writer(std::io::stdout)
@@ -126,6 +132,11 @@ async fn main() -> Result<()> {
     // Keep the logging guard alive for the duration of the program.
     // If we don't assign it to a variable, it gets dropped immediately, and file logging stops working.
     let _log_guard = guard;
+
+    // If the internal server flag is present, run in server-only mode and exit.
+    if args.internal_run_as_server {
+        return run_server_mode(args).await;
+    }
 
     // Check for pmq_priority usage with non-PMQ mechanisms, only on Linux where PMQ is supported.
     #[cfg(target_os = "linux")]
@@ -203,7 +214,7 @@ async fn main() -> Result<()> {
     for &mechanism in &mechanisms {
         // Execute the benchmark for the current mechanism and handle the result.
         // The `run_benchmark_for_mechanism` function encapsulates all logic for a single test.
-        match run_benchmark_for_mechanism(&config, &mechanism, &mut results_manager).await {
+        match run_benchmark_for_mechanism(&config, &mechanism, &mut results_manager, &args).await {
             Ok(()) => {
                 // On success, the `run_benchmark_for_mechanism` function has already added
                 // the results to the `results_manager`. No further action is needed here.
@@ -259,6 +270,176 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Sets the CPU affinity for the current thread to the specified core.
+///
+/// This function takes a core ID as input and attempts to pin the current
+/// thread to that CPU core. This can help improve performance by reducing
+/// cache misses and context switching.
+///
+/// ## Parameters
+///
+/// - `core_id`: The ID of the CPU core to pin the thread to.
+///
+/// ## Returns
+///
+/// - `Ok(())` if the affinity was set successfully.
+/// - `Err(anyhow::Error)` if the specified core ID is not available or the
+///   affinity could not be set.
+fn set_affinity(core_id: usize) -> Result<()> {
+    let core_ids = core_affinity::get_core_ids().context("Failed to get core IDs")?;
+    let core = core_ids
+        .get(core_id)
+        .ok_or_else(|| anyhow::anyhow!("Invalid core ID: {}", core_id))?;
+    if core_affinity::set_for_current(*core) {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "Failed to set affinity for core ID: {}",
+            core_id
+        ))
+    }
+}
+
+/// Executes the application in a server-only mode for a single IPC mechanism.
+///
+/// This function is triggered by the internal `--internal-run-as-server` flag.
+/// It is responsible for setting up and running the server component of a benchmark,
+/// allowing the main process to act as the client.
+///
+/// ## Workflow
+///
+/// 1. **Configuration**: Extracts the necessary configuration from the provided arguments.
+///    Since only one mechanism is tested at a time in this mode, it selects the first one.
+/// 2. **Affinity**: Pins the server process to a specific CPU core if specified by
+///    `--server-affinity`.
+/// 3. **Transport Setup**: Creates and starts the server for the specified IPC mechanism.
+/// 4. **Signaling**: Prints a "SERVER_READY" message to stdout to signal the parent
+///    (client) process that it is ready to accept connections.
+/// 5. **Execution**: Enters the main server loop to handle incoming client messages.
+///
+/// ## Parameters
+///
+/// - `args`: The parsed command-line arguments.
+///
+/// ## Returns
+///
+/// - `Ok(())` on successful execution and shutdown.
+/// - `Err(anyhow::Error)` if any part of the server setup or execution fails.
+async fn run_server_mode(args: cli::Args) -> Result<()> {
+    info!("Running in server-only mode.");
+
+    // In server mode, we only care about the first mechanism specified.
+    let mechanism = match args.mechanisms.first() {
+        Some(&m) => m,
+        None => {
+            return Err(anyhow::anyhow!(
+                "No IPC mechanism specified for server mode"
+            ))
+        }
+    };
+
+    // Set CPU affinity for the server process if specified.
+    if let Some(core) = args.server_affinity {
+        if let Err(e) = set_affinity(core) {
+            error!("Failed to set server CPU affinity to core {}: {}", core, e);
+            // We'll log the error but continue execution.
+        } else {
+            info!("Successfully set server affinity to CPU core {}", core);
+        }
+    }
+
+    // from_args takes a reference to Args
+    let config = BenchmarkConfig::from_args(&args)?;
+    let runner = BenchmarkRunner::new(config.clone(), mechanism, args.clone());
+    // Build transport config, but ensure we honor exact endpoints passed from parent.
+    let mut transport_config = runner.create_transport_config_internal(&args)?;
+    match mechanism {
+        #[cfg(unix)]
+        IpcMechanism::UnixDomainSocket => {
+            if let Some(ref p) = args.socket_path {
+                transport_config.socket_path = p.clone();
+            }
+        }
+        IpcMechanism::TcpSocket => {
+            transport_config.host = args.host.clone();
+            transport_config.port = args.port; // use exact port provided by parent
+        }
+        IpcMechanism::SharedMemory => {
+            if let Some(ref n) = args.shared_memory_name {
+                transport_config.shared_memory_name = n.clone();
+            }
+        }
+        #[cfg(target_os = "linux")]
+        IpcMechanism::PosixMessageQueue => {
+            if let Some(ref n) = args.message_queue_name {
+                transport_config.message_queue_name = n.clone();
+            }
+        }
+        IpcMechanism::All => {}
+    }
+
+    let mut transport = TransportFactory::create(&mechanism)?;
+    transport
+        .start_server(&transport_config)
+        .await
+        .context("Server failed to start transport")?;
+
+    // Signal to the parent process that the server is ready by writing a single
+    // byte to stdout. The parent connected the pipe writer to the child's stdout.
+    io::stdout()
+        .write_all(&[1])
+        .context("Failed to write server ready byte to stdout")?;
+    io::stdout().flush().ok();
+
+    // Persistent server loop: receive messages and optionally reply to
+    // round-trip patterns. Exit cleanly on disconnect or receive error.
+    loop {
+        // Use a short timeout on receive. If it fires, we just continue
+        // waiting for the next message. This makes the server robust against
+        // clients with long send-delays. The server will only exit when the
+        // client disconnects, causing a transport error.
+        match timeout(Duration::from_millis(50), transport.receive()).await {
+            Ok(Ok(msg)) => {
+                // Message received
+                match msg.message_type {
+                    MessageType::Request => {
+                        // Echo a response to complete round-trip flows.
+                        let resp = Message::new(msg.id, Vec::new(), MessageType::Response);
+                        if transport.send(&resp).await.is_err() {
+                            info!("Client disconnected during send, exiting server loop.");
+                            break;
+                        }
+                    }
+                    MessageType::Ping => {
+                        let resp = Message::new(msg.id, Vec::new(), MessageType::Pong);
+                        if transport.send(&resp).await.is_err() {
+                            info!("Client disconnected during send, exiting server loop.");
+                            break;
+                        }
+                    }
+                    // OneWay and other types need no reply.
+                    _ => {}
+                }
+            }
+            Ok(Err(e)) => {
+                // Transport error
+                info!("Server receive loop ending due to transport error: {}", e);
+                break;
+            }
+            Err(_) => {
+                // Timeout
+                // Timeout is not an error. The client might just have a long send_delay.
+                // We continue waiting for the next message.
+                continue;
+            }
+        }
+    }
+
+    let _ = transport.close().await;
+    info!("Server mode finished.");
+    Ok(())
+}
+
 /// Run benchmark for a specific IPC mechanism
 ///
 /// This function encapsulates the benchmark execution for a single IPC mechanism.
@@ -283,11 +464,12 @@ async fn run_benchmark_for_mechanism(
     config: &BenchmarkConfig,
     mechanism: &IpcMechanism,
     results_manager: &mut ResultsManager,
+    args: &Args,
 ) -> Result<()> {
     // Create a benchmark runner for this specific mechanism
     // The runner encapsulates all the logic for setting up clients/servers,
     // running warmup iterations, executing tests, and collecting metrics
-    let runner = BenchmarkRunner::new(config.clone(), *mechanism);
+    let runner = BenchmarkRunner::new(config.clone(), *mechanism, args.clone());
 
     // Execute the benchmark and collect comprehensive results
     // This includes latency histograms, throughput measurements,
