@@ -10,28 +10,57 @@ services:
       - ./sockets:/app/sockets:z
       # Mount output directory for results (shared SELinux label)
       - ./output:/app/output:z
+      # Share host PMQ filesystem so queues are visible cross-namespace
+      - /dev/mqueue:/dev/mqueue
+    security_opt:
+      - label=disable
+    user: "0:0"
     environment:
       - RUST_LOG=debug
       - IPC_BENCHMARK_SOCKET_DIR=/app/sockets
       - IPC_BENCHMARK_DEFAULT_SOCKET_PATH=/app/sockets/ipc_benchmark.sock
       - IPC_BENCHMARK_OUTPUT_DIR=/app/output
+      - MECHANISM=${MECHANISM:-uds}               # uds | shm | pmq (override at runtime)
+      - SHM_NAME=ipc_benchmark_shm_crossenv
     command: 
       - "sh"
       - "-c"
       - |
-        echo "Starting UDS server (client mode)..."
         umask 000
         mkdir -p ./sockets ./output
         chmod 777 ./sockets || true
-        rm -f ./sockets/ipc_benchmark.sock || true
-        ipc-benchmark \
-          -m uds \
-          --mode client \
-          --ipc-path ./sockets/ipc_benchmark.sock \
-          --msg-count 1000 \
-          --message-size 1024 \
-          --output-file ./output/container_server_results.json \
-          --log-file stderr
+        if [ "${MECHANISM}" = "shm" ]; then
+          echo "Starting SHM server (client mode)..."
+          ipc-benchmark \
+            -m shm \
+            --mode client \
+            --shm-name "${SHM_NAME}" \
+            --msg-count 1000 \
+            --message-size 1024 \
+            --output-file ./output/container_server_results.json \
+            --log-file stderr
+        elif [ "${MECHANISM}" = "pmq" ]; then
+          echo "Starting PMQ server (client mode)..."
+          ipc-benchmark \
+            -m pmq \
+            --mode client \
+            --msg-count 1000 \
+            --message-size 1024 \
+            --output-file ./output/container_server_results.json \
+            --log-file stderr
+        else
+          echo "Starting UDS server (client mode)..."
+          rm -f ./sockets/ipc_benchmark.sock || true
+          ipc-benchmark \
+            -m uds \
+            --mode client \
+            --ipc-path ./sockets/ipc_benchmark.sock \
+            --msg-count 1000 \
+            --message-size 1024 \
+            --output-file ./output/container_server_results.json \
+            --log-file stderr
+        fi
+    ipc: host
     restart: unless-stopped
 
   # Optional: Client running in another container for testing

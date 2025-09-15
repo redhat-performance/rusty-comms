@@ -15,7 +15,15 @@ NC='\033[0m' # No Color
 # Configuration
 COMPOSE_FILE="podman-compose.uds.yml"
 SERVICE_NAME="rusty-comms-server"
-CONTAINER_NAME="rusty-comms-uds-server"
+
+# Derive container name from mechanism to enforce one container per mechanism
+get_container_name() {
+    case "${MECHANISM:-uds}" in
+        pmq) echo "rusty-comms-pmq-server" ;;
+        shm) echo "rusty-comms-shm-server" ;;
+        uds|*) echo "rusty-comms-uds-server" ;;
+    esac
+}
 
 # Function to print status
 print_status() {
@@ -55,24 +63,74 @@ start_server() {
     
     # Create necessary directories
     mkdir -p sockets output
-    
-    # Start the server in background
-    podman-compose -f "${COMPOSE_FILE}" up -d "${SERVICE_NAME}"
-    
+
+    local CN
+    CN="$(get_container_name)"
+
+    print_status "Using container name: ${CN}"
+
+    # Build image locally
+    podman build -t rusty-comms:latest . || { print_error "Image build failed"; exit 1; }
+
+    # Remove any existing same-name container
+    podman rm -f "${CN}" >/dev/null 2>&1 || true
+
+    case "${MECHANISM:-uds}" in
+        pmq)
+            podman run -d --name "${CN}" \
+                --ipc=host \
+                --security-opt label=disable \
+                --user 0:0 \
+                -v "$(pwd)/output:/app/output:z" \
+                -e RUST_LOG=debug \
+                -e IPC_BENCHMARK_OUTPUT_DIR=/app/output \
+                localhost/rusty-comms:latest sh -c '
+                    umask 000; mkdir -p ./output; \
+                    echo "Starting PMQ server (client mode)..."; \
+                    ipc-benchmark -m pmq --mode client --msg-count 1000 --message-size 1024 \
+                        --output-file ./output/container_server_results.json --log-file stderr
+                '
+            ;;
+        shm)
+            podman run -d --name "${CN}" \
+                --ipc=host \
+                --security-opt label=disable \
+                --user 0:0 \
+                -v "$(pwd)/output:/app/output:z" \
+                -e RUST_LOG=debug \
+                -e IPC_BENCHMARK_OUTPUT_DIR=/app/output \
+                localhost/rusty-comms:latest sh -c '
+                    umask 000; mkdir -p ./output; \
+                    echo "Starting SHM server (client mode)..."; \
+                    rm -f /dev/shm/ipc_benchmark_shm_crossenv 2>/dev/null || true; \
+                    ipc-benchmark -m shm --mode client --shm-name ipc_benchmark_shm_crossenv \
+                        --msg-count 1000 --message-size 1024 --buffer-size 65536 \
+                        --output-file ./output/container_server_results.json --log-file stderr
+                '
+            ;;
+        uds|*)
+            podman run -d --name "${CN}" \
+                --security-opt label=disable \
+                -v "$(pwd)/sockets:/app/sockets:z" \
+                -v "$(pwd)/output:/app/output:z" \
+                -e RUST_LOG=debug \
+                -e IPC_BENCHMARK_SOCKET_DIR=/app/sockets \
+                -e IPC_BENCHMARK_DEFAULT_SOCKET_PATH=/app/sockets/ipc_benchmark.sock \
+                -e IPC_BENCHMARK_OUTPUT_DIR=/app/output \
+                localhost/rusty-comms:latest sh -c '
+                    umask 000; mkdir -p ./sockets ./output; rm -f ./sockets/ipc_benchmark.sock || true; \
+                    echo "Starting UDS server (client mode)..."; \
+                    ipc-benchmark -m uds --mode client --ipc-path ./sockets/ipc_benchmark.sock \
+                        --msg-count 1000 --message-size 1024 \
+                        --output-file ./output/container_server_results.json --log-file stderr
+                '
+            ;;
+    esac
+
     if [ $? -eq 0 ]; then
-        print_success "Server started successfully!"
-        print_status "Waiting for server to initialize..."
-        sleep 3
-        
-        # Check if socket was created
-        if [ -S "./sockets/ipc_benchmark.sock" ]; then
-            print_success "Socket created successfully at ./sockets/ipc_benchmark.sock"
-        else
-            print_warning "Socket not yet available. Server may still be starting..."
-            print_status "Check logs with: $0 logs"
-        fi
+        print_success "Server container started"
     else
-        print_error "Failed to start server"
+        print_error "Failed to start server container"
         exit 1
     fi
 }
@@ -80,48 +138,24 @@ start_server() {
 # Function to stop the server
 stop_server() {
     print_status "Stopping containerized IPC benchmark server..."
-    podman-compose -f "${COMPOSE_FILE}" down
-    
-    # Clean up socket file
-    if [ -f "./sockets/ipc_benchmark.sock" ]; then
-        rm -f "./sockets/ipc_benchmark.sock"
-        print_status "Cleaned up socket file"
-    fi
-    
-    print_success "Server stopped successfully!"
+    local CN
+    CN="$(get_container_name)"
+    podman rm -f "${CN}" >/dev/null 2>&1 || true
+    print_success "Stopped ${CN}"
 }
 
 # Function to show server logs
 show_logs() {
     print_status "Showing server logs..."
-    podman logs "${CONTAINER_NAME}"
+    local CN
+    CN="$(get_container_name)"
+    podman logs "${CN}"
 }
 
 # Function to show server status
 show_status() {
     print_status "Checking server status..."
-    
-    # Check if container is running
-    if podman ps --filter "name=${CONTAINER_NAME}" --format "{{.Names}}" | grep -q "${CONTAINER_NAME}"; then
-        print_success "Server container is running"
-        
-        # Check if socket exists
-        if [ -S "./sockets/ipc_benchmark.sock" ]; then
-            print_success "Socket is available at ./sockets/ipc_benchmark.sock"
-        else
-            print_warning "Socket not available yet"
-        fi
-    else
-        print_warning "Server container is not running"
-        
-        # Check if container exists but is stopped
-        if podman ps -a --filter "name=${CONTAINER_NAME}" --format "{{.Names}}" | grep -q "${CONTAINER_NAME}"; then
-            print_status "Container exists but is stopped. Last status:"
-            podman ps -a --filter "name=${CONTAINER_NAME}" --format "table {{.Names}}\t{{.Status}}\t{{.CreatedAt}}"
-        else
-            print_status "No container found"
-        fi
-    fi
+    podman ps --format 'table {{.Names}}\t{{.Status}}' | grep -E 'rusty-comms-(uds|pmq|shm)-server' || true
 }
 
 # Function to restart the server

@@ -142,7 +142,7 @@ pub use cli::{Args, ExecutionMode, IpcMechanism};
 ///
 /// Key types for orchestrating cross-environment IPC testing between
 /// host and container environments.
-pub use coordination::{HostCoordinator, ClientProcess, ProcessId};
+pub use coordination::{HostCoordinator, ClientProcess};
 
 /// Core IPC abstractions
 ///

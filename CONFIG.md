@@ -8,6 +8,7 @@ This document provides detailed information about configuring the IPC Benchmark 
 - [Configuration File](#configuration-file)
 - [Environment Variables](#environment-variables)
 - [IPC Mechanism Settings](#ipc-mechanism-settings)
+- [Cross-Environment Configuration](#cross-environment-configuration)
 - [Performance Tuning](#performance-tuning)
 - [Test Scenarios](#test-scenarios)
 - [System Requirements](#system-requirements)
@@ -39,11 +40,21 @@ This document provides detailed information about configuring the IPC Benchmark 
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `--streaming-output` | String | - | File for streaming results during execution |
+| `--streaming-output-json` | String | - | JSON file for streaming results during execution |
+| `--streaming-output-csv` | String | - | CSV file for streaming results during execution |
 | `--continue-on-error` | Boolean | `false` | Continue running if one test fails |
 | `--verbose` | `-v` | Boolean | `false` | Enable verbose output |
 | `--host` | String | `"127.0.0.1"` | Host address for TCP sockets |
 | `--port` | Number | `8080` | Port for TCP sockets |
+
+### Cross-Environment Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--mode` | String | `standalone` | Execution mode: `standalone`, `host`, `client` |
+| `--ipc-path` | String | Auto-generated | IPC path for UDS (required for cross-env) |
+| `--shm-name` | String | Auto-generated | Shared memory name for SHM cross-env |
+| `--connection-timeout` | Number | `30` | Connection timeout in seconds for cross-env |
 
 ### Examples
 
@@ -184,6 +195,268 @@ IPC_BENCHMARK_CONFIG=./default.json ipc-benchmark
 - Message size: 1024 - 8192 bytes for balanced performance
 - Concurrency: 1-16 depending on system capacity
 - Buffer size: 32KB - 256KB
+
+### POSIX Message Queues (PMQ)
+
+| Setting | Description | Default | Range |
+|---------|-------------|---------|-------|
+| `message_queue_name` | Queue name | `ipc_benchmark_<uuid>` | Valid POSIX name |
+| `message_queue_depth` | Max messages in queue | `10` | 1 - System limit |
+| `buffer_size` | Message buffer size | `8192` | 1 - msgsize_max |
+
+**Optimal Settings:**
+- Message size: 64 - 8192 bytes (system-dependent)
+- Concurrency: 1-2 (limited multi-connection support)
+- Queue depth: 10-100 depending on system limits
+
+## Cross-Environment Configuration
+
+The benchmark suite supports three execution modes for different testing scenarios:
+
+### Execution Modes
+
+#### 1. Standalone Mode (Default)
+Traditional single-process benchmarking where both client and server run within the same process.
+
+```bash
+# Default standalone mode
+./target/release/ipc-benchmark -m uds --message-size 1024 --msg-count 1000
+
+# Explicit standalone mode
+./target/release/ipc-benchmark --mode standalone -m shm --duration 30s
+```
+
+#### 2. Host Mode (Cross-Environment Client)
+The host process acts as a benchmark client, connecting to a containerized server.
+
+```bash
+# UDS host mode - connect to container server
+./target/release/ipc-benchmark --mode host -m uds \
+  --ipc-path ./sockets/ipc_benchmark.sock \
+  --message-size 1024 --msg-count 1000
+
+# SHM host mode - connect to container shared memory
+./target/release/ipc-benchmark --mode host -m shm \
+  --shm-name ipc_benchmark_shm_crossenv \
+  --message-size 4096 --duration 30s
+
+# PMQ host mode - connect to container message queue
+./target/release/ipc-benchmark --mode host -m pmq \
+  --message-size 512 --msg-count 5000
+```
+
+#### 3. Client Mode (Cross-Environment Server)
+The client process acts as a passive server, waiting for connections from host processes.
+
+```bash
+# UDS client mode - create socket server for host
+./target/release/ipc-benchmark --mode client -m uds \
+  --ipc-path ./sockets/ipc_benchmark.sock
+
+# SHM client mode - create shared memory for host
+./target/release/ipc-benchmark --mode client -m shm \
+  --shm-name ipc_benchmark_shm_crossenv
+
+# PMQ client mode - create message queue for host
+./target/release/ipc-benchmark --mode client -m pmq
+```
+
+### Host-to-Container Configuration
+
+#### Unified Script Configuration
+
+The `run_host_container.sh` script supports environment variable configuration:
+
+```bash
+# Basic configuration
+export MECHANISM=uds              # uds, shm, pmq
+export DURATION=30s               # Duration instead of message count
+export OUTPUT_FILE=./output/results.json
+export STREAM_JSON=./output/stream.json
+export STREAM_CSV=./output/stream.csv
+
+# UDS-specific configuration
+export SOCKET_PATH=./sockets/custom.sock
+
+# SHM-specific configuration  
+export SHM_NAME=custom_shm
+export BUFFER_SIZE=1048576
+
+# Advanced configuration
+export ROUND_TRIP=true            # Enable round-trip testing
+export VERBOSE=true               # Enable verbose logging
+export CONNECTION_TIMEOUT=60      # Connection timeout in seconds
+
+# Run with configuration
+./run_host_container.sh $MECHANISM $MESSAGES $MESSAGE_SIZE $WORKERS
+```
+
+#### Container Environment Variables
+
+The containerized servers support these environment variables:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `IPC_BENCHMARK_TEMP_DIR` | Temporary directory for IPC files | `/tmp/ipc` |
+| `IPC_BENCHMARK_OUTPUT_DIR` | Output directory for results | `/app/output` |
+| `IPC_BENCHMARK_SOCKET_DIR` | Directory for socket files | `/app/sockets` |
+| `IPC_BENCHMARK_DEFAULT_SOCKET_PATH` | Default UDS socket path | `/app/sockets/ipc_benchmark.sock` |
+| `RUST_LOG` | Logging level | `info` |
+
+#### Cross-Environment IPC Paths
+
+**Unix Domain Sockets:**
+- Host path: `./sockets/ipc_benchmark.sock`
+- Container path: `/app/sockets/ipc_benchmark.sock`
+- Shared via bind mount
+
+**Shared Memory:**
+- Name: `ipc_benchmark_shm_crossenv`
+- Accessible by both host and container processes
+- Requires `/dev/shm` mount
+
+**POSIX Message Queues:**
+- Name: `ipc_benchmark_pmq_crossenv`
+- Requires `/dev/mqueue` mount in container
+- Accessible system-wide
+
+### Container Management Configuration
+
+#### Podman Configuration
+```bash
+# Container runtime settings
+PODMAN_OPTS="--rm --security-opt label=disable"
+
+# Volume mounts for IPC
+SOCKET_MOUNT="-v ./sockets:/app/sockets:Z"
+SHM_MOUNT="--tmpfs /dev/shm:rw,noexec,nosuid,size=1g"
+MQ_MOUNT="-v /dev/mqueue:/dev/mqueue:rw"
+
+# Resource limits
+MEMORY_LIMIT="--memory=2g"
+CPU_LIMIT="--cpus=4"
+```
+
+#### Docker Configuration
+```bash
+# Docker equivalent settings
+DOCKER_OPTS="--rm --privileged"
+
+# Volume mounts (Docker syntax)
+SOCKET_MOUNT="-v $(pwd)/sockets:/app/sockets"
+SHM_MOUNT="--tmpfs /dev/shm:rw,noexec,nosuid,size=1g"
+MQ_MOUNT="-v /dev/mqueue:/dev/mqueue"
+```
+
+### Security Configuration
+
+#### Container Security
+```yaml
+# Podman security settings
+security_opt:
+  - "label=disable"           # Disable SELinux for volume mounts
+  - "apparmor=unconfined"     # Disable AppArmor restrictions
+
+# User namespace mapping
+userns_mode: "keep-id"        # Preserve user ID mapping
+
+# Capabilities
+cap_add:
+  - "IPC_LOCK"                # Required for shared memory
+```
+
+#### Host Security
+```bash
+# SELinux contexts for socket files
+chcon -t container_file_t ./sockets/
+
+# File permissions
+chmod 755 ./sockets/
+chmod 666 ./sockets/*.sock
+```
+
+### Performance Configuration for Cross-Environment
+
+#### Host-Side Optimizations
+```bash
+# CPU affinity for host process
+taskset -c 0-3 ./run_host_container.sh uds 10000 1024 1
+
+# Process priority
+nice -n -10 ./run_host_container.sh shm 10000 4096 1
+
+# Memory locking
+ulimit -l unlimited
+```
+
+#### Container-Side Optimizations
+```bash
+# Container resource limits
+podman run --cpus=4 --memory=2g --memory-swap=2g
+
+# Shared memory size
+--tmpfs /dev/shm:rw,noexec,nosuid,size=2g
+
+# CPU affinity within container
+--cpuset-cpus=4-7
+```
+
+### Troubleshooting Cross-Environment Configuration
+
+#### Common Configuration Issues
+
+1. **Socket Permission Errors**
+   ```bash
+   # Fix socket directory permissions
+   chmod 755 ./sockets/
+   chown $(id -u):$(id -g) ./sockets/
+   ```
+
+2. **Shared Memory Access Denied**
+   ```bash
+   # Increase shared memory limits
+   echo 2147483648 | sudo tee /proc/sys/kernel/shmmax
+   
+   # Mount shared memory in container
+   podman run --tmpfs /dev/shm:rw,size=2g
+   ```
+
+3. **Message Queue Not Found**
+   ```bash
+   # Mount message queue filesystem
+   sudo mkdir -p /dev/mqueue
+   sudo mount -t mqueue none /dev/mqueue
+   
+   # In container
+   podman run -v /dev/mqueue:/dev/mqueue
+   ```
+
+4. **Connection Timeouts**
+   ```bash
+   # Increase connection timeout
+   CONNECTION_TIMEOUT=60 ./run_host_container.sh uds 1000 1024 1
+   
+   # Check container readiness
+   podman logs rusty-comms-uds-server
+   ```
+
+#### Validation Commands
+
+```bash
+# Check container status
+podman ps --filter "name=rusty-comms"
+
+# Verify IPC resources
+ls -la ./sockets/              # UDS sockets
+ipcs -m                        # Shared memory segments
+ipcs -q                        # Message queues
+
+# Test connectivity
+podman exec rusty-comms-uds-server ls -la /app/sockets/
+
+# Monitor performance
+podman stats rusty-comms-uds-server
+```
 
 ## Performance Tuning
 

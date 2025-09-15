@@ -1,15 +1,16 @@
-# Host-Container IPC Setup with Podman (Updated)
+# Podman Setup for Host-Container IPC Testing
 
-This setup demonstrates cross-environment IPC testing using **Podman** instead of Docker for better security and rootless operation.
+This document provides setup instructions for **Podman** as the container runtime for cross-environment IPC benchmarking. Podman offers better security and simpler operation compared to Docker.
 
-## Why Podman?
+## Why Podman for IPC Benchmarking?
 
-### **Advantages over Docker:**
-- ✅ **Rootless by default** - No daemon running as root
+### **Key Advantages:**
+- ✅ **Rootless by default** - No daemon running as root, better security
 - ✅ **No permission issues** - Runs containers as your user
-- ✅ **Drop-in replacement** - Compatible with Docker commands
-- ✅ **Better security** - Reduced attack surface
-- ✅ **Fedora native** - Better integration with your system
+- ✅ **Drop-in replacement** - Compatible with Docker commands and workflows
+- ✅ **Better security** - Reduced attack surface for safety-critical testing
+- ✅ **Native integration** - Better integration with modern Linux systems
+- ✅ **Ideal for IPC** - Preserves filesystem permissions for socket sharing
 
 ## Quick Start
 
@@ -23,17 +24,34 @@ podman version
 podman-compose --version
 ```
 
-### **Step 2: Manual Operation (UDS host↔container)**
+### **Step 2: Run Cross-Environment IPC Tests**
+
+#### Option A: Unified Script (Recommended)
 ```bash
-# Start containerized server
-./run_container_server.sh start
+# Test all three IPC mechanisms
+./run_host_container.sh uds 1000 1024 1
+./run_host_container.sh shm 1000 1024 1  
+./run_host_container.sh pmq 1000 1024 1
 
-# Run host client
-./run_host_client.sh 1000 1024 1
+# Duration-based test with custom output
+DURATION=30s OUTPUT_FILE=./output/results.json \
+./run_host_container.sh uds 0 4096 1
+```
 
-# View results and cleanup
-./run_container_server.sh logs
-./run_container_server.sh stop
+#### Option B: Manual Container Management
+```bash
+# Start containerized servers
+./start_uds_container_server.sh &
+./start_shm_container_server.sh &
+./start_pmq_container_server.sh &
+
+# Run host benchmarks
+./target/release/ipc-benchmark --mode host -m uds --ipc-path ./sockets/ipc_benchmark.sock --msg-count 1000
+./target/release/ipc-benchmark --mode host -m shm --shm-name ipc_benchmark_shm_crossenv --msg-count 1000
+./target/release/ipc-benchmark --mode host -m pmq --msg-count 1000
+
+# Cleanup
+podman rm -f $(podman ps -q --filter "name=rusty-comms-")
 ```
 
 ## Key Changes from Docker

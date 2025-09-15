@@ -16,6 +16,8 @@ NC='\033[0m' # No Color
 SOCKET_DIR="./sockets"
 OUTPUT_DIR="./output"
 SOCKET_PATH="${SOCKET_DIR}/ipc_benchmark.sock"
+MECHANISM="${MECHANISM:-uds}"  # uds | shm | pmq
+SHM_NAME="${SHM_NAME:-ipc_benchmark_shm_crossenv}"
 DEFAULT_MESSAGES=1000
 DEFAULT_MESSAGE_SIZE=1024
 DEFAULT_WORKERS=1
@@ -36,7 +38,14 @@ echo -e "${BLUE}=== Rusty Comms Host Client Setup ===${NC}"
 echo -e "Messages: ${GREEN}${MESSAGES}${NC}"
 echo -e "Message Size: ${GREEN}${MESSAGE_SIZE}${NC} bytes"
 echo -e "Workers: ${GREEN}${WORKERS}${NC}"
-echo -e "Socket Path: ${GREEN}${SOCKET_PATH}${NC}"
+echo -e "Mechanism: ${GREEN}${MECHANISM}${NC}"
+if [ "${MECHANISM}" = "uds" ]; then
+  echo -e "Socket Path: ${GREEN}${SOCKET_PATH}${NC}"
+elif [ "${MECHANISM}" = "shm" ]; then
+  echo -e "SHM Name: ${GREEN}${SHM_NAME}${NC}"
+else
+  echo -e "PMQ Name: ${GREEN}ipc_benchmark_pmq_crossenv${NC}"
+fi
 if [ -n "$DURATION" ]; then echo -e "Duration: ${GREEN}${DURATION}${NC}"; fi
 echo -e "Output: ${GREEN}${OUTPUT_FILE}${NC}"
 if [ -n "$STREAM_JSON" ]; then echo -e "Streaming JSON: ${GREEN}${STREAM_JSON}${NC}"; fi
@@ -95,14 +104,14 @@ export IPC_BENCHMARK_OUTPUT_DIR="${OUTPUT_DIR}"
 
 # Run the client
 print_status "Starting IPC benchmark client..."
-CMD=(
-  ./target/release/ipc-benchmark
-  -m uds
-  --mode host
-  --ipc-path "${SOCKET_PATH}"
-  --message-size ${MESSAGE_SIZE}
-  --concurrency ${WORKERS}
-)
+CMD=( ./target/release/ipc-benchmark --mode host --message-size ${MESSAGE_SIZE} --concurrency ${WORKERS} )
+if [ "${MECHANISM}" = "shm" ]; then
+  CMD=( "${CMD[@]}" -m shm --shm-name "${SHM_NAME}" )
+elif [ "${MECHANISM}" = "pmq" ]; then
+  CMD=( "${CMD[@]}" -m pmq )
+else
+  CMD=( "${CMD[@]}" -m uds --ipc-path "${SOCKET_PATH}" )
+fi
 if [ -n "$DURATION" ]; then
   CMD+=( --duration "$DURATION" )
 else

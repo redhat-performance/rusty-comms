@@ -264,6 +264,13 @@ pub struct Args {
     #[arg(long, help_heading = CROSS_ENVIRONMENT)]
     pub ipc_path: Option<PathBuf>,
 
+    /// Shared memory segment name for cross-environment communication (SHM)
+    ///
+    /// When running with the shared memory mechanism in cross-environment mode,
+    /// this names the OS shared memory segment used for communication.
+    #[arg(long, help_heading = CROSS_ENVIRONMENT)]
+    pub shm_name: Option<String>,
+
     /// Wait timeout for client connections in host mode (seconds)
     ///
     /// Maximum time the host coordinator will wait for all expected
@@ -513,6 +520,9 @@ pub struct BenchmarkConfiguration {
     
     /// IPC socket path for cross-environment communication
     pub ipc_path: Option<PathBuf>,
+
+    /// Shared memory segment name for cross-environment communication
+    pub shm_name: Option<String>,
     
     /// Connection timeout for client connections (seconds)
     pub connection_timeout: u64,
@@ -574,6 +584,7 @@ impl From<&Args> for BenchmarkConfiguration {
             mode: args.mode,
             client_count: args.client_count,
             ipc_path: args.ipc_path.clone(),
+            shm_name: args.shm_name.clone(),
             connection_timeout: args.connection_timeout,
             cross_env_debug: args.cross_env_debug,
             output_file: args.output_file.clone(),

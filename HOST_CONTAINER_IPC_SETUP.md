@@ -1,37 +1,73 @@
-# Host-Container IPC Setup with Unix Domain Sockets
+# Host-Container IPC Setup
 
-This setup demonstrates Option 1 for cross-environment IPC testing: **Unix Domain Sockets** for host-to-container communication.
+This document provides comprehensive setup instructions for cross-environment IPC testing between host and container environments. The benchmark suite supports **all three IPC mechanisms** (UDS, SHM, PMQ) for host-to-container communication.
 
 ## Overview
 
-This configuration runs a UDS server inside a Podman container and the benchmark driver on the host. Communication occurs via a Unix Domain Socket shared through a bind mount. This uses rusty-comms' built-in cross-environment coordination.
+This configuration enables real-world IPC performance testing across environment boundaries:
+- **Host Environment**: Safety domain running the benchmark client
+- **Container Environment**: Non-safety domain running the IPC server
+- **Communication**: Via Unix Domain Sockets, Shared Memory, or POSIX Message Queues
+- **Orchestration**: Automated container management with built-in cross-environment coordination
 
 ## Quick Start
 
-### Manual Step-by-Step
+### Method 1: Unified Script (Recommended)
 
-#### 1. Start the Containerized Server (Client Mode)
+The `run_host_container.sh` script automatically manages containers and runs benchmarks:
+
 ```bash
-# Start container server
-./run_container_server.sh start
+# Unix Domain Sockets: 1000 messages, 1024 bytes, 1 worker
+./run_host_container.sh uds 1000 1024 1
 
-# Check status
-./run_container_server.sh status
+# Shared Memory: duration-based test with 4KB messages
+DURATION=30s ./run_host_container.sh shm 0 4096 1
+
+# POSIX Message Queues: with streaming CSV output
+STREAM_CSV=./output/pmq_stream.csv ./run_host_container.sh pmq 5000 512 1
+
+# All mechanisms comparison
+./run_host_container.sh uds 1000 1024 1
+./run_host_container.sh shm 1000 1024 1
+./run_host_container.sh pmq 1000 1024 1
 ```
 
-#### 2. Run the Host Driver (Host Mode)
+### Method 2: Manual Step-by-Step
+
+For advanced users who need manual control:
+
+#### 1. Start the Containerized Server
+
+Choose the appropriate container server for your IPC mechanism:
+
 ```bash
-# Message-count mode
-./run_host_client.sh 1000 1024 1
+# Unix Domain Sockets
+./start_uds_container_server.sh &
 
-# Duration mode (example: 30 seconds)
-DURATION=30s ./run_host_client.sh 0 1024 1
+# Shared Memory
+./start_shm_container_server.sh &
 
-# With custom output and per-message streaming
-OUTPUT_FILE=./output/host_run.json \
-STREAM_JSON=./output/lat_stream.json \
-STREAM_CSV=./output/lat_stream.csv \
-./run_host_client.sh 10000 1024 1
+# POSIX Message Queues
+./start_pmq_container_server.sh &
+```
+
+#### 2. Run the Host Driver
+
+```bash
+# UDS: Message-count mode
+./target/release/ipc-benchmark --mode host -m uds \
+  --ipc-path ./sockets/ipc_benchmark.sock \
+  --message-size 1024 --msg-count 1000
+
+# SHM: Duration mode (30 seconds)
+./target/release/ipc-benchmark --mode host -m shm \
+  --shm-name ipc_benchmark_shm_crossenv \
+  --message-size 1024 --duration 30s
+
+# PMQ: With custom output
+./target/release/ipc-benchmark --mode host -m pmq \
+  --message-size 512 --msg-count 5000 \
+  --output-file ./output/pmq_results.json
 ```
 
 #### 3. View Results
@@ -39,15 +75,22 @@ STREAM_CSV=./output/lat_stream.csv \
 # Check output directory
 ls -la output/
 
-# View results
-ls -la output/
-cat output/host_client_results.json
+# View JSON results
+cat output/host_*_results.json | jq .
+
+# View streaming CSV (if enabled)
+head -20 output/*.csv
 ```
 
 #### 4. Cleanup
 ```bash
-# Stop the container
-./run_container_server.sh stop
+# Stop specific containers
+podman rm -f rusty-comms-uds-server
+podman rm -f rusty-comms-shm-server
+podman rm -f rusty-comms-pmq-server
+
+# Or stop all benchmark containers
+podman rm -f $(podman ps -q --filter "name=rusty-comms-")
 ```
 
 ## Architecture

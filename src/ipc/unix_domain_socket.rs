@@ -240,9 +240,17 @@ impl IpcTransport for UnixDomainSocketTransport {
         }
 
         if let Some(ref mut stream) = self.stream {
-            Self::write_message(stream, message).await?;
-            debug!("Sent message {} via Unix Domain Socket", message.id);
-            Ok(())
+            match Self::write_message(stream, message).await {
+                Ok(()) => {
+                    debug!("Sent message {} via Unix Domain Socket", message.id);
+                    Ok(())
+                }
+                Err(e) => {
+                    // Reset stream so next call will accept a fresh connection
+                    self.stream = None;
+                    Err(e)
+                }
+            }
         } else {
             Err(anyhow!("No active stream available"))
         }
@@ -261,9 +269,17 @@ impl IpcTransport for UnixDomainSocketTransport {
         }
 
         if let Some(ref mut stream) = self.stream {
-            let message = Self::read_message(stream).await?;
-            debug!("Received message {} via Unix Domain Socket", message.id);
-            Ok(message)
+            match Self::read_message(stream).await {
+                Ok(message) => {
+                    debug!("Received message {} via Unix Domain Socket", message.id);
+                    Ok(message)
+                }
+                Err(e) => {
+                    // Reset stream so next call will accept a fresh connection
+                    self.stream = None;
+                    Err(e)
+                }
+            }
         } else {
             Err(anyhow!("No active stream available"))
         }

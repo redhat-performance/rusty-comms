@@ -105,11 +105,14 @@ pub struct PosixMessageQueueTransport {
     /// Current connection state of the transport
     state: TransportState,
     
-    /// POSIX message queue name (with "/" prefix)
-    queue_name: String,
+    /// Base POSIX message queue name (without suffix, no leading "/")
+    base_queue_name: String,
     
-    /// Message queue file descriptor for I/O operations
-    mq_fd: Option<MqdT>,
+    /// Message queue file descriptor used for sending
+    send_mq_fd: Option<MqdT>,
+
+    /// Message queue file descriptor used for receiving
+    recv_mq_fd: Option<MqdT>,
     
     /// Maximum size of individual messages in bytes
     max_msg_size: usize,
@@ -151,8 +154,9 @@ impl PosixMessageQueueTransport {
     pub fn new() -> Self {
         Self {
             state: TransportState::Uninitialized,
-            queue_name: String::new(),
-            mq_fd: None,
+            base_queue_name: String::new(),
+            send_mq_fd: None,
+            recv_mq_fd: None,
             max_msg_size: 8192,
             max_msg_count: 10,
             is_creator: false,
@@ -238,23 +242,14 @@ impl PosixMessageQueueTransport {
     /// ensuring that cleanup proceeds even if individual operations fail.
     fn cleanup_queue(&mut self) {
         debug!("Cleaning up POSIX message queue");
+        if let Some(fd) = self.send_mq_fd.take() { let _ = mq_close(fd); }
+        if let Some(fd) = self.recv_mq_fd.take() { let _ = mq_close(fd); }
 
-        if let Some(fd) = self.mq_fd.take() {
-            debug!("Closing message queue with fd: {:?}", fd);
-            if let Err(e) = mq_close(fd) {
-                warn!("Failed to close message queue: {}", e);
-            } else {
-                debug!("Closed message queue");
-            }
-        }
-
-        // Only unlink the queue if this instance created it (server)
-        if self.is_creator && !self.queue_name.is_empty() {
-            if let Err(e) = mq_unlink(self.queue_name.as_str()) {
-                warn!("Failed to unlink message queue '{}': {}", self.queue_name, e);
-            } else {
-                debug!("Unlinked message queue: {}", self.queue_name);
-            }
+        if self.is_creator && !self.base_queue_name.is_empty() {
+            let c2s = format!("/{}_c2s", self.base_queue_name);
+            let s2c = format!("/{}_s2c", self.base_queue_name);
+            let _ = mq_unlink(c2s.as_str());
+            let _ = mq_unlink(s2c.as_str());
         }
     }
 }
@@ -326,37 +321,39 @@ impl IpcTransport for PosixMessageQueueTransport {
     async fn start_server(&mut self, config: &TransportConfig) -> Result<()> {
         debug!("Starting POSIX Message Queue server");
 
-        self.queue_name = format!("/{}", config.message_queue_name);
+        self.base_queue_name = config.message_queue_name.clone();
         self.max_msg_count = config.message_queue_depth;
         self.max_msg_size = config.buffer_size.max(1024);
         self.is_creator = true; // Mark this instance as the creator
 
         // Open/create the message queue in a blocking task
-        let queue_name = self.queue_name.clone();
+        let c2s_name = format!("/{}_c2s", self.base_queue_name);
+        let s2c_name = format!("/{}_s2c", self.base_queue_name);
         let max_msg_count = self.max_msg_count;
         let max_msg_size = self.max_msg_size;
         
-        let mq_fd = tokio::task::spawn_blocking(move || {
-            debug!("Server creating message queue '{}'...", queue_name);
+        // Create both queues: client->server (receive), server->client (send)
+        let (recv_fd, send_fd) = tokio::task::spawn_blocking(move || {
             let attr = MqAttr::new(0, max_msg_count as i64, max_msg_size as i64, 0);
-            let result = mq_open(
-                queue_name.as_str(),
-                MQ_OFlag::O_CREAT | MQ_OFlag::O_RDWR | MQ_OFlag::O_NONBLOCK, // Add O_NONBLOCK
-                Mode::S_IRUSR | Mode::S_IWUSR,
+            let recv_fd = mq_open(
+                c2s_name.as_str(),
+                MQ_OFlag::O_CREAT | MQ_OFlag::O_RDWR | MQ_OFlag::O_NONBLOCK,
+                Mode::from_bits_truncate(0o666),
                 Some(&attr),
-            ).map_err(|e| anyhow!("Failed to create server queue: {}", e));
-            
-            match &result {
-                Ok(fd) => debug!("Server successfully created queue '{}' with fd: {:?}", queue_name, fd),
-                Err(e) => debug!("Server failed to create queue '{}': {}", queue_name, e),
-            }
-            
-            result
+            ).map_err(|e| anyhow!("Failed to create server recv queue: {}", e))?;
+            let send_fd = mq_open(
+                s2c_name.as_str(),
+                MQ_OFlag::O_CREAT | MQ_OFlag::O_RDWR | MQ_OFlag::O_NONBLOCK,
+                Mode::from_bits_truncate(0o666),
+                Some(&attr),
+            ).map_err(|e| anyhow!("Failed to create server send queue: {}", e))?;
+            Ok::<(MqdT, MqdT), anyhow::Error>((recv_fd, send_fd))
         }).await??;
 
-        self.mq_fd = Some(mq_fd);
+        self.recv_mq_fd = Some(recv_fd);
+        self.send_mq_fd = Some(send_fd);
         self.state = TransportState::Connected;
-        debug!("POSIX Message Queue server started with queue: {}", self.queue_name);
+        debug!("POSIX Message Queue server started with queues: /{}_c2s and /{}_s2c", self.base_queue_name, self.base_queue_name);
         Ok(())
     }
 
@@ -404,48 +401,43 @@ impl IpcTransport for PosixMessageQueueTransport {
     async fn start_client(&mut self, config: &TransportConfig) -> Result<()> {
         debug!("Starting POSIX Message Queue client");
 
-        self.queue_name = format!("/{}", config.message_queue_name);
+        self.base_queue_name = config.message_queue_name.clone();
         self.max_msg_count = config.message_queue_depth;
         self.max_msg_size = config.buffer_size.max(1024);
         self.is_creator = false; // Mark this instance as a client
 
         // Open existing message queue with retry logic
-        let queue_name = self.queue_name.clone();
+        let c2s_name = format!("/{}_c2s", self.base_queue_name);
+        let s2c_name = format!("/{}_s2c", self.base_queue_name);
         
-        let mq_fd = tokio::task::spawn_blocking(move || {
-            // Retry opening the queue with exponential backoff
+        let (recv_fd, send_fd) = tokio::task::spawn_blocking(move || {
             let mut attempts = 0;
-            let max_attempts = 10;
-            let mut delay_ms = 10;
-            
-            loop {
-                match mq_open(
-                    queue_name.as_str(),
-                    MQ_OFlag::O_RDWR | MQ_OFlag::O_NONBLOCK, // Add O_NONBLOCK
-                    Mode::empty(),
-                    None,
-                ) {
-                    Ok(fd) => {
-                        debug!("Client successfully opened queue '{}' with fd: {:?} after {} attempts", queue_name, fd, attempts + 1);
-                        return Ok(fd);
-                    }
-                    Err(Errno::ENOENT) if attempts < max_attempts => {
-                        debug!("Queue '{}' not ready yet, retrying in {}ms (attempt {}/{})", queue_name, delay_ms, attempts + 1, max_attempts);
-                        std::thread::sleep(Duration::from_millis(delay_ms));
-                        attempts += 1;
-                        delay_ms = (delay_ms * 2).min(1000); // Cap at 1 second
-                        continue;
-                    }
-                    Err(e) => {
-                        return Err(anyhow!("Failed to open client queue after {} attempts: {}", attempts + 1, e));
+            let max_attempts = 30;
+            let mut delay_ms = 50;
+            let mut open_queue = |name: &str| -> Result<MqdT> {
+                loop {
+                    match mq_open(name, MQ_OFlag::O_RDWR | MQ_OFlag::O_NONBLOCK, Mode::empty(), None) {
+                        Ok(fd) => return Ok(fd),
+                        Err(Errno::ENOENT) if attempts < max_attempts => {
+                            std::thread::sleep(Duration::from_millis(delay_ms));
+                            attempts += 1;
+                            delay_ms = (delay_ms * 2).min(1000);
+                            continue;
+                        }
+                        Err(e) => return Err(anyhow!("Failed to open queue '{}': {}", name, e)),
                     }
                 }
-            }
+            };
+            // Client should receive from server->client (s2c) and send to client->server (c2s)
+            let recv_fd = open_queue(s2c_name.as_str())?;
+            let send_fd = open_queue(c2s_name.as_str())?;
+            Ok::<(MqdT, MqdT), anyhow::Error>((recv_fd, send_fd))
         }).await??;
 
-        self.mq_fd = Some(mq_fd);
+        self.recv_mq_fd = Some(recv_fd);
+        self.send_mq_fd = Some(send_fd);
         self.state = TransportState::Connected;
-        debug!("POSIX Message Queue client connected to queue: {}", self.queue_name);
+        debug!("POSIX Message Queue client connected to queues: /{}_c2s and /{}_s2c", self.base_queue_name, self.base_queue_name);
         Ok(())
     }
 
@@ -497,9 +489,7 @@ impl IpcTransport for PosixMessageQueueTransport {
     /// - **Resource**: No queue available or transport not initialized
     async fn send(&mut self, message: &Message) -> Result<()> {
         let data = message.to_bytes()?;
-        let fd_ref = self.mq_fd.as_ref().ok_or_else(|| anyhow!("No message queue available"))?;
-        
-        // Since MqdT is just a wrapper around an fd, we can extract its raw fd
+        let fd_ref = self.send_mq_fd.as_ref().ok_or_else(|| anyhow!("No send queue available"))?;
         let raw_fd = fd_ref.as_raw_fd();
         
         // Use non-blocking send with exponential backoff for queue-full conditions
@@ -592,7 +582,7 @@ impl IpcTransport for PosixMessageQueueTransport {
     /// - **Permanent**: Invalid queue state or deserialization failure
     /// - **Resource**: No queue available or transport not initialized
     async fn receive(&mut self) -> Result<Message> {
-        let fd_ref = self.mq_fd.as_ref().ok_or_else(|| anyhow!("No message queue available"))?;
+        let fd_ref = self.recv_mq_fd.as_ref().ok_or_else(|| anyhow!("No recv queue available"))?;
         let raw_fd = fd_ref.as_raw_fd();
         let max_msg_size = self.max_msg_size;
         
@@ -680,22 +670,23 @@ impl IpcTransport for PosixMessageQueueTransport {
     /// operation success, preventing further use of an invalid transport.
     async fn close(&mut self) -> Result<()> {
         debug!("Closing POSIX Message Queue transport");
-        let queue_name = self.queue_name.clone();
-        let mq_fd = self.mq_fd.take();
+        let base = self.base_queue_name.clone();
+        let send_fd = self.send_mq_fd.take();
+        let recv_fd = self.recv_mq_fd.take();
         let is_creator = self.is_creator;
         
         tokio::task::spawn_blocking(move || {
-            if let Some(fd) = mq_fd {
+            if let Some(fd) = send_fd { let _ = mq_close(fd); }
+            if let Some(fd) = recv_fd {
                 if let Err(e) = mq_close(fd) {
                     warn!("Failed to close message queue: {}", e);
                 }
             }
             
             // Only unlink if this instance created the queue
-            if is_creator && !queue_name.is_empty() {
-                if let Err(e) = mq_unlink(queue_name.as_str()) {
-                    warn!("Failed to unlink message queue '{}': {}", queue_name, e);
-                }
+            if is_creator && !base.is_empty() {
+                let _ = mq_unlink(format!("/{}_c2s", base).as_str());
+                let _ = mq_unlink(format!("/{}_s2c", base).as_str());
             }
         }).await.ok();
         
@@ -804,7 +795,7 @@ impl IpcTransport for PosixMessageQueueTransport {
         self.start_server(config).await?;
         
         let (tx, rx) = mpsc::channel(1000);
-        let fd_ref = self.mq_fd.as_ref().ok_or_else(|| anyhow!("No message queue available"))?;
+        let fd_ref = self.recv_mq_fd.as_ref().ok_or_else(|| anyhow!("No recv queue available"))?;
         let raw_fd = fd_ref.as_raw_fd();
         let max_msg_size = self.max_msg_size;
         

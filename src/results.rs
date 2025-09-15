@@ -28,8 +28,8 @@ use crate::metrics::{LatencyType, PerformanceMetrics};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs::OpenOptions;
-use std::io::{self, Write};
+use std::fs::{OpenOptions, File};
+use std::io::{self, Write, BufWriter};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{debug, info};
@@ -474,6 +474,12 @@ pub struct ResultsManager {
 
     /// Buffer for collecting records when both tests are running (keyed by message ID)
     pending_records: HashMap<u64, MessageLatencyRecord>,
+
+    /// Persistent writer for streaming JSON output (if enabled)
+    streaming_json_writer: Option<BufWriter<File>>,
+
+    /// Persistent writer for streaming CSV output (if enabled)
+    streaming_csv_writer: Option<BufWriter<File>>,
 }
 
 impl ResultsManager {
@@ -507,6 +513,8 @@ impl ResultsManager {
             first_record_streamed: true,
             both_tests_enabled: false,
             pending_records: HashMap::new(),
+            streaming_json_writer: None,
+            streaming_csv_writer: None,
         })
     }
 
@@ -545,14 +553,17 @@ impl ResultsManager {
         self.per_message_streaming = false; // Default to final results streaming
 
         // Create/truncate the streaming file and initialize JSON array
-        let mut file = std::fs::OpenOptions::new()
+        let file = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
             .open(&self.streaming_file.as_ref().unwrap())?;
 
-        // Write JSON array opening bracket
-        writeln!(file, "[")?;
+        // Keep a persistent writer and write JSON array opening bracket
+        let mut writer = BufWriter::new(file);
+        writeln!(writer, "[")?;
+        writer.flush()?;
+        self.streaming_json_writer = Some(writer);
 
         debug!("Enabled streaming to: {:?}", self.streaming_file);
         Ok(())
@@ -601,17 +612,20 @@ impl ResultsManager {
         self.first_record_streamed = true;
 
         // Create/truncate the streaming file and initialize columnar JSON object
-        let mut file = std::fs::OpenOptions::new()
+        let file = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
             .open(&self.streaming_file.as_ref().unwrap())?;
 
-        // Write JSON object opening and headings array
-        writeln!(file, "{{")?;
+        // Persist writer and write JSON object opening and headings array
+        let mut writer = BufWriter::new(file);
+        writeln!(writer, "{{")?;
         let headings_json = serde_json::to_string(MessageLatencyRecord::HEADINGS)?;
-        writeln!(file, "  \"headings\": {},", headings_json)?;
-        write!(file, "  \"data\": [")?;
+        writeln!(writer, "  \"headings\": {},", headings_json)?;
+        write!(writer, "  \"data\": [")?;
+        writer.flush()?;
+        self.streaming_json_writer = Some(writer);
 
         debug!("Enabled per-message streaming to: {:?}", self.streaming_file);
         Ok(())
@@ -663,15 +677,18 @@ impl ResultsManager {
         self.csv_streaming_enabled = true;
 
         // Create/truncate the streaming file and write header
-        let mut file = std::fs::OpenOptions::new()
+        let file = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
             .open(&self.streaming_csv_file.as_ref().unwrap())?;
 
+        let mut writer = BufWriter::new(file);
         // Write CSV header
         let header = MessageLatencyRecord::HEADINGS.join(",");
-        writeln!(file, "{}", header)?;
+        writeln!(writer, "{}", header)?;
+        writer.flush()?;
+        self.streaming_csv_writer = Some(writer);
 
         debug!("Enabled CSV streaming to: {:?}", self.streaming_csv_file);
         Ok(())
@@ -738,33 +755,30 @@ impl ResultsManager {
     ///
     /// Internal helper method that handles the actual file I/O for streaming records.
     async fn write_streaming_record(&mut self, record: &MessageLatencyRecord) -> Result<()> {
-        if let Some(ref streaming_file) = self.streaming_file {
-            let mut file = OpenOptions::new().append(true).open(streaming_file)?;
-
+        if let Some(writer) = self.streaming_json_writer.as_mut() {
             // Add comma if not first record (proper JSON array formatting)
             if !self.first_record_streamed {
-                writeln!(file, ",")?;
+                writeln!(writer, ",")?;
             } else {
                 // For the first record, add a newline to separate from the "data": [ line
-                writeln!(file)?;
+                writeln!(writer)?;
             }
 
             // Write JSON array of values
             let values = record.to_value_array();
             let json = serde_json::to_string(&values)?;
-            write!(file, "    {}", json)?; // Indent for readability
-            file.flush()?;
+            write!(writer, "    {}", json)?; // Indent for readability
+            writer.flush()?;
             
             self.first_record_streamed = false;
         }
 
         // Stream to CSV if enabled
         if self.csv_streaming_enabled {
-            if let Some(ref streaming_csv_file) = self.streaming_csv_file {
-                let mut file = OpenOptions::new().append(true).open(streaming_csv_file)?;
+            if let Some(writer) = self.streaming_csv_writer.as_mut() {
                 let csv_record = record.to_csv_record();
-                writeln!(file, "{}", csv_record)?;
-                file.flush()?;
+                writeln!(writer, "{}", csv_record)?;
+                writer.flush()?;
             }
         }
 
@@ -843,19 +857,17 @@ impl ResultsManager {
     ///
     /// The method ensures proper JSON array formatting by adding commas
     /// between elements and pretty-printing each result for readability.
-    async fn stream_results(&self, results: &BenchmarkResults) -> Result<()> {
-        if let Some(ref streaming_file) = self.streaming_file {
-            let mut file = OpenOptions::new().append(true).open(streaming_file)?;
-
+    async fn stream_results(&mut self, results: &BenchmarkResults) -> Result<()> {
+        if let Some(writer) = self.streaming_json_writer.as_mut() {
             // Add comma if not first result (proper JSON array formatting)
             if !self.results.is_empty() {
-                writeln!(file, ",")?;
+                writeln!(writer, ",")?;
             }
 
             // Write JSON result with pretty formatting for readability
             let json = serde_json::to_string_pretty(results)?;
-            write!(file, "{}", json)?;
-            file.flush()?;
+            write!(writer, "{}", json)?;
+            writer.flush()?;
         }
 
         Ok(())
@@ -904,23 +916,16 @@ impl ResultsManager {
     /// is a valid JSON document. It opens the file in append mode and
     /// writes the necessary closing syntax.
     async fn close_streaming_json(&mut self) -> Result<()> {
-        if self.per_message_streaming {
-            if let Some(streaming_file) = &self.streaming_file {
-                info!("Closing streaming JSON file.");
-                let mut file = OpenOptions::new().append(true).open(streaming_file)?;
+        if let Some(mut writer) = self.streaming_json_writer.take() {
+            info!("Closing streaming JSON file.");
+            if self.per_message_streaming {
                 // Write the closing brackets for the JSON data array and the root object.
-                write!(file, "\n  ]\n}}\n")?;
-                file.flush()?;
+                write!(writer, "\n  ]\n}}\n")?;
+            } else if self.streaming_enabled {
+                // Simple JSON array closing bracket.
+                write!(writer, "\n]\n")?;
             }
-        } else if self.streaming_enabled {
-            // This handles the case of non-per-message streaming, which is a simple JSON array.
-            if let Some(streaming_file) = &self.streaming_file {
-                info!("Closing streaming JSON file.");
-                let mut file = OpenOptions::new().append(true).open(streaming_file)?;
-                // Write the closing bracket for the JSON array.
-                write!(file, "\n]\n")?;
-                file.flush()?;
-            }
+            writer.flush()?;
         }
         Ok(())
     }
@@ -932,6 +937,9 @@ impl ResultsManager {
     /// this function primarily serves for logging and symmetry.
     async fn close_streaming_csv(&mut self) -> Result<()> {
         if self.csv_streaming_enabled {
+            if let Some(mut writer) = self.streaming_csv_writer.take() {
+                writer.flush()?;
+            }
             if let Some(path) = &self.streaming_csv_file {
                 info!("Finalizing streaming CSV file at {}", path.display());
             }
@@ -1704,7 +1712,7 @@ mod tests {
     fn test_results_manager_creation() {
         let temp_file = NamedTempFile::new().unwrap();
         let path = temp_file.path().to_path_buf();
-        let manager = ResultsManager::new(&Some(path.clone()), &None).unwrap();
+        let manager = ResultsManager::new(Some(path.as_path()), None).unwrap();
 
         assert_eq!(manager.output_file, Some(path));
         assert!(!manager.streaming_enabled);

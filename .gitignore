@@ -24,3 +24,6 @@ target
 .vscode
 *.json*
 *.log*
+*.csv*
+*.swp*
+output*

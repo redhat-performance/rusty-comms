@@ -8,8 +8,38 @@ This benchmark suite provides a systematic way to evaluate the performance of va
 
 - **Comprehensive**: Measures both latency and throughput for one-way and round-trip communication patterns
 - **Configurable**: Supports various message sizes, concurrency levels, and test durations
+- **Cross-Environment**: Supports host-to-container IPC testing for safety-critical applications
 - **Reproducible**: Generates detailed JSON output suitable for automated analysis
 - **Production-ready**: Optimized for performance measurement with minimal overhead
+
+## Execution Modes
+
+The benchmark suite supports three distinct execution modes:
+
+### 1. **Standalone Mode** (Default)
+Traditional single-process benchmarking where both client and server run within the same process.
+```bash
+./target/release/ipc-benchmark -m uds --message-size 1024 --msg-count 1000
+```
+
+### 2. **Host-to-Container Mode** (Cross-Environment)
+Real-world testing between host environment (safety domain) and containerized environment (non-safety domain).
+```bash
+# Host side (acts as client)
+./run_host_container.sh uds 1000 1024 1
+
+# Container side (acts as server) - automatically managed
+```
+
+### 3. **Manual Client/Server Mode**
+Manual control over client and server processes for custom testing scenarios.
+```bash
+# Server process
+./target/release/ipc-benchmark --mode client -m uds --ipc-path ./sockets/test.sock
+
+# Client process  
+./target/release/ipc-benchmark --mode host -m uds --ipc-path ./sockets/test.sock
+```
 
 ## Features
 
@@ -56,6 +86,7 @@ The optimized binary will be available at `target/release/ipc-benchmark`.
 
 ### Quick Start
 
+#### Standalone Testing (Single Process)
 ```bash
 # Run all IPC mechanisms with default settings
 ./target/release/ipc-benchmark -m all
@@ -66,6 +97,23 @@ The optimized binary will be available at `target/release/ipc-benchmark`.
   --message-size 4096 \
   --msg-count 50000 \
   --concurrency 4
+```
+
+#### Host-to-Container Testing (Cross-Environment)
+```bash
+# Prerequisites: Install Podman (see PODMAN_SETUP.md)
+# Start container server for UDS testing
+./start_uds_container_server.sh &
+
+# Run host-to-container benchmark
+./run_host_container.sh uds 1000 1024 1
+
+# Stop container when done
+podman rm -f rusty-comms-uds-server
+
+# For all mechanisms and syntax examples, see:
+# - README_HOST_TO_CONTAINER.md
+# - HOST_TO_CONTAINER_SYNTAX_EXAMPLES.txt
 ```
 
 ## Usage
@@ -200,6 +248,228 @@ ipc-benchmark \
   --concurrency 2 \
   --duration 30s
 ```
+
+## Host-to-Container Cross-Environment Testing
+
+For safety-critical applications that need to test IPC performance between host and container environments, this benchmark suite provides comprehensive cross-environment testing capabilities.
+
+### Prerequisites
+
+1. **Container Runtime**: Podman is required (Docker can be used with modifications)
+   ```bash
+   # See PODMAN_SETUP.md for detailed installation instructions
+   sudo dnf install podman
+   ```
+
+2. **Build the Project**: 
+   ```bash
+   cargo build --release
+   ```
+
+### Quick Start - Host-to-Container
+
+#### 1. Using the Unified Script (Recommended)
+
+The `run_host_container.sh` script provides the easiest way to run cross-environment tests:
+
+```bash
+# Basic UDS test: 1000 messages, 1024 bytes each, 1 worker
+./run_host_container.sh uds 1000 1024 1
+
+# Duration-based test: UDS for 30 seconds with 4KB messages
+DURATION=30s ./run_host_container.sh uds 0 4096 1
+
+# Shared Memory test with custom output
+OUTPUT_FILE=./output/shm_results.json ./run_host_container.sh shm 5000 2048 1
+
+# POSIX Message Queue test with streaming CSV output
+STREAM_CSV=./output/pmq_stream.csv ./run_host_container.sh pmq 1000 512 1
+```
+
+#### 2. Manual Setup (Advanced)
+
+For more control, you can manually start containers and run benchmarks:
+
+```bash
+# 1. Start the container server (UDS example)
+./start_uds_container_server.sh &
+
+# 2. Wait for container to be ready (check logs)
+podman logs rusty-comms-uds-server
+
+# 3. Run the host-side benchmark
+./target/release/ipc-benchmark \
+  --mode host \
+  -m uds \
+  --ipc-path ./sockets/ipc_benchmark.sock \
+  --message-size 1024 \
+  --msg-count 1000 \
+  --output-file ./output/host_uds_results.json
+
+# 4. Stop the container
+podman rm -f rusty-comms-uds-server
+```
+
+### Supported Cross-Environment Mechanisms
+
+| Mechanism | Script | Container Script | Status |
+|-----------|--------|------------------|--------|
+| **Unix Domain Sockets** | `run_host_container.sh uds` | `start_uds_container_server.sh` | ✅ Fully Supported |
+| **Shared Memory** | `run_host_container.sh shm` | `start_shm_container_server.sh` | ✅ Fully Supported |
+| **POSIX Message Queues** | `run_host_container.sh pmq` | `start_pmq_container_server.sh` | ✅ Fully Supported |
+
+### Configuration Options
+
+The unified script supports all benchmark parameters:
+
+```bash
+# Environment Variables
+export MECHANISM=uds           # uds, shm, pmq
+export DURATION=30s            # Duration instead of message count
+export OUTPUT_FILE=./output/results.json
+export STREAM_JSON=./output/stream.json
+export STREAM_CSV=./output/stream.csv
+export SOCKET_PATH=./sockets/custom.sock
+export SHM_NAME=custom_shm
+export BUFFER_SIZE=1048576
+export ROUND_TRIP=true         # Enable round-trip testing
+export VERBOSE=true            # Enable verbose logging
+
+# Run with environment variables
+./run_host_container.sh $MECHANISM $MESSAGES $MESSAGE_SIZE $WORKERS
+```
+
+### Example Test Scenarios
+
+#### Performance Comparison
+```bash
+# Test all mechanisms with the same parameters
+./run_host_container.sh uds 10000 1024 1
+./run_host_container.sh shm 10000 1024 1  
+./run_host_container.sh pmq 10000 1024 1
+```
+
+#### Latency Analysis
+```bash
+# Small messages for latency measurement
+ROUND_TRIP=true STREAM_CSV=./output/uds_latency.csv \
+./run_host_container.sh uds 5000 64 1
+```
+
+#### Throughput Testing
+```bash
+# Large messages for throughput measurement
+DURATION=60s OUTPUT_FILE=./output/shm_throughput.json \
+./run_host_container.sh shm 0 65536 1
+```
+
+#### Long-Running Tests
+```bash
+# 5-minute duration test with streaming output
+DURATION=5m STREAM_JSON=./output/long_test.json VERBOSE=true \
+./run_host_container.sh uds 0 1024 1
+```
+
+### Container Management
+
+#### Starting Individual Container Servers
+```bash
+# Unix Domain Sockets
+./start_uds_container_server.sh &
+
+# Shared Memory  
+./start_shm_container_server.sh &
+
+# POSIX Message Queues
+./start_pmq_container_server.sh &
+```
+
+#### Monitoring Container Status
+```bash
+# List running containers
+podman ps
+
+# View container logs
+podman logs -f rusty-comms-uds-server
+
+# Check container health
+podman exec rusty-comms-uds-server ipc-benchmark --help
+```
+
+#### Cleanup
+```bash
+# Stop specific containers
+podman rm -f rusty-comms-uds-server
+podman rm -f rusty-comms-shm-server  
+podman rm -f rusty-comms-pmq-server
+
+# Stop all benchmark containers
+podman rm -f $(podman ps -q --filter "name=rusty-comms-")
+```
+
+### Troubleshooting Cross-Environment Issues
+
+#### Common Problems and Solutions
+
+1. **Container Not Starting**
+   ```bash
+   # Check Podman installation
+   podman --version
+   
+   # Verify image build
+   podman images | grep rusty-comms
+   
+   # Check for port conflicts
+   podman ps -a
+   ```
+
+2. **Connection Timeouts**
+   ```bash
+   # Verify socket file exists
+   ls -la ./sockets/
+   
+   # Check container logs for errors
+   podman logs rusty-comms-uds-server
+   
+   # Increase connection timeout
+   CONNECTION_TIMEOUT=30 ./run_host_container.sh uds 1000 1024 1
+   ```
+
+3. **Permission Issues**
+   ```bash
+   # Ensure socket directory permissions
+   chmod 755 ./sockets/
+   
+   # Check SELinux context (if applicable)
+   ls -Z ./sockets/
+   ```
+
+4. **Performance Issues**
+   ```bash
+   # Monitor system resources
+   htop
+   
+   # Check container resource usage
+   podman stats rusty-comms-uds-server
+   
+   # Reduce message size or count
+   ./run_host_container.sh uds 1000 512 1
+   ```
+
+### Best Practices
+
+1. **Always start containers before running benchmarks**
+2. **Wait for containers to be fully ready** (check logs)
+3. **Use appropriate timeouts** for your test duration
+4. **Clean up containers** after testing
+5. **Monitor system resources** during long-running tests
+6. **Use streaming output** for real-time monitoring
+
+For complete syntax examples and advanced usage, see:
+- **[README_HOST_TO_CONTAINER.md](README_HOST_TO_CONTAINER.md)** - Detailed documentation
+- **[HOST_TO_CONTAINER_SYNTAX_EXAMPLES.txt](HOST_TO_CONTAINER_SYNTAX_EXAMPLES.txt)** - 100+ syntax examples
+- **[HOST_CONTAINER_IPC_SETUP.md](HOST_CONTAINER_IPC_SETUP.md)** - Technical setup details
+- **[PODMAN_SETUP.md](PODMAN_SETUP.md)** - Container runtime setup
 
 ## Output Format
 

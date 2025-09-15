@@ -1,5 +1,6 @@
 use super::{ConnectionId, ConnectionRole, IpcTransport, Message, TransportConfig, TransportState};
 use anyhow::{anyhow, Result};
+use std::io::ErrorKind;
 use async_trait::async_trait;
 use shared_memory::{Shmem, ShmemConf};
 use std::collections::HashMap;
@@ -169,10 +170,25 @@ impl SharedMemoryConnection {
         let total_size = SharedMemoryRingBuffer::HEADER_SIZE + buffer_size;
 
         let shmem = if create {
-            ShmemConf::new()
+            match ShmemConf::new()
                 .size(total_size)
                 .os_id(&segment_name)
-                .create()?
+                .create()
+            {
+                Ok(m) => m,
+                Err(e_create) => {
+                    // If creation fails (e.g., exists), try opening existing segment
+                    match ShmemConf::new().os_id(&segment_name).open() {
+                        Ok(m_open) => m_open,
+                        Err(e_open) => {
+                            return Err(anyhow!(
+                                "Failed to create/open shared memory '{}': create error: {}; open error: {}",
+                                segment_name, e_create, e_open
+                            ));
+                        }
+                    }
+                }
+            }
         } else {
             ShmemConf::new().os_id(&segment_name).open()?
         };
@@ -239,7 +255,7 @@ impl SharedMemoryConnection {
 
         // Try to write with timeout
         let start = std::time::Instant::now();
-        let timeout_duration = Duration::from_secs(5);
+        let timeout_duration = Duration::from_millis(50);
 
         loop {
             match ring_buffer.write_data(&message_bytes) {
@@ -254,6 +270,7 @@ impl SharedMemoryConnection {
                     if start.elapsed() > timeout_duration {
                         return Err(anyhow!("Timeout sending message"));
                     }
+                    // Brief backoff to reduce busy spin and allow reader to progress
                     sleep(Duration::from_millis(1)).await;
                 }
             }
@@ -265,7 +282,7 @@ impl SharedMemoryConnection {
 
         // Try to read with timeout
         let start = std::time::Instant::now();
-        let timeout_duration = Duration::from_secs(5);
+        let timeout_duration = Duration::from_millis(50);
 
         loop {
             match ring_buffer.read_data() {

@@ -10,6 +10,7 @@ Thank you for your interest in contributing to the IPC Benchmark Suite! This doc
 - [Contribution Guidelines](#contribution-guidelines)
 - [Code Style](#code-style)
 - [Testing](#testing)
+- [Cross-Environment Testing](#cross-environment-testing)
 - [Documentation](#documentation)
 - [Submitting Changes](#submitting-changes)
 - [Review Process](#review-process)
@@ -41,6 +42,7 @@ We pledge to make participation in our project a harassment-free experience for 
 2. **Help Wanted**: Issues labeled `help-wanted` are open for contributions
 3. **Documentation**: Issues labeled `documentation` are great for getting started
 4. **Performance**: Issues labeled `performance` require deeper system knowledge
+5. **Cross-Environment**: Issues labeled `cross-environment` involve host-to-container testing
 
 ### Communication
 
@@ -293,6 +295,107 @@ fn benchmark_latency_calculation(c: &mut Criterion) {
 
 criterion_group!(benches, benchmark_latency_calculation);
 criterion_main!(benches);
+```
+
+## Cross-Environment Testing
+
+The IPC Benchmark Suite supports cross-environment testing between host and container environments, which is critical for safety-critical applications. Contributors should test both standalone and cross-environment scenarios.
+
+### Prerequisites for Cross-Environment Testing
+
+1. **Container Runtime**: Install Podman (preferred) or Docker
+   ```bash
+   # On RHEL/Fedora
+   sudo dnf install podman podman-compose
+   
+   # Verify installation
+   podman version
+   ```
+
+2. **Container Build**: Ensure the container image builds successfully
+   ```bash
+   cargo build --release
+   podman build -t rusty-comms:latest .
+   ```
+
+### Testing Cross-Environment Changes
+
+#### Test All Three IPC Mechanisms
+
+Any changes affecting IPC coordination should be tested across all mechanisms:
+
+```bash
+# Test UDS cross-environment
+./run_host_container.sh uds 1000 1024 1
+
+# Test SHM cross-environment  
+./run_host_container.sh shm 1000 1024 1
+
+# Test PMQ cross-environment
+./run_host_container.sh pmq 1000 1024 1
+```
+
+#### Test Manual Container Management
+
+For changes to container scripts or coordination logic:
+
+```bash
+# Start containers manually
+./start_uds_container_server.sh &
+./start_shm_container_server.sh &
+./start_pmq_container_server.sh &
+
+# Test host connections
+./target/release/ipc-benchmark --mode host -m uds --ipc-path ./sockets/ipc_benchmark.sock --msg-count 100
+./target/release/ipc-benchmark --mode host -m shm --shm-name ipc_benchmark_shm_crossenv --msg-count 100
+./target/release/ipc-benchmark --mode host -m pmq --msg-count 100
+
+# Cleanup
+podman rm -f $(podman ps -q --filter "name=rusty-comms-")
+```
+
+### Cross-Environment Guidelines
+
+#### Testing Checklist
+
+Before submitting PRs affecting cross-environment functionality:
+
+- [ ] **Basic functionality**: All three mechanisms work in cross-env mode
+- [ ] **Script compatibility**: `run_host_container.sh` works with changes
+- [ ] **Container startup**: All `start_*_container_server.sh` scripts work
+- [ ] **Error handling**: Graceful failure when containers aren't available
+- [ ] **Resource cleanup**: Containers are properly cleaned up after tests
+- [ ] **Performance**: No significant performance regression in cross-env mode
+
+#### Environment Variable Testing
+
+Test environment variable support for the unified script:
+
+```bash
+# Test basic environment variables
+DURATION=10s OUTPUT_FILE=./output/test.json VERBOSE=true \
+./run_host_container.sh uds 0 1024 1
+
+# Test mechanism-specific variables
+SHM_NAME=test_shm BUFFER_SIZE=1048576 \
+./run_host_container.sh shm 1000 4096 1
+
+SOCKET_PATH=./sockets/test.sock ROUND_TRIP=true \
+./run_host_container.sh uds 500 512 1
+```
+
+### Performance Testing for Cross-Environment
+
+#### Baseline Measurements
+
+```bash
+# Establish baselines
+./run_host_container.sh uds 10000 1024 1 > baseline_uds.txt
+./run_host_container.sh shm 10000 1024 1 > baseline_shm.txt  
+./run_host_container.sh pmq 10000 1024 1 > baseline_pmq.txt
+
+# Compare with standalone mode
+./target/release/ipc-benchmark -m uds --msg-count 10000 > baseline_standalone.txt
 ```
 
 ## Documentation
