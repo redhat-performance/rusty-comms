@@ -45,6 +45,8 @@
 //!             buffer_size: Some(8192),
 //!             host: "127.0.0.1".to_string(),
 //!             port: 8080,
+//!             server_affinity: None,
+//!             client_affinity: None,
 //!         };
 //!     
 //!         let runner = BenchmarkRunner::new(config, IpcMechanism::UnixDomainSocket);

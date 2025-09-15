@@ -41,6 +41,7 @@ tracing-appender = "0.2.3"
 time = ">=0.3.34, <0.3.36" # Pinned to a compatible range for MSRV 1.70
 parking_lot = "0.12.4"
 thiserror = "2.0.16"
+core_affinity = "0.8.3"
 
 [dev-dependencies]
 criterion = "0.5"
