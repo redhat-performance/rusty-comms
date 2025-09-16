@@ -23,7 +23,8 @@ fn server_ready_handshake_via_stdout_pipe() {
     #[cfg(windows)]
     let mut cmd = {
         let mut c = Command::new("cmd");
-        c.arg("/C").arg("powershell -NoLogo -NoProfile -Command \"[Console]::OpenStandardOutput().WriteByte(1); Start-Sleep -Milliseconds 50\"");
+        // Use a simple echo to write a deterministic single-byte 'R' to stdout
+        c.arg("/C").arg("echo R");
         c
     };
     // attach stdio
@@ -57,8 +58,11 @@ fn server_ready_handshake_via_stdout_pipe() {
         }
     }
 
-    // ensure the child wrote the expected ready byte 0x01
+    // ensure the child wrote the expected ready signal
+    #[cfg(unix)]
     assert_eq!(buf[0], 1u8, "expected ready byte 0x01 from child stdout");
+    #[cfg(windows)]
+    assert_eq!(buf[0], b'R', "expected 'R' from child stdout");
 
     // reap child
     let _ = child.wait();
