@@ -1,6 +1,9 @@
 use os_pipe::pipe;
 use std::io::Read;
+#[cfg(unix)]
 use std::os::unix::io::{FromRawFd, IntoRawFd};
+#[cfg(windows)]
+use std::os::windows::io::{FromRawHandle, IntoRawHandle};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -11,13 +14,30 @@ fn server_ready_handshake_via_stdout_pipe() {
 
     // Spawn a short-lived child that writes a single byte to stdout then exits.
     // The child stdout is connected to the writer end of our pipe.
-    let mut cmd = Command::new("sh");
-    cmd.arg("-c")
-        .arg("printf '\\001'; sleep 0.05")
-        .stdin(Stdio::null())
-        // attach the writer end of our pipe to the child's stdout
-        .stdout(unsafe { Stdio::from_raw_fd(writer.into_raw_fd()) })
-        .stderr(Stdio::null());
+    #[cfg(unix)]
+    let mut cmd = {
+        let mut c = Command::new("sh");
+        c.arg("-c").arg("printf '\\001'; sleep 0.05");
+        c
+    };
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = Command::new("cmd");
+        c.arg("/C").arg("powershell -NoLogo -NoProfile -Command \"[Console]::OpenStandardOutput().WriteByte(1); Start-Sleep -Milliseconds 50\"");
+        c
+    };
+    // attach stdio
+    cmd.stdin(Stdio::null());
+    // attach the writer end of our pipe to the child's stdout
+    #[cfg(unix)]
+    {
+        cmd.stdout(unsafe { Stdio::from_raw_fd(writer.into_raw_fd()) });
+    }
+    #[cfg(windows)]
+    {
+        cmd.stdout(unsafe { Stdio::from_raw_handle(writer.into_raw_handle()) });
+    }
+    cmd.stderr(Stdio::null());
 
     let mut child = cmd.spawn().expect("spawn child");
 
