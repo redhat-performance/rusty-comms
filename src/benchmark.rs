@@ -95,8 +95,6 @@ impl<'a> std::fmt::Display for BenchmarkConfigDisplay<'a> {
             writeln!(f, "  PMQ Priority:       {}", self.config.pmq_priority)?;
         }
 
-        
-
         let first_message_status = if self.config.include_first_message {
             "Included in results"
         } else {
@@ -384,7 +382,6 @@ impl BenchmarkRunner {
                 transport_config: &transport_config,
             }
         );
-        
 
         // Initialize results structure with test configuration
         let mut results = BenchmarkResults::new(
@@ -717,7 +714,6 @@ impl BenchmarkRunner {
                     } else if received >= msg_count_server {
                         break;
                     }
-                    }
 
                     // Try to receive with a shorter timeout to avoid hanging
                     match timeout(Duration::from_millis(50), transport.receive()).await {
@@ -905,7 +901,13 @@ impl BenchmarkRunner {
                         if start_time.elapsed() >= dur {
                             break;
                         }
-                    } else if received >= if include_first_message { msg_count } else { msg_count + 1 } {
+                    } else if received
+                        >= if include_first_message {
+                            msg_count
+                        } else {
+                            msg_count + 1
+                        }
+                    {
                         break;
                     }
 
@@ -985,11 +987,8 @@ impl BenchmarkRunner {
                 }
 
                 // Try to receive response with timeout
-                match tokio::time::timeout(
-                    Duration::from_millis(50),
-                    client_transport.receive(),
-                )
-                .await
+                match tokio::time::timeout(Duration::from_millis(50), client_transport.receive())
+                    .await
                 {
                     Ok(Ok(_)) => {
                         let latency = send_time.elapsed();

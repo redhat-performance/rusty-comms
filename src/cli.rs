@@ -642,7 +642,7 @@ pub fn parse_duration_micros(s: &str) -> Result<Duration, String> {
     if s.is_empty() {
         return Err("Duration cannot be empty".to_string());
     }
-    
+
     // Parse the numeric part and unit suffix
     let (num_str, unit) = if let Some(stripped) = s.strip_suffix("us") {
         (stripped, "us")
