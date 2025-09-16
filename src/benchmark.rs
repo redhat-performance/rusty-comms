@@ -572,13 +572,23 @@ impl BenchmarkRunner {
         // compile the library without cfg(test), so we cannot rely on cfg!(test).
         // Strategy:
         // 1) If current_exe filename matches our binary name, use it.
-        // 2) If CARGO_BIN_EXE_ipc-benchmark env var is set, use it.
-        // 3) Fallback to target/debug/ipc-benchmark from manifest dir.
+        // 2) If CARGO_BIN_EXE_* env var is set, use it.
+        // 3) Fallback to target/debug/<name>[.exe] from manifest dir.
         let exe_name = "ipc-benchmark";
+        #[cfg(windows)]
+        let exe_name_win = "ipc-benchmark.exe";
         let mut exe_path = None;
 
-        if current_exe.file_name().and_then(|n| n.to_str()) == Some(exe_name) {
-            exe_path = Some(current_exe.clone());
+        {
+            let current_name = current_exe.file_name().and_then(|n| n.to_str());
+            let matches_unix = current_name == Some(exe_name);
+            #[cfg(windows)]
+            let matches_win = current_name == Some(exe_name_win);
+            #[cfg(not(windows))]
+            let matches_win = false;
+            if matches_unix || matches_win {
+                exe_path = Some(current_exe.clone());
+            }
         }
 
         if exe_path.is_none() {
@@ -587,11 +597,23 @@ impl BenchmarkRunner {
                 if pbuf.exists() && pbuf.file_name().and_then(|n| n.to_str()) == Some(exe_name) {
                     exe_path = Some(pbuf);
                 }
+            } else if let Ok(p) = std::env::var("CARGO_BIN_EXE_ipc_benchmark") {
+                // Some Cargo setups may use underscores in the env var name
+                let pbuf = std::path::PathBuf::from(p);
+                if pbuf.exists() {
+                    exe_path = Some(pbuf);
+                }
             }
         }
 
         if exe_path.is_none() {
             let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            #[cfg(windows)]
+            let p = root
+                .join("target")
+                .join("debug")
+                .join(format!("{}{}", exe_name, ".exe"));
+            #[cfg(not(windows))]
             let p = root.join("target").join("debug").join(exe_name);
             if p.exists() {
                 exe_path = Some(p);
