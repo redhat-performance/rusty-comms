@@ -45,11 +45,13 @@ use crate::{
 use anyhow::{Context, Result};
 use clap::ValueEnum;
 use os_pipe::PipeReader;
+#[cfg(unix)]
 use std::os::unix::io::FromRawFd;
+#[cfg(windows)]
+use std::os::windows::io::{FromRawHandle, IntoRawHandle};
 use std::process::Command;
 use std::{
     io::Read,
-    os::unix::io::IntoRawFd,
     process::Stdio,
     time::{Duration, Instant},
 };
@@ -611,7 +613,15 @@ impl BenchmarkRunner {
         // Connect the writer end of the pipe to the child's stdout so the child
         // can write a single ready byte which the parent will read from the pipe.
         cmd.stdin(Stdio::null());
-        cmd.stdout(unsafe { Stdio::from_raw_fd(writer.into_raw_fd()) });
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::IntoRawFd;
+            cmd.stdout(unsafe { Stdio::from_raw_fd(writer.into_raw_fd()) });
+        }
+        #[cfg(windows)]
+        {
+            cmd.stdout(unsafe { Stdio::from_raw_handle(writer.into_raw_handle()) });
+        }
         cmd.stderr(Stdio::inherit());
 
         // --- Pass all relevant arguments to the server process ---
@@ -1755,12 +1765,26 @@ mod tests {
         );
 
         // It also shouldn't take excessively long. We'll allow a generous margin.
-        let expected_max_duration = expected_min_duration * 3;
-        assert!(
-            elapsed < expected_max_duration,
-            "Elapsed time {:?} was much longer than the expected maximum {:?}",
-            elapsed,
-            expected_max_duration
-        );
+        // On macOS CI runners, scheduler jitter can be significant; relax this check.
+        #[cfg(not(target_os = "macos"))]
+        {
+            let expected_max_duration = expected_min_duration * 3;
+            assert!(
+                elapsed < expected_max_duration,
+                "Elapsed time {:?} was much longer than the expected maximum {:?}",
+                elapsed,
+                expected_max_duration
+            );
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let expected_max_duration = expected_min_duration * 12;
+            assert!(
+                elapsed < expected_max_duration,
+                "Elapsed time {:?} exceeded relaxed macOS bound {:?}",
+                elapsed,
+                expected_max_duration
+            );
+        }
     }
 }

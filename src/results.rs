@@ -1928,6 +1928,7 @@ mod tests {
         let mut mgr = ResultsManager::new(None, None).unwrap();
         mgr.enable_per_message_streaming(&path).unwrap();
 
+        #[cfg(unix)]
         let r1 = MessageLatencyRecord::new(
             1,
             IpcMechanism::UnixDomainSocket,
@@ -1935,9 +1936,26 @@ mod tests {
             LatencyType::OneWay,
             Duration::from_micros(10),
         );
+        #[cfg(not(unix))]
+        let r1 = MessageLatencyRecord::new(
+            1,
+            IpcMechanism::SharedMemory,
+            128,
+            LatencyType::OneWay,
+            Duration::from_micros(10),
+        );
+        #[cfg(unix)]
         let r2 = MessageLatencyRecord::new(
             2,
             IpcMechanism::UnixDomainSocket,
+            128,
+            LatencyType::RoundTrip,
+            Duration::from_micros(20),
+        );
+        #[cfg(not(unix))]
+        let r2 = MessageLatencyRecord::new(
+            2,
+            IpcMechanism::SharedMemory,
             128,
             LatencyType::RoundTrip,
             Duration::from_micros(20),
@@ -1970,6 +1988,7 @@ mod tests {
         mgr.both_tests_enabled = true;
 
         // Insert pending records out-of-order.
+        #[cfg(unix)]
         let r_high = MessageLatencyRecord::new(
             5,
             IpcMechanism::UnixDomainSocket,
@@ -1977,9 +1996,26 @@ mod tests {
             LatencyType::OneWay,
             Duration::from_micros(50),
         );
+        #[cfg(not(unix))]
+        let r_high = MessageLatencyRecord::new(
+            5,
+            IpcMechanism::SharedMemory,
+            128,
+            LatencyType::OneWay,
+            Duration::from_micros(50),
+        );
+        #[cfg(unix)]
         let r_low = MessageLatencyRecord::new(
             2,
             IpcMechanism::UnixDomainSocket,
+            128,
+            LatencyType::OneWay,
+            Duration::from_micros(20),
+        );
+        #[cfg(not(unix))]
+        let r_low = MessageLatencyRecord::new(
+            2,
+            IpcMechanism::SharedMemory,
             128,
             LatencyType::OneWay,
             Duration::from_micros(20),
