@@ -216,12 +216,6 @@ pub struct BenchmarkConfig {
     /// across concurrent tests. Ignored by non-network mechanisms.
     pub port: u16,
 
-    /// Server CPU affinity
-    pub server_affinity: Option<usize>,
-
-    /// Client CPU affinity
-    pub client_affinity: Option<usize>,
-
     /// Optional delay between sending messages
     pub send_delay: Option<Duration>,
 
@@ -230,6 +224,12 @@ pub struct BenchmarkConfig {
 
     /// Whether to include the first message in results
     pub include_first_message: bool,
+
+    /// Optional CPU core to pin the server process to
+    pub server_affinity: Option<usize>,
+
+    /// Optional CPU core to pin the client workload to
+    pub client_affinity: Option<usize>,
 }
 
 impl BenchmarkConfig {
@@ -288,11 +288,11 @@ impl BenchmarkConfig {
             buffer_size: args.buffer_size,
             host: args.host.clone(),
             port: args.port,
-            server_affinity: args.server_affinity,
-            client_affinity: args.client_affinity,
             send_delay: args.send_delay,
             pmq_priority: args.pmq_priority,
             include_first_message: args.include_first_message,
+            server_affinity: args.server_affinity,
+            client_affinity: args.client_affinity,
         })
     }
 }

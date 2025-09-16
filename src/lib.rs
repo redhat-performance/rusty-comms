@@ -49,6 +49,8 @@
 //!             send_delay: None,
 //!             pmq_priority: 0,
 //!             include_first_message: false,
+//!             server_affinity: None,
+//!             client_affinity: None,
 //!         };
 //!     
 //!         let runner = BenchmarkRunner::new(config, IpcMechanism::UnixDomainSocket, args);

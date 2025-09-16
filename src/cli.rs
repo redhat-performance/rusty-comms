@@ -151,6 +151,20 @@ pub struct Args {
     #[arg(short = 'c', long, default_value_t = crate::defaults::CONCURRENCY, help_heading = CONCURRENCY)]
     pub concurrency: usize,
 
+    /// Pin the server process to a specific CPU core
+    ///
+    /// When provided, the server child process will attempt to set its CPU
+    /// affinity to the given core index.
+    #[arg(long, value_name = "CORE", help_heading = CONCURRENCY)]
+    pub server_affinity: Option<usize>,
+
+    /// Pin the client workload (in the parent process) to a specific CPU core
+    ///
+    /// When provided, client-side work will be executed in a dedicated thread
+    /// bound to the given CPU core.
+    #[arg(long, value_name = "CORE", help_heading = CONCURRENCY)]
+    pub client_affinity: Option<usize>,
+
     /// Path to the final JSON output file. If used without a path, defaults to 'benchmark_results.json'.
     ///
     /// If the flag is not used, no final JSON file will be written, but a summary
