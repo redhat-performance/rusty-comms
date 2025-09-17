@@ -555,7 +555,7 @@ impl BenchmarkRunner {
     /// - `Ok((Child, PipeReader))`: A tuple containing the handle to the spawned
     ///   child process and the reader end of the signaling pipe.
     /// - `Err(anyhow::Error)`: An error if the pipe creation or process spawning fails.
-    fn spawn_server_process(
+    pub fn spawn_server_process(
         &self,
         transport_config: &TransportConfig,
     ) -> Result<(std::process::Child, PipeReader)> {
@@ -624,8 +624,8 @@ impl BenchmarkRunner {
             anyhow::anyhow!(
                 "Could not resolve '{}' binary for server mode. Build it with \
                  `cargo build --bin {}` or run full `cargo test` first.",
-                exe_name,
-                exe_name
+                "ipc-benchmark",
+                "ipc-benchmark"
             )
         })?;
 
@@ -703,6 +703,49 @@ impl BenchmarkRunner {
         let child = cmd.spawn().context("Failed to spawn server process")?;
 
         Ok((child, reader))
+    }
+
+    #[cfg(test)]
+    fn candidate_server_binaries_for_test(
+        current_exe: &std::path::Path,
+        get_env: impl Fn(&str) -> Option<String>,
+    ) -> Vec<std::path::PathBuf> {
+        let mut candidates = Vec::new();
+        let exe_name_unix = "ipc-benchmark";
+        #[cfg(windows)]
+        let exe_name_win = "ipc-benchmark.exe";
+
+        if let Some(name) = current_exe.file_name().and_then(|n| n.to_str()) {
+            let matches_unix = name == exe_name_unix;
+            #[cfg(windows)]
+            let matches_win = name == exe_name_win;
+            #[cfg(not(windows))]
+            let matches_win = false;
+            if matches_unix || matches_win {
+                candidates.push(current_exe.to_path_buf());
+            }
+        }
+
+        if let Some(p) = get_env("CARGO_BIN_EXE_ipc-benchmark") {
+            candidates.push(std::path::PathBuf::from(p));
+        }
+        if let Some(p) = get_env("CARGO_BIN_EXE_ipc_benchmark") {
+            candidates.push(std::path::PathBuf::from(p));
+        }
+
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        #[cfg(windows)]
+        {
+            candidates.push(
+                root.join("target").join("debug").join("ipc-benchmark.exe"),
+            );
+        }
+        #[cfg(not(windows))]
+        {
+            candidates.push(root.join("target").join("debug").join("ipc-benchmark"));
+        }
+
+        candidates
     }
 
     /// Run one-way latency test
@@ -1553,12 +1596,62 @@ port={}",
     fn get_msg_count(&self) -> usize {
         self.config.msg_count.unwrap_or(10000)
     }
+
+    // --- end of impl BenchmarkRunner ---
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::cli::IpcMechanism;
+    use std::path::PathBuf;
+
+    #[test]
+    fn candidate_includes_current_exe_name_match_unix() {
+        #[cfg(unix)]
+        {
+            let current = PathBuf::from("/tmp/ipc-benchmark");
+            let cands = BenchmarkRunner::candidate_server_binaries_for_test(&current, |_| None);
+            assert!(cands.iter().any(|p| p == &current));
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn candidate_includes_current_exe_name_match_windows() {
+        let current = PathBuf::from("C:\\tmp\\ipc-benchmark.exe");
+        let cands = BenchmarkRunner::candidate_server_binaries_for_test(&current, |_| None);
+        assert!(cands.iter().any(|p| p == &current));
+    }
+
+    #[test]
+    fn candidate_includes_env_hints() {
+        let current = PathBuf::from("/not/matching/name");
+        let env = |k: &str| match k {
+            "CARGO_BIN_EXE_ipc-benchmark" => Some(String::from("/tmp/from-dash-var")),
+            "CARGO_BIN_EXE_ipc_benchmark" => Some(String::from("/tmp/from-underscore-var")),
+            _ => None,
+        };
+        let cands = BenchmarkRunner::candidate_server_binaries_for_test(&current, env);
+        let cand_strs: Vec<_> = cands.iter().map(|p| p.to_string_lossy().to_string()).collect();
+        assert!(cand_strs.iter().any(|s| s.ends_with("/tmp/from-dash-var")));
+        assert!(cand_strs.iter().any(|s| s.ends_with("/tmp/from-underscore-var")));
+    }
+
+    #[test]
+    fn candidate_includes_fallback_target_debug() {
+        let current = PathBuf::from("/not/matching/name");
+        let cands = BenchmarkRunner::candidate_server_binaries_for_test(&current, |_| None);
+        let cand_strs: Vec<_> = cands.iter().map(|p| p.to_string_lossy().to_string()).collect();
+        #[cfg(windows)]
+        {
+            assert!(cand_strs.iter().any(|s| s.ends_with("target\\\\debug\\\\ipc-benchmark.exe")));
+        }
+        #[cfg(not(windows))]
+        {
+            assert!(cand_strs.iter().any(|s| s.ends_with("target/debug/ipc-benchmark")));
+        }
+    }
 
     /// Test benchmark configuration creation from default values
     #[test]

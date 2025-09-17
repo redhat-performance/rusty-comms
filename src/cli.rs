@@ -320,6 +320,8 @@ pub struct Args {
     pub message_queue_name: Option<String>,
 }
 
+// Affinity parsing tests live in the tests module below
+
 /// Available IPC mechanisms for benchmarking
 ///
 /// This enumeration defines all supported Inter-Process Communication mechanisms.
@@ -821,5 +823,25 @@ mod tests {
         // Test custom value
         let args_custom = Args::parse_from(["ipc-benchmark", "--pmq-priority", "5"]);
         assert_eq!(args_custom.pmq_priority, 5);
+    }
+
+    #[test]
+    fn parse_affinity_flags_present() {
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "--client-affinity",
+            "3",
+            "--server-affinity",
+            "5",
+        ]);
+        assert_eq!(args.client_affinity, Some(3));
+        assert_eq!(args.server_affinity, Some(5));
+    }
+
+    #[test]
+    fn parse_affinity_flags_absent() {
+        let args = Args::parse_from(["ipc-benchmark"]);
+        assert_eq!(args.client_affinity, None);
+        assert_eq!(args.server_affinity, None);
     }
 }

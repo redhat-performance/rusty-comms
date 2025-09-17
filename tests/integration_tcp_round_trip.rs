@@ -29,3 +29,26 @@ async fn tcp_round_trip_process_smoke() -> Result<()> {
     let _results = runner.run(None).await?;
     Ok(())
 }
+
+/// Minimal UDS server spawn smoke test on Unix
+#[tokio::test]
+#[cfg(unix)]
+async fn uds_server_ready_smoke() -> Result<()> {
+    let args = Args {
+        mechanisms: vec![IpcMechanism::UnixDomainSocket],
+        one_way: true,
+        round_trip: false,
+        warmup_iterations: 0,
+        msg_count: 1,
+        message_size: 64,
+        include_first_message: true,
+        ..Default::default()
+    };
+    let config = BenchmarkConfig::from_args(&args)?;
+    let runner = BenchmarkRunner::new(config, IpcMechanism::UnixDomainSocket, args.clone());
+    let transport_config = runner.create_transport_config_internal(&args)?;
+    let (mut child, _reader) = runner.spawn_server_process(&transport_config)?;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let _ = child.kill();
+    Ok(())
+}
