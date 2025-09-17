@@ -1732,6 +1732,263 @@ mod tests {
         assert!(display.contains("First Message:"));
     }
 
+    /// Warmup path smoke test exercising server-ready handshake via pipe
+    #[tokio::test]
+    async fn test_run_invokes_warmup_when_configured() {
+        // Keep this very small to run quickly in CI
+        let args = Args {
+            mechanisms: vec![{
+                #[cfg(unix)]
+                {
+                    IpcMechanism::UnixDomainSocket
+                }
+                #[cfg(not(unix))]
+                {
+                    IpcMechanism::TcpSocket
+                }
+            }],
+            message_size: 64,
+            msg_count: 4,
+            duration: None,
+            concurrency: 1,
+            one_way: true,
+            round_trip: false,
+            warmup_iterations: 2,
+            include_first_message: true,
+            ..Default::default()
+        };
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let mechanism = args.mechanisms[0];
+        let runner = BenchmarkRunner::new(config, mechanism, args.clone());
+        let result = runner.run(None).await;
+        assert!(
+            result.is_ok(),
+            "run() with warmup failed: {:?}",
+            result.err()
+        );
+    }
+
+    /// Combined streaming selection path: both tests enabled and combined streaming on
+    #[tokio::test]
+    async fn test_run_uses_combined_streaming_when_enabled() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+
+        // Args: do not specify one_way/round_trip flags => default to both in BenchmarkConfig
+        // Keep the run short and deterministic
+        let args = Args {
+            mechanisms: vec![{
+                #[cfg(unix)]
+                {
+                    IpcMechanism::UnixDomainSocket
+                }
+                #[cfg(not(unix))]
+                {
+                    IpcMechanism::TcpSocket
+                }
+            }],
+            message_size: 64,
+            msg_count: 5,
+            duration: None,
+            concurrency: 1,
+            warmup_iterations: 0,
+            include_first_message: true,
+            ..Default::default()
+        };
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let mechanism = args.mechanisms[0];
+        let runner = BenchmarkRunner::new(config, mechanism, args.clone());
+
+        let mut rm = crate::results::ResultsManager::new(None, None).unwrap();
+        rm.enable_combined_streaming(&path, true).unwrap();
+
+        let res = runner.run(Some(&mut rm)).await;
+        assert!(
+            res.is_ok(),
+            "run() with combined streaming failed: {:?}",
+            res.err()
+        );
+        rm.finalize().await.unwrap();
+
+        // Verify streaming JSON was written with headings and data array.
+        let s = std::fs::read_to_string(&path).expect("read combined streaming file");
+        assert!(s.contains("\"headings\""));
+        assert!(s.contains("\"data\""));
+    }
+
+    /// One-way duration-mode path with canary disabled (include_first_message=false)
+    #[tokio::test]
+    async fn test_one_way_duration_mode_canary_and_loop() {
+        use std::time::Duration as StdDuration;
+        let args = Args {
+            mechanisms: vec![{
+                #[cfg(unix)]
+                {
+                    IpcMechanism::UnixDomainSocket
+                }
+                #[cfg(not(unix))]
+                {
+                    IpcMechanism::TcpSocket
+                }
+            }],
+            message_size: 64,
+            msg_count: 0,
+            duration: Some(StdDuration::from_millis(60)),
+            concurrency: 1,
+            one_way: true,
+            round_trip: false,
+            warmup_iterations: 0,
+            include_first_message: false,
+            ..Default::default()
+        };
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let mechanism = args.mechanisms[0];
+        let runner = BenchmarkRunner::new(config, mechanism, args.clone());
+        let transport = runner.create_transport_config_internal(&args).unwrap();
+        let mut metrics = MetricsCollector::new(Some(LatencyType::OneWay), vec![50.0]).unwrap();
+        let res = runner
+            .run_single_threaded_one_way(&transport, &mut metrics, None)
+            .await;
+        assert!(res.is_ok(), "one-way duration mode failed: {:?}", res.err());
+    }
+
+    /// Round-trip duration-mode path with canary disabled (include_first_message=false)
+    #[tokio::test]
+    async fn test_round_trip_duration_mode_canary_and_loop() {
+        use std::time::Duration as StdDuration;
+        let args = Args {
+            mechanisms: vec![{
+                #[cfg(unix)]
+                {
+                    IpcMechanism::UnixDomainSocket
+                }
+                #[cfg(not(unix))]
+                {
+                    IpcMechanism::TcpSocket
+                }
+            }],
+            message_size: 64,
+            msg_count: 0,
+            duration: Some(StdDuration::from_millis(60)),
+            concurrency: 1,
+            one_way: false,
+            round_trip: true,
+            warmup_iterations: 0,
+            include_first_message: false,
+            ..Default::default()
+        };
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let mechanism = args.mechanisms[0];
+        let runner = BenchmarkRunner::new(config, mechanism, args.clone());
+        let transport = runner.create_transport_config_internal(&args).unwrap();
+        let mut metrics = MetricsCollector::new(Some(LatencyType::RoundTrip), vec![50.0]).unwrap();
+        let res = runner
+            .run_single_threaded_round_trip(&transport, &mut metrics, None)
+            .await;
+        assert!(
+            res.is_ok(),
+            "round-trip duration mode failed: {:?}",
+            res.err()
+        );
+    }
+
+    /// Spawn server for TCP with server affinity flag wired
+    #[tokio::test]
+    async fn test_spawn_server_tcp_with_affinity() {
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            one_way: true,
+            round_trip: false,
+            warmup_iterations: 0,
+            msg_count: 1,
+            message_size: 64,
+            include_first_message: true,
+            server_affinity: Some(0),
+            host: "127.0.0.1".to_string(),
+            port: 25000,
+            ..Default::default()
+        };
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let runner = BenchmarkRunner::new(config, IpcMechanism::TcpSocket, args.clone());
+        let transport_config = runner.create_transport_config_internal(&args).unwrap();
+        let (mut child, _reader) = runner.spawn_server_process(&transport_config).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let _ = child.kill();
+    }
+
+    /// Spawn server for Shared Memory wiring
+    #[tokio::test]
+    async fn test_spawn_server_shared_memory() {
+        let args = Args {
+            mechanisms: vec![IpcMechanism::SharedMemory],
+            one_way: true,
+            round_trip: false,
+            warmup_iterations: 0,
+            msg_count: 1,
+            message_size: 64,
+            include_first_message: true,
+            ..Default::default()
+        };
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let runner = BenchmarkRunner::new(config, IpcMechanism::SharedMemory, args.clone());
+        let transport_config = runner.create_transport_config_internal(&args).unwrap();
+        let (mut child, _reader) = runner.spawn_server_process(&transport_config).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let _ = child.kill();
+    }
+
+    /// Simulated multi-threaded path (Tcp) and SHM fallback to single-thread
+    #[tokio::test]
+    async fn test_multithread_and_shm_fallback() {
+        // Simulated multi-threaded for TcpSocket
+        let args_tcp = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            message_size: 64,
+            msg_count: 10,
+            duration: None,
+            concurrency: 2,
+            one_way: true,
+            round_trip: false,
+            warmup_iterations: 0,
+            include_first_message: true,
+            host: "127.0.0.1".to_string(),
+            port: 26000,
+            ..Default::default()
+        };
+        let config_tcp = BenchmarkConfig::from_args(&args_tcp).unwrap();
+        let runner_tcp =
+            BenchmarkRunner::new(config_tcp, IpcMechanism::TcpSocket, args_tcp.clone());
+        let res_tcp = runner_tcp.run(None).await;
+        assert!(
+            res_tcp.is_ok(),
+            "multi-threaded tcp run failed: {:?}",
+            res_tcp.err()
+        );
+
+        // SHM fallback: concurrency>1 should warn and run single-threaded
+        let args_shm = Args {
+            mechanisms: vec![IpcMechanism::SharedMemory],
+            message_size: 64,
+            msg_count: 10,
+            duration: None,
+            concurrency: 2,
+            one_way: true,
+            round_trip: false,
+            warmup_iterations: 0,
+            include_first_message: true,
+            ..Default::default()
+        };
+        let config_shm = BenchmarkConfig::from_args(&args_shm).unwrap();
+        let runner_shm =
+            BenchmarkRunner::new(config_shm, IpcMechanism::SharedMemory, args_shm.clone());
+        let res_shm = runner_shm.run(None).await;
+        assert!(
+            res_shm.is_ok(),
+            "shm fallback run failed: {:?}",
+            res_shm.err()
+        );
+    }
+
     /// Test benchmark configuration creation from default values
     #[test]
     #[cfg(unix)]
