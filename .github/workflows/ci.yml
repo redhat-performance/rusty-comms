@@ -292,6 +292,8 @@ jobs:
         tree = ET.parse("./coverage-reports/cobertura.xml")
         root = tree.getroot()
         line_rate = float(root.attrib["line-rate"]) * 100
+        total_lines_all = int(root.attrib.get("lines-valid", "0"))
+        total_covered_all = int(root.attrib.get("lines-covered", "0"))
 
         with open("./coverage-reports/coverage-summary.md", "w") as f:
             f.write("### 📊 Code Coverage Summary\n\n")
@@ -314,18 +316,22 @@ jobs:
                 if "target/debug/build" in filename:
                     continue
                 line_rate_class = float(klass.attrib["line-rate"]) * 100
+                total_lines_class = 0
+                covered_lines_class = 0
                 
                 uncovered_lines = []
                 lines = klass.find("lines")
                 if lines is not None:
                     for line in lines.findall("line"):
+                        total_lines_class += 1
+                        if int(line.attrib.get("hits", "0")) > 0:
+                            covered_lines_class += 1
                         if line.attrib["hits"] == "0":
                             uncovered_lines.append(line.attrib["number"])
                 
                 uncovered_lines_str = to_ranges(uncovered_lines)
-                f.write(f"| `{filename}` | {line_rate_class:.2f}% | `{uncovered_lines_str}` |\n")
-
-            f.write(f"| **Total** | **{line_rate:.2f}%** | | \n")
+                f.write(f"| `{filename}` | {line_rate_class:.2f}%<br>({covered_lines_class}/{total_lines_class}) | `{uncovered_lines_str}` |\n")
+            f.write(f"| **Total** | **{line_rate:.2f}%**<br>({total_covered_all}/{total_lines_all}) | | \n")
         '
     - name: Add Markdown summary table to Job Summary
       run: |
