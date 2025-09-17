@@ -736,9 +736,7 @@ impl BenchmarkRunner {
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         #[cfg(windows)]
         {
-            candidates.push(
-                root.join("target").join("debug").join("ipc-benchmark.exe"),
-            );
+            candidates.push(root.join("target").join("debug").join("ipc-benchmark.exe"));
         }
         #[cfg(not(windows))]
         {
@@ -1633,23 +1631,35 @@ mod tests {
             _ => None,
         };
         let cands = BenchmarkRunner::candidate_server_binaries_for_test(&current, env);
-        let cand_strs: Vec<_> = cands.iter().map(|p| p.to_string_lossy().to_string()).collect();
+        let cand_strs: Vec<_> = cands
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
         assert!(cand_strs.iter().any(|s| s.ends_with("/tmp/from-dash-var")));
-        assert!(cand_strs.iter().any(|s| s.ends_with("/tmp/from-underscore-var")));
+        assert!(cand_strs
+            .iter()
+            .any(|s| s.ends_with("/tmp/from-underscore-var")));
     }
 
     #[test]
     fn candidate_includes_fallback_target_debug() {
         let current = PathBuf::from("/not/matching/name");
         let cands = BenchmarkRunner::candidate_server_binaries_for_test(&current, |_| None);
-        let cand_strs: Vec<_> = cands.iter().map(|p| p.to_string_lossy().to_string()).collect();
+        let cand_strs: Vec<_> = cands
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
         #[cfg(windows)]
         {
-            assert!(cand_strs.iter().any(|s| s.ends_with("target\\\\debug\\\\ipc-benchmark.exe")));
+            assert!(cand_strs
+                .iter()
+                .any(|s| s.ends_with("target\\\\debug\\\\ipc-benchmark.exe")));
         }
         #[cfg(not(windows))]
         {
-            assert!(cand_strs.iter().any(|s| s.ends_with("target/debug/ipc-benchmark")));
+            assert!(cand_strs
+                .iter()
+                .any(|s| s.ends_with("target/debug/ipc-benchmark")));
         }
     }
 
