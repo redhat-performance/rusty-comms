@@ -1651,9 +1651,28 @@ mod tests {
             .collect();
         #[cfg(windows)]
         {
-            assert!(cand_strs
-                .iter()
-                .any(|s| s.ends_with("target\\\\debug\\\\ipc-benchmark.exe")));
+            use std::path::Path;
+            assert!(cands.iter().any(|p| {
+                let file_ok = p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.eq_ignore_ascii_case("ipc-benchmark.exe"))
+                    .unwrap_or(false);
+                let debug_ok = p
+                    .parent()
+                    .and_then(|d| d.file_name())
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.eq_ignore_ascii_case("debug"))
+                    .unwrap_or(false);
+                let target_ok = p
+                    .parent()
+                    .and_then(|d| d.parent())
+                    .and_then(|d| d.file_name())
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.eq_ignore_ascii_case("target"))
+                    .unwrap_or(false);
+                file_ok && debug_ok && target_ok
+            }));
         }
         #[cfg(not(windows))]
         {
