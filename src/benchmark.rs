@@ -1603,6 +1603,7 @@ mod tests {
     use super::*;
     use crate::cli::IpcMechanism;
     use std::path::PathBuf;
+    use crate::ipc::TransportConfig;
 
     #[test]
     fn candidate_includes_current_exe_name_match_unix() {
@@ -1680,6 +1681,51 @@ mod tests {
                 .iter()
                 .any(|s| s.ends_with("target/debug/ipc-benchmark")));
         }
+    }
+
+    /// Ensure `BenchmarkConfigDisplay` renders key fields correctly
+    #[test]
+    fn test_benchmark_config_display_contains_expected_fields() {
+        let config = BenchmarkConfig {
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 2048,
+            msg_count: Some(1234),
+            duration: None,
+            concurrency: 2,
+            one_way: true,
+            round_trip: false,
+            warmup_iterations: 0,
+            percentiles: vec![50.0, 95.0],
+            buffer_size: Some(4096),
+            host: "127.0.0.1".to_string(),
+            port: 9000,
+            send_delay: None,
+            pmq_priority: 0,
+            include_first_message: true,
+            server_affinity: Some(1),
+            client_affinity: Some(3),
+        };
+        let transport_config = TransportConfig {
+            buffer_size: 4096,
+            host: "127.0.0.1".to_string(),
+            port: 9001,
+            socket_path: "/tmp/x".into(),
+            shared_memory_name: "shm-x".into(),
+            max_connections: 16,
+            message_queue_depth: 10,
+            message_queue_name: "/pmq-x".into(),
+            pmq_priority: 0,
+        };
+        let display = format!(
+            "{}",
+            BenchmarkConfigDisplay { config: &config, mechanism: IpcMechanism::TcpSocket, transport_config: &transport_config }
+        );
+        assert!(display.contains("TCP Socket"));
+        assert!(display.contains("Message Size:       2048 bytes"));
+        assert!(display.contains("Buffer Size:"));
+        assert!(display.contains("Server Affinity:"));
+        assert!(display.contains("Client Affinity:"));
+        assert!(display.contains("First Message:"));
     }
 
     /// Test benchmark configuration creation from default values

@@ -86,3 +86,19 @@ pub fn current_timestamp_ns() -> u64 {
         .unwrap_or_default()
         .as_nanos() as u64
 }
+
+#[cfg(test)]
+mod tests {
+    use super::spawn_with_affinity;
+
+    /// Smoke test for spawn_with_affinity: ensures the future runs and returns a value.
+    #[tokio::test]
+    async fn test_spawn_with_affinity_smoke() {
+        let fut = async move {
+            // simple computation
+            Ok::<_, anyhow::Error>(42u32)
+        };
+        let result: u32 = spawn_with_affinity(fut, None).await.unwrap();
+        assert_eq!(result, 42);
+    }
+}

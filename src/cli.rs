@@ -825,6 +825,38 @@ mod tests {
         assert_eq!(args_custom.pmq_priority, 5);
     }
 
+    /// Verify mapping from `Args` to `BenchmarkConfiguration`
+    #[test]
+    fn test_benchmark_configuration_from_args_mapping() {
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "-m",
+            "tcp",
+            "-s",
+            "4096",
+            "-i",
+            "123",
+            "--concurrency",
+            "3",
+            "--include-first-message",
+        ]);
+
+        let cfg: BenchmarkConfiguration = (&args).into();
+        assert_eq!(cfg.mechanisms, vec![IpcMechanism::TcpSocket]);
+        assert_eq!(cfg.message_size, 4096);
+        assert_eq!(cfg.msg_count, Some(123));
+        assert_eq!(cfg.duration, None);
+        assert_eq!(cfg.concurrency, 3);
+        assert!(cfg.one_way && cfg.round_trip); // default when neither specified
+        assert!(cfg.include_first_message);
+
+        // Duration precedence over msg_count
+        let args_dur = Args::parse_from(["ipc-benchmark", "-d", "1s", "-i", "999"]);
+        let cfg_dur: BenchmarkConfiguration = (&args_dur).into();
+        assert_eq!(cfg_dur.duration, Some(Duration::from_secs(1)));
+        assert_eq!(cfg_dur.msg_count, None);
+    }
+
     #[test]
     fn parse_affinity_flags_present() {
         let args = Args::parse_from([

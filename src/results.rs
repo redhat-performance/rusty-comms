@@ -2047,4 +2047,45 @@ mod tests {
         // The first two written ids should be in ascending order (2, then 5)
         assert!(ids[0] <= ids[1]);
     }
+
+    /// Ensure CSV streaming writes header and data rows.
+    #[test]
+    fn test_streaming_csv_well_formed() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path().to_path_buf();
+
+        let mut mgr = ResultsManager::new(None, None).unwrap();
+        mgr.enable_csv_streaming(&path).unwrap();
+
+        #[cfg(unix)]
+        let r1 = MessageLatencyRecord::new(
+            1,
+            IpcMechanism::UnixDomainSocket,
+            64,
+            LatencyType::OneWay,
+            Duration::from_micros(5),
+        );
+        #[cfg(not(unix))]
+        let r1 = MessageLatencyRecord::new(
+            1,
+            IpcMechanism::SharedMemory,
+            64,
+            LatencyType::OneWay,
+            Duration::from_micros(5),
+        );
+
+        let rt = Runtime::new().unwrap();
+        rt.block_on(mgr.stream_latency_record(&r1)).unwrap();
+        rt.block_on(mgr.finalize()).unwrap();
+
+        let s = fs::read_to_string(&path).expect("read csv file");
+        let mut lines = s.lines();
+        let header = lines.next().unwrap_or("");
+        assert_eq!(
+            header,
+            MessageLatencyRecord::HEADINGS.join(","),
+            "CSV header should match HEADINGS"
+        );
+        assert!(lines.next().is_some(), "CSV should contain at least one data row");
+    }
 }
