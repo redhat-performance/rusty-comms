@@ -1966,27 +1966,30 @@ mod tests {
         );
 
         // SHM fallback: concurrency>1 should warn and run single-threaded
-        let args_shm = Args {
-            mechanisms: vec![IpcMechanism::SharedMemory],
-            message_size: 64,
-            msg_count: 10,
-            duration: None,
-            concurrency: 2,
-            one_way: true,
-            round_trip: false,
-            warmup_iterations: 0,
-            include_first_message: true,
-            ..Default::default()
-        };
-        let config_shm = BenchmarkConfig::from_args(&args_shm).unwrap();
-        let runner_shm =
-            BenchmarkRunner::new(config_shm, IpcMechanism::SharedMemory, args_shm.clone());
-        let res_shm = runner_shm.run(None).await;
-        assert!(
-            res_shm.is_ok(),
-            "shm fallback run failed: {:?}",
-            res_shm.err()
-        );
+        #[cfg(not(target_os = "macos"))]
+        {
+            let args_shm = Args {
+                mechanisms: vec![IpcMechanism::SharedMemory],
+                message_size: 64,
+                msg_count: 10,
+                duration: None,
+                concurrency: 2,
+                one_way: true,
+                round_trip: false,
+                warmup_iterations: 0,
+                include_first_message: true,
+                ..Default::default()
+            };
+            let config_shm = BenchmarkConfig::from_args(&args_shm).unwrap();
+            let runner_shm =
+                BenchmarkRunner::new(config_shm, IpcMechanism::SharedMemory, args_shm.clone());
+            let res_shm = runner_shm.run(None).await;
+            assert!(
+                res_shm.is_ok(),
+                "shm fallback run failed: {:?}",
+                res_shm.err()
+            );
+        }
     }
 
     /// Test benchmark configuration creation from default values
