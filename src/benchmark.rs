@@ -1602,8 +1602,8 @@ port={}",
 mod tests {
     use super::*;
     use crate::cli::IpcMechanism;
-    use std::path::PathBuf;
     use crate::ipc::TransportConfig;
+    use std::path::PathBuf;
 
     #[test]
     fn candidate_includes_current_exe_name_match_unix() {
@@ -1718,7 +1718,11 @@ mod tests {
         };
         let display = format!(
             "{}",
-            BenchmarkConfigDisplay { config: &config, mechanism: IpcMechanism::TcpSocket, transport_config: &transport_config }
+            BenchmarkConfigDisplay {
+                config: &config,
+                mechanism: IpcMechanism::TcpSocket,
+                transport_config: &transport_config
+            }
         );
         assert!(display.contains("TCP Socket"));
         assert!(display.contains("Message Size:       2048 bytes"));

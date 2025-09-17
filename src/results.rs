@@ -2086,6 +2086,9 @@ mod tests {
             MessageLatencyRecord::HEADINGS.join(","),
             "CSV header should match HEADINGS"
         );
-        assert!(lines.next().is_some(), "CSV should contain at least one data row");
+        assert!(
+            lines.next().is_some(),
+            "CSV should contain at least one data row"
+        );
     }
 }
