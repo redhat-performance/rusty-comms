@@ -189,6 +189,95 @@ IPC_BENCHMARK_CONFIG=./default.json ipc-benchmark
 - Concurrency: 1-16 depending on system capacity
 - Buffer size: 32KB - 256KB
 
+## Dashboard Output Requirements
+
+The Rusty-Comms Dashboard requires specific output formats and parameters to provide full functionality. Missing required outputs will result in limited dashboard features.
+
+### Required Output Parameters
+
+For full dashboard compatibility, you **must** use both output parameters:
+
+| Parameter | Purpose | Dashboard Impact |
+|-----------|---------|------------------|
+| `-o <directory>` | Generate summary JSON files | Enables Summary Analysis tab |
+| `--streaming-output-json` | Generate streaming data files | Enables Time Series Analysis tab |
+
+### Example Dashboard-Ready Commands
+
+```bash
+# Basic dashboard-compatible benchmark
+ipc-benchmark --mechanism SharedMemory --message-size 1024 \
+               -o ./dashboard_data/ \
+               --streaming-output-json
+
+# Comprehensive comparison for dashboard
+ipc-benchmark -m uds shm tcp pmq \
+               --message-size 1024 \
+               --msg-count 50000 \
+               -o ./results/ \
+               --streaming-output-json \
+               --continue-on-error
+
+# Multi-size analysis
+for size in 64 256 1024 4096; do
+  ipc-benchmark --mechanism SharedMemory \
+                 --message-size $size \
+                 -o ./dashboard_data/ \
+                 --streaming-output-json \
+                 --duration 10s
+done
+```
+
+### Output File Structure
+
+Dashboard-compatible runs will generate:
+
+```
+results/
+├── sharedmemory_1024_summary.json     # Summary statistics and throughput
+└── sharedmemory_1024_streaming.json   # Per-message latency data
+```
+
+### Dashboard Limitation Matrix
+
+| ipc-benchmark Parameters | Summary Tab | Time Series Tab | Impact |
+|---------------------------|-------------|-----------------|--------|
+| `-o` only | ✅ Available | ❌ Missing | Limited functionality |
+| `--streaming-output-json` only | ❌ Missing | ✅ Available | No statistical summaries |
+| Both `-o` and `--streaming-output-json` | ✅ Available | ✅ Available | Full functionality |
+| Neither parameter | ❌ Missing | ❌ Missing | Dashboard incompatible |
+
+### Troubleshooting Dashboard Data Issues
+
+#### Missing Time Series Data
+```bash
+# Problem: Only used -o parameter
+ipc-benchmark -m shm -o results/
+
+# Solution: Add streaming output
+ipc-benchmark -m shm -o results/ --streaming-output-json
+```
+
+#### Missing Summary Data
+```bash
+# Problem: Only used streaming output
+ipc-benchmark -m shm --streaming-output-json
+
+# Solution: Add summary output
+ipc-benchmark -m shm -o results/ --streaming-output-json
+```
+
+#### No Dashboard Data
+```bash
+# Problem: No output parameters specified
+ipc-benchmark -m shm
+
+# Solution: Use both required parameters
+ipc-benchmark -m shm -o results/ --streaming-output-json
+```
+
+For dashboard setup and usage instructions, see [`utils/dashboard/README.md`](utils/dashboard/README.md).
+
 ## Performance Tuning
 
 ### System-Level Optimizations
