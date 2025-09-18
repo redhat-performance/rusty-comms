@@ -24,3 +24,4 @@ target
 .vscode
 *.json*
 *.log*
+*.test*

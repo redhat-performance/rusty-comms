@@ -144,6 +144,47 @@ ipc-benchmark -m pmq --pmq-priority 1
 ipc-benchmark -m shm --buffer-size 16384
 ```
 
+### Process-based client/server model
+
+This benchmark runs the server as a separate child process for each test to ensure strong isolation and realistic IPC behavior.
+
+- The parent process spawns the same binary in a special "server-only" mode and waits for a readiness byte via a pipe connected to the child's stdout.
+- On Unix, the readiness signal is a single byte `0x01` written to stdout. On Windows, tests use a simple `echo` to emit a single character (e.g., `R`).
+- The child process is terminated at the end of each test; resources are cleaned up by the transport implementation.
+
+Binary resolution strategy used by the spawner:
+- If the current executable already matches the binary name, it is used directly.
+- If `CARGO_BIN_EXE_ipc-benchmark` (or `CARGO_BIN_EXE_ipc_benchmark`) is set, that path is used.
+- Otherwise it falls back to `target/debug/ipc-benchmark` on Unix, and `target/debug/ipc-benchmark.exe` on Windows.
+
+Tip: If you see "Could not resolve 'ipc-benchmark' binary for server mode", run:
+
+```bash
+cargo build --bin ipc-benchmark
+# or simply
+cargo test --all-features
+```
+
+### CPU affinity controls
+
+You can pin the server and/or client workload to specific CPU cores to reduce jitter and improve reproducibility:
+
+```bash
+# Pin server to core 2 and client to core 5
+ipc-benchmark --server-affinity 2 --client-affinity 5 -m uds --msg-count 20000
+```
+
+Notes:
+- Affinity is implemented via the `core_affinity` crate. The semantics are best-effort and depend on OS support.
+- On multi-core systems, pinning can reduce cross-core migration and improve latency consistency.
+
+### Platform notes
+
+- Unix Domain Sockets (UDS) are available only on Unix-like systems.
+- POSIX Message Queues (PMQ) are available only on Linux and may require `/dev/mqueue` to be mounted and proper limits.
+- Windows: the spawned server binary must be discoverable; the code handles `.exe` resolution and environment-path hints as described above.
+- macOS: time-based latency tests may see higher scheduler jitter; certain tests relax strict upper bounds to prevent flakiness.
+
 ### First-Message Latency (Canary)
 
 The first message in any benchmark often has a higher latency than subsequent messages due to "cold start" effects like CPU cache misses, memory allocation, and branch prediction misses. To provide more stable and representative results, this tool automatically sends one "canary" message before starting the measurement loop. This message and its latency are discarded by default.

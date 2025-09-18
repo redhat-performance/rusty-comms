@@ -44,6 +44,8 @@ This document provides detailed information about configuring the IPC Benchmark 
 | `--verbose` | `-v` | Boolean | `false` | Enable verbose output |
 | `--host` | String | `"127.0.0.1"` | Host address for TCP sockets |
 | `--port` | Number | `8080` | Port for TCP sockets |
+| `--server-affinity` | Number | - | Pin the server process to a CPU core (best effort) |
+| `--client-affinity` | Number | - | Pin the client workload to a CPU core (best effort) |
 
 ### Examples
 
@@ -132,6 +134,8 @@ ipc-benchmark --config config.json --concurrency 8
 | `IPC_BENCHMARK_TEMP_DIR` | Temporary directory for IPC files | `/tmp` |
 | `IPC_BENCHMARK_OUTPUT_DIR` | Default output directory | Current directory |
 | `IPC_BENCHMARK_CONFIG` | Default configuration file path | - |
+| `CARGO_BIN_EXE_ipc-benchmark` | Path hint for the test runner to spawn the server binary | Auto-detected |
+| `CARGO_BIN_EXE_ipc_benchmark` | Alternate env var name used in some setups | Auto-detected |
 
 ### Environment Variable Examples
 

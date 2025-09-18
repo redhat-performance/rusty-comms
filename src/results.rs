@@ -1,3 +1,4 @@
+#![allow(clippy::needless_return)]
 //! # Results and Output Management Module
 //!
 //! This module provides comprehensive result collection, analysis, and output
@@ -28,8 +29,8 @@ use crate::IpcMechanism;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs::OpenOptions;
-use std::io::{self, Write};
+use std::fs::{File, OpenOptions};
+use std::io::{self, BufWriter, Write};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{debug, info};
@@ -233,6 +234,11 @@ impl MessageLatencyRecord {
         if other.round_trip_latency_ns.is_some() {
             self.round_trip_latency_ns = other.round_trip_latency_ns;
         }
+    }
+
+    /// Check if the record contains combined latency data (both one-way and round-trip)
+    pub fn is_combined(&self) -> bool {
+        self.one_way_latency_ns.is_some() && self.round_trip_latency_ns.is_some()
     }
 }
 
@@ -454,6 +460,12 @@ pub struct ResultsManager {
     /// Optional path for streaming CSV results output
     streaming_csv_file: Option<std::path::PathBuf>,
 
+    /// Optional open file handle (buffered) for streaming JSON output.
+    streaming_file_handle: Option<BufWriter<File>>,
+
+    /// Optional open file handle (buffered) for streaming CSV output.
+    streaming_csv_handle: Option<BufWriter<File>>,
+
     /// Accumulated results from all benchmark runs
     results: Vec<BenchmarkResults>,
 
@@ -500,6 +512,8 @@ impl ResultsManager {
             log_file: log_file.map(|s| s.to_string()),
             streaming_file: None,
             streaming_csv_file: None,
+            streaming_file_handle: None,
+            streaming_csv_handle: None,
             results: Vec::new(),
             streaming_enabled: false,
             csv_streaming_enabled: false,
@@ -571,18 +585,28 @@ impl ResultsManager {
         self.per_message_streaming = true;
         self.first_record_streamed = true;
 
-        // Create/truncate the streaming file and initialize columnar JSON object
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(self.streaming_file.as_ref().unwrap())?;
+        // Truncate and write header, then open append handle for repeated writes.
+        {
+            let mut file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(self.streaming_file.as_ref().unwrap())?;
 
-        // Write JSON object opening and headings array
-        writeln!(file, "{{")?;
-        let headings_json = serde_json::to_string(MessageLatencyRecord::HEADINGS)?;
-        writeln!(file, "  \"headings\": {},", headings_json)?;
-        write!(file, "  \"data\": [")?;
+            // Write JSON object opening and headings array
+            writeln!(file, "{{")?;
+            let headings_json = serde_json::to_string(MessageLatencyRecord::HEADINGS)?;
+            writeln!(file, "  \"headings\": {},", headings_json)?;
+            write!(file, "  \"data\": [")?;
+            file.flush()?;
+        }
+
+        // Open append handle and store buffered writer for repeated writes.
+        let append_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.streaming_file.as_ref().unwrap())?;
+        self.streaming_file_handle = Some(BufWriter::new(append_file));
 
         debug!(
             "Enabled per-message streaming to: {:?}",
@@ -646,16 +670,23 @@ impl ResultsManager {
         self.per_message_streaming = true;
         self.streaming_enabled = true;
 
-        // Create/truncate the streaming file and write header
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(self.streaming_csv_file.as_ref().unwrap())?;
+        // Truncate and write header, then open append handle for repeated writes.
+        {
+            let mut file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(self.streaming_csv_file.as_ref().unwrap())?;
+            let header = MessageLatencyRecord::HEADINGS.join(",");
+            writeln!(file, "{}", header)?;
+            file.flush()?;
+        }
 
-        // Write CSV header
-        let header = MessageLatencyRecord::HEADINGS.join(",");
-        writeln!(file, "{}", header)?;
+        let append_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.streaming_csv_file.as_ref().unwrap())?;
+        self.streaming_csv_handle = Some(BufWriter::new(append_file));
 
         debug!("Enabled CSV streaming to: {:?}", self.streaming_csv_file);
         Ok(())
@@ -679,42 +710,29 @@ impl ResultsManager {
     /// Records are written with proper JSON array formatting including
     /// comma separation between elements.
     pub async fn stream_latency_record(&mut self, record: &MessageLatencyRecord) -> Result<()> {
-        if !self.streaming_enabled || !self.per_message_streaming {
-            return Ok(()); // Per-message streaming not enabled
+        // If streaming to per-message output is enabled, write immediately so the
+        // client/parent process can observe results even with a separate server process.
+        if self.per_message_streaming {
+            if record.is_combined() {
+                self.write_streaming_record_direct(record).await?;
+            } else {
+                self.write_streaming_record(record).await?;
+            }
+            return Ok(());
         }
 
-        // If both tests are enabled, aggregate records by message ID
+        // Non-streaming mode: aggregate in-memory for finalize().
+        // Clone here because pending_records owns MessageLatencyRecord values.
         if self.both_tests_enabled {
-            return self.handle_combined_streaming(record).await;
-        }
-
-        // Normal streaming mode - write record immediately
-        self.write_streaming_record(record).await
-    }
-
-    /// Handle combined streaming when both one-way and round-trip tests are running
-    ///
-    /// This method aggregates records by message ID, combining one-way and round-trip
-    /// measurements into single records before streaming them.
-    async fn handle_combined_streaming(&mut self, record: &MessageLatencyRecord) -> Result<()> {
-        let message_id = record.message_id;
-
-        if let Some(existing_record) = self.pending_records.get_mut(&message_id) {
-            // We have a pending record for this message ID - merge and write
-            existing_record.merge(record);
-
-            // Check if we now have both latency types
-            if existing_record.one_way_latency_ns.is_some()
-                && existing_record.round_trip_latency_ns.is_some()
-            {
-                // Both latencies available - write combined record and remove from pending
-                let combined_record = existing_record.clone();
-                self.pending_records.remove(&message_id);
-                self.write_streaming_record(&combined_record).await?;
+            if let Some(existing) = self.pending_records.get_mut(&record.message_id) {
+                existing.merge(record);
+            } else {
+                self.pending_records
+                    .insert(record.message_id, record.clone());
             }
         } else {
-            // First record for this message ID - store it for potential merging
-            self.pending_records.insert(message_id, record.clone());
+            self.pending_records
+                .insert(record.message_id, record.clone());
         }
 
         Ok(())
@@ -724,33 +742,62 @@ impl ResultsManager {
     ///
     /// Internal helper method that handles the actual file I/O for streaming records.
     async fn write_streaming_record(&mut self, record: &MessageLatencyRecord) -> Result<()> {
-        if let Some(ref streaming_file) = self.streaming_file {
-            let mut file = OpenOptions::new().append(true).open(streaming_file)?;
+        // Prefer a kept-open buffered writer when available to avoid repeated open/append syscalls.
+        if let Some(ref mut writer) = self.streaming_file_handle {
+            if !self.first_record_streamed {
+                writer.write_all(b",\n")?;
+            } else {
+                writer.write_all(b"\n")?;
+            }
+            let values = record.to_value_array();
+            let json = serde_json::to_string(&values)?;
+            writer.write_all(b"    ")?; // indent
+            writer.write_all(json.as_bytes())?;
+            writer.flush()?;
+            self.first_record_streamed = false;
+        } else if let Some(ref streaming_file) = self.streaming_file {
+            // Fallback: open, append, write
+            let f = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(streaming_file)?;
+            let mut buf = std::io::BufWriter::new(f);
 
             // Add comma if not first record (proper JSON array formatting)
             if !self.first_record_streamed {
-                writeln!(file, ",")?;
+                // write a comma and newline between records
+                buf.write_all(b",\n")?;
             } else {
                 // For the first record, add a newline to separate from the "data": [ line
-                writeln!(file)?;
+                buf.write_all(b"\n")?;
             }
 
-            // Write JSON array of values
+            // Write JSON array of values (compact representation) with indentation for readability
             let values = record.to_value_array();
             let json = serde_json::to_string(&values)?;
-            write!(file, "    {}", json)?; // Indent for readability
-            file.flush()?;
-
+            buf.write_all(b"    ")?; // indent
+            buf.write_all(json.as_bytes())?;
+            buf.flush()?;
             self.first_record_streamed = false;
         }
 
         // Stream to CSV if enabled
         if self.csv_streaming_enabled {
-            if let Some(ref streaming_csv_file) = self.streaming_csv_file {
-                let mut file = OpenOptions::new().append(true).open(streaming_csv_file)?;
+            if let Some(ref mut csv_writer) = self.streaming_csv_handle {
                 let csv_record = record.to_csv_record();
-                writeln!(file, "{}", csv_record)?;
-                file.flush()?;
+                csv_writer.write_all(csv_record.as_bytes())?;
+                csv_writer.write_all(b"\n")?;
+                csv_writer.flush()?;
+            } else if let Some(ref streaming_csv_file) = self.streaming_csv_file {
+                let f = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(streaming_csv_file)?;
+                let mut buf = std::io::BufWriter::new(f);
+                let csv_record = record.to_csv_record();
+                buf.write_all(csv_record.as_bytes())?;
+                buf.write_all(b"\n")?;
+                buf.flush()?;
             }
         }
 
@@ -770,6 +817,30 @@ impl ResultsManager {
             return Ok(());
         }
 
+        // If the record already contains both latencies, write it immediately.
+        if record.is_combined() {
+            self.write_streaming_record(record).await?;
+            return Ok(());
+        }
+
+        // When both one-way and round-trip tests are enabled we may receive two
+        // partial records for the same message id. Buffer the first and write
+        // only when its counterpart arrives (to produce a combined record).
+        if self.both_tests_enabled {
+            if let Some(mut existing) = self.pending_records.remove(&record.message_id) {
+                // Merge incoming partial into existing to form a combined record.
+                existing.merge(record);
+                // Write the combined record out once.
+                self.write_streaming_record(&existing).await?;
+            } else {
+                // Store this partial record until the matching counterpart arrives.
+                self.pending_records
+                    .insert(record.message_id, record.clone());
+            }
+            return Ok(());
+        }
+
+        // Not in combined mode: write immediately.
         self.write_streaming_record(record).await
     }
 
@@ -859,16 +930,24 @@ impl ResultsManager {
     pub async fn finalize(&mut self) -> Result<()> {
         info!("Finalizing benchmark results");
 
-        // Flush any remaining pending records before closing the file
-        self.flush_pending_records().await?;
+        // Flush any remaining pending records before closing the file.
+        // Best-effort: if flushing fails, log and continue with closing/finalization.
+        if let Err(e) = self.flush_pending_records().await {
+            debug!("flush_pending_records failed during finalize: {:?}", e);
+        }
 
-        // Close streaming JSON file if enabled
-        self.close_streaming_json().await?;
+        // Close streaming JSON file if enabled (best-effort).
+        if let Err(e) = self.close_streaming_json().await {
+            debug!("close_streaming_json failed during finalize: {:?}", e);
+        }
 
-        // Close streaming CSV file if enabled
-        self.close_streaming_csv().await?;
+        // Close streaming CSV file if enabled (best-effort).
+        if let Err(e) = self.close_streaming_csv().await {
+            debug!("close_streaming_csv failed during finalize: {:?}", e);
+        }
 
-        // Write final comprehensive results if an output file was specified
+        // Write final comprehensive results if an output file was specified.
+        // Writing final results is important; return error to caller if it fails.
         if let Some(output_file) = &self.output_file {
             self.write_final_results(output_file)?;
         }
@@ -883,8 +962,12 @@ impl ResultsManager {
     /// writes the necessary closing syntax.
     async fn close_streaming_json(&mut self) -> Result<()> {
         if self.per_message_streaming {
-            if let Some(streaming_file) = &self.streaming_file {
-                info!("Closing streaming JSON file.");
+            info!("Closing streaming JSON file.");
+            // Prefer buffered handle if present
+            if let Some(mut writer) = self.streaming_file_handle.take() {
+                writer.write_all(b"\n  ]\n}\n")?;
+                writer.flush()?;
+            } else if let Some(streaming_file) = &self.streaming_file {
                 let mut file = OpenOptions::new().append(true).open(streaming_file)?;
                 // Write the closing brackets for the JSON data array and the root object.
                 write!(file, "\n  ]\n}}\n")?;
@@ -894,10 +977,15 @@ impl ResultsManager {
             // This handles the case of non-per-message streaming, which is a simple JSON array.
             if let Some(streaming_file) = &self.streaming_file {
                 info!("Closing streaming JSON file.");
-                let mut file = OpenOptions::new().append(true).open(streaming_file)?;
-                // Write the closing bracket for the JSON array.
-                write!(file, "\n]\n")?;
-                file.flush()?;
+                if let Some(mut writer) = self.streaming_file_handle.take() {
+                    writer.write_all(b"\n]\n")?;
+                    writer.flush()?;
+                } else {
+                    let mut file = OpenOptions::new().append(true).open(streaming_file)?;
+                    // Write the closing bracket for the JSON array.
+                    write!(file, "\n]\n")?;
+                    file.flush()?;
+                }
             }
         }
         Ok(())
@@ -912,6 +1000,9 @@ impl ResultsManager {
         if self.csv_streaming_enabled {
             if let Some(path) = &self.streaming_csv_file {
                 info!("Finalizing streaming CSV file at {}", path.display());
+                if let Some(mut csv_writer) = self.streaming_csv_handle.take() {
+                    csv_writer.flush()?;
+                }
             }
         }
         Ok(())
@@ -930,11 +1021,15 @@ impl ResultsManager {
                 self.pending_records.len()
             );
 
-            // Collect records to write to avoid borrowing issues
-            let records_to_write: Vec<MessageLatencyRecord> =
-                self.pending_records.values().cloned().collect();
+            // Collect (id, record) pairs and sort to ensure deterministic output order.
+            let mut records_to_write: Vec<(u64, MessageLatencyRecord)> = self
+                .pending_records
+                .iter()
+                .map(|(&id, r)| (id, r.clone()))
+                .collect();
+            records_to_write.sort_by_key(|(id, _)| *id);
 
-            for record in records_to_write {
+            for (_id, record) in records_to_write {
                 self.write_streaming_record(&record).await?;
             }
 
@@ -966,6 +1061,7 @@ impl ResultsManager {
     /// while maintaining machine parseability for analysis tools.
     fn write_final_results(&self, output_file: &Path) -> Result<()> {
         info!("Writing final results to: {:?}", output_file);
+
         let final_results = FinalBenchmarkResults {
             metadata: BenchmarkMetadata {
                 version: crate::VERSION.to_string(),
@@ -977,8 +1073,15 @@ impl ResultsManager {
             summary: self.calculate_overall_summary(),
         };
 
+        // Serialize pretty JSON
         let json = serde_json::to_string_pretty(&final_results)?;
-        std::fs::write(output_file, json)?;
+
+        // Atomic write: write to a temp file next to the target, then rename.
+        // Use a ".partial" extension to avoid clobbering the destination on failure.
+        let tmp = output_file.with_extension("partial");
+        std::fs::write(&tmp, json)?;
+        std::fs::rename(&tmp, output_file)?;
+
         info!("Successfully wrote final results to: {:?}", output_file);
         Ok(())
     }
@@ -1768,6 +1871,9 @@ mod tests {
     use super::*;
     use crate::cli::IpcMechanism;
     use tempfile::NamedTempFile;
+    // use a local tokio runtime for running async helpers in tests
+    use std::fs;
+    use tokio::runtime::Runtime;
 
     /// Test benchmark results creation with various configurations
     #[test]
@@ -1811,5 +1917,178 @@ mod tests {
         assert!(!info.architecture.is_empty());
         assert!(info.cpu_cores > 0);
         assert!(info.memory_gb > 0.0);
+    }
+
+    /// Ensure streaming JSON is valid JSON and contains a "data" array with records.
+    #[test]
+    fn test_streaming_json_well_formed() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path().to_path_buf();
+
+        let mut mgr = ResultsManager::new(None, None).unwrap();
+        mgr.enable_per_message_streaming(&path).unwrap();
+
+        #[cfg(unix)]
+        let r1 = MessageLatencyRecord::new(
+            1,
+            IpcMechanism::UnixDomainSocket,
+            128,
+            LatencyType::OneWay,
+            Duration::from_micros(10),
+        );
+        #[cfg(not(unix))]
+        let r1 = MessageLatencyRecord::new(
+            1,
+            IpcMechanism::SharedMemory,
+            128,
+            LatencyType::OneWay,
+            Duration::from_micros(10),
+        );
+        #[cfg(unix)]
+        let r2 = MessageLatencyRecord::new(
+            2,
+            IpcMechanism::UnixDomainSocket,
+            128,
+            LatencyType::RoundTrip,
+            Duration::from_micros(20),
+        );
+        #[cfg(not(unix))]
+        let r2 = MessageLatencyRecord::new(
+            2,
+            IpcMechanism::SharedMemory,
+            128,
+            LatencyType::RoundTrip,
+            Duration::from_micros(20),
+        );
+
+        let rt = Runtime::new().unwrap();
+        rt.block_on(mgr.stream_latency_record(&r1)).unwrap();
+        rt.block_on(mgr.stream_latency_record(&r2)).unwrap();
+        rt.block_on(mgr.finalize()).unwrap();
+
+        let s = fs::read_to_string(&path).expect("read streaming file");
+        let v: serde_json::Value = serde_json::from_str(&s).expect("parse streaming JSON");
+        // basic structure checks
+        assert!(v.is_object());
+        let data = v.get("data").expect("data field");
+        assert!(data.is_array());
+        assert!(data.as_array().unwrap().len() >= 2);
+    }
+
+    /// Ensure pending records are flushed in deterministic ascending message_id order.
+    #[test]
+    fn test_flush_pending_records_ordering() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path().to_path_buf();
+
+        let mut mgr = ResultsManager::new(None, None).unwrap();
+        mgr.enable_per_message_streaming(&path).unwrap();
+
+        // Enable combined mode so flush_pending_records will process pending_records.
+        mgr.both_tests_enabled = true;
+
+        // Insert pending records out-of-order.
+        #[cfg(unix)]
+        let r_high = MessageLatencyRecord::new(
+            5,
+            IpcMechanism::UnixDomainSocket,
+            128,
+            LatencyType::OneWay,
+            Duration::from_micros(50),
+        );
+        #[cfg(not(unix))]
+        let r_high = MessageLatencyRecord::new(
+            5,
+            IpcMechanism::SharedMemory,
+            128,
+            LatencyType::OneWay,
+            Duration::from_micros(50),
+        );
+        #[cfg(unix)]
+        let r_low = MessageLatencyRecord::new(
+            2,
+            IpcMechanism::UnixDomainSocket,
+            128,
+            LatencyType::OneWay,
+            Duration::from_micros(20),
+        );
+        #[cfg(not(unix))]
+        let r_low = MessageLatencyRecord::new(
+            2,
+            IpcMechanism::SharedMemory,
+            128,
+            LatencyType::OneWay,
+            Duration::from_micros(20),
+        );
+
+        mgr.pending_records.insert(r_high.message_id, r_high);
+        mgr.pending_records.insert(r_low.message_id, r_low);
+
+        let rt = Runtime::new().unwrap();
+        rt.block_on(mgr.flush_pending_records()).unwrap();
+        rt.block_on(mgr.finalize()).unwrap();
+
+        // Read and parse the streaming JSON and assert message_id ordering is ascending.
+        let s = fs::read_to_string(&path).expect("read streaming file");
+        let v: serde_json::Value = serde_json::from_str(&s).expect("parse streaming JSON");
+        let data = v.get("data").expect("data field");
+        let arr = data.as_array().expect("data is array");
+
+        // Extract message_id (second element in each value-array)
+        let ids: Vec<u64> = arr
+            .iter()
+            .map(|item| {
+                let inner = item.as_array().expect("record is array");
+                inner[1].as_u64().expect("message_id is u64")
+            })
+            .collect();
+
+        assert!(ids.len() >= 2);
+        // The first two written ids should be in ascending order (2, then 5)
+        assert!(ids[0] <= ids[1]);
+    }
+
+    /// Ensure CSV streaming writes header and data rows.
+    #[test]
+    fn test_streaming_csv_well_formed() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path().to_path_buf();
+
+        let mut mgr = ResultsManager::new(None, None).unwrap();
+        mgr.enable_csv_streaming(&path).unwrap();
+
+        #[cfg(unix)]
+        let r1 = MessageLatencyRecord::new(
+            1,
+            IpcMechanism::UnixDomainSocket,
+            64,
+            LatencyType::OneWay,
+            Duration::from_micros(5),
+        );
+        #[cfg(not(unix))]
+        let r1 = MessageLatencyRecord::new(
+            1,
+            IpcMechanism::SharedMemory,
+            64,
+            LatencyType::OneWay,
+            Duration::from_micros(5),
+        );
+
+        let rt = Runtime::new().unwrap();
+        rt.block_on(mgr.stream_latency_record(&r1)).unwrap();
+        rt.block_on(mgr.finalize()).unwrap();
+
+        let s = fs::read_to_string(&path).expect("read csv file");
+        let mut lines = s.lines();
+        let header = lines.next().unwrap_or("");
+        assert_eq!(
+            header,
+            MessageLatencyRecord::HEADINGS.join(","),
+            "CSV header should match HEADINGS"
+        );
+        assert!(
+            lines.next().is_some(),
+            "CSV should contain at least one data row"
+        );
     }
 }
