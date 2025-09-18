@@ -722,12 +722,11 @@ impl BenchmarkRunner {
                         }
                         Ok(Err(_)) => break, // Transport error
                         Err(_) => {
-                            // Timeout - check if duration-based test is done
-                            if duration.is_some() {
-                                continue; // Keep waiting for duration-based test
-                            } else {
-                                break; // Message-count-based test with no more messages
-                            }
+                            // Timeout on receive. For duration-based tests, we continue waiting.
+                            // For message-count tests, we also continue, as the client may
+                            // be using a long send-delay. The loop's exit condition is
+                            // receiving all messages, not a timeout.
+                            continue;
                         }
                     }
                 }
@@ -927,12 +926,11 @@ impl BenchmarkRunner {
                         }
                         Ok(Err(_)) => break, // Transport error
                         Err(_) => {
-                            // Timeout - check if duration-based test is done
-                            if duration.is_some() {
-                                continue; // Keep waiting for duration-based test
-                            } else {
-                                break; // Message-count-based test with no more messages
-                            }
+                            // Timeout on receive. For duration-based tests, we continue waiting.
+                            // For message-count tests, we also continue, as the client may
+                            // be using a long send-delay. The loop's exit condition is
+                            // receiving all messages, not a timeout.
+                            continue;
                         }
                     }
                 }
