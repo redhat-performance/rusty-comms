@@ -47,6 +47,67 @@ use tokio::time::{sleep, timeout};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+/// A helper struct to provide a consistent, single source of truth for displaying
+/// the per-mechanism benchmark configuration.
+struct BenchmarkConfigDisplay<'a> {
+    config: &'a BenchmarkConfig,
+    mechanism: IpcMechanism,
+    transport_config: &'a TransportConfig,
+}
+
+impl<'a> std::fmt::Display for BenchmarkConfigDisplay<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let buffer_size_str = if self.config.buffer_size.is_some() {
+            format!(
+                "{} bytes (User-provided)",
+                self.transport_config.buffer_size
+            )
+        } else {
+            format!("{} bytes (Automatic)", self.transport_config.buffer_size)
+        };
+
+        writeln!(
+            f,
+            "-----------------------------------------------------------------"
+        )?;
+        writeln!(f, "Starting Benchmark for: {}", self.mechanism)?;
+        writeln!(
+            f,
+            "  Message Size:       {} bytes",
+            self.config.message_size
+        )?;
+        writeln!(f, "  Buffer Size:        {}", buffer_size_str)?;
+        if let Some(duration) = self.config.duration {
+            writeln!(f, "  Test Duration:      {:?}", duration)?;
+        } else {
+            writeln!(
+                f,
+                "  Message Count:      {}",
+                self.config.msg_count.unwrap_or_default()
+            )?;
+        }
+        if let Some(delay) = self.config.send_delay {
+            writeln!(f, "  Send Delay:         {:?}", delay)?;
+        }
+
+        #[cfg(target_os = "linux")]
+        if self.mechanism == IpcMechanism::PosixMessageQueue {
+            writeln!(f, "  PMQ Priority:       {}", self.config.pmq_priority)?;
+        }
+
+        let first_message_status = if self.config.include_first_message {
+            "Included in results"
+        } else {
+            "Discarded (default)"
+        };
+        writeln!(f, "  First Message:      {}", first_message_status)?;
+        write!(
+            f,
+            "-----------------------------------------------------------------"
+        )
+    }
+}
+
 /// Configuration for benchmark execution
 ///
 /// This structure encapsulates all parameters needed to execute a benchmark test.
@@ -133,6 +194,15 @@ pub struct BenchmarkConfig {
     /// Base port number that will be modified to ensure uniqueness
     /// across concurrent tests. Ignored by non-network mechanisms.
     pub port: u16,
+
+    /// Optional delay between sending messages
+    pub send_delay: Option<Duration>,
+
+    /// Message priority for PMQ
+    pub pmq_priority: u32,
+
+    /// Whether to include the first message in results
+    pub include_first_message: bool,
 }
 
 impl BenchmarkConfig {
@@ -191,6 +261,9 @@ impl BenchmarkConfig {
             buffer_size: args.buffer_size,
             host: args.host.clone(),
             port: args.port,
+            send_delay: args.send_delay,
+            pmq_priority: args.pmq_priority,
+            include_first_message: args.include_first_message,
         })
     }
 }
@@ -237,6 +310,9 @@ impl BenchmarkConfig {
 /// #     log_file: None,
 /// #     streaming_output_json: None,
 /// #     streaming_output_csv: None,
+/// #     send_delay: None,
+/// #     pmq_priority: 0,
+/// #     include_first_message: false,
 /// # };
 /// let config = BenchmarkConfig::from_args(&args)?;
 /// #[cfg(unix)]
@@ -297,22 +373,15 @@ impl BenchmarkRunner {
     ) -> Result<BenchmarkResults> {
         let transport_config = self.create_transport_config()?;
 
-        let buffer_size_str = if self.config.buffer_size.is_some() {
-            format!("{} bytes (User-provided)", transport_config.buffer_size)
-        } else {
-            format!("{} bytes (Automatic)", transport_config.buffer_size)
-        };
-
-        info!("-----------------------------------------------------------------");
-        info!("Starting Benchmark for: {}", self.mechanism);
-        info!("  Message Size:       {} bytes", self.config.message_size);
-        info!("  Buffer Size:        {}", buffer_size_str);
-        if let Some(duration) = self.config.duration {
-            info!("  Test Duration:      {:?}", duration);
-        } else {
-            info!("  Message Count:      {}", self.get_msg_count());
-        }
-        info!("-----------------------------------------------------------------");
+        // Use the new display struct for UI output.
+        info!(
+            "{}",
+            BenchmarkConfigDisplay {
+                config: &self.config,
+                mechanism: self.mechanism,
+                transport_config: &transport_config,
+            }
+        );
 
         // Initialize results structure with test configuration
         let mut results = BenchmarkResults::new(
@@ -432,6 +501,9 @@ impl BenchmarkRunner {
         for i in 0..self.config.warmup_iterations {
             let message = Message::new(i as u64, payload.clone(), MessageType::OneWay);
             let _ = client_transport.send(&message).await?;
+            if let Some(delay) = self.config.send_delay {
+                sleep(delay).await;
+            }
         }
 
         // Clean up resources
@@ -603,6 +675,9 @@ impl BenchmarkRunner {
         // Use a oneshot channel to signal server readiness and propagate startup errors.
         let (tx, rx) = tokio::sync::oneshot::channel();
 
+        // Clone the necessary config values to move into the server task.
+        let include_first_message = self.config.include_first_message;
+
         // Start server in background task
         let server_handle = {
             let config = transport_config.clone();
@@ -623,6 +698,11 @@ impl BenchmarkRunner {
 
                 let start_time = Instant::now();
                 let mut received = 0;
+                let msg_count_server = if include_first_message {
+                    msg_count
+                } else {
+                    msg_count + 1
+                };
 
                 // Server receive loop - adapts to duration or message count mode
                 loop {
@@ -631,7 +711,7 @@ impl BenchmarkRunner {
                         if start_time.elapsed() >= dur {
                             break;
                         }
-                    } else if received >= msg_count {
+                    } else if received >= msg_count_server {
                         break;
                     }
 
@@ -642,12 +722,11 @@ impl BenchmarkRunner {
                         }
                         Ok(Err(_)) => break, // Transport error
                         Err(_) => {
-                            // Timeout - check if duration-based test is done
-                            if duration.is_some() {
-                                continue; // Keep waiting for duration-based test
-                            } else {
-                                break; // Message-count-based test with no more messages
-                            }
+                            // Timeout on receive. For duration-based tests, we continue waiting.
+                            // For message-count tests, we also continue, as the client may
+                            // be using a long send-delay. The loop's exit condition is
+                            // receiving all messages, not a timeout.
+                            continue;
                         }
                     }
                 }
@@ -671,6 +750,11 @@ impl BenchmarkRunner {
         if let Some(duration) = self.config.duration {
             // Duration-based test: loop until time expires
             let mut i = 0u64;
+            // Send one canary message when excluding first message
+            if !self.config.include_first_message {
+                let canary_message = Message::new(u64::MAX, payload.clone(), MessageType::OneWay);
+                let _ = client_transport.send(&canary_message).await;
+            }
             while start_time.elapsed() < duration {
                 let send_time = Instant::now();
                 let message = Message::new(i, payload.clone(), MessageType::OneWay);
@@ -700,6 +784,9 @@ impl BenchmarkRunner {
                         }
 
                         i += 1;
+                        if let Some(delay) = self.config.send_delay {
+                            sleep(delay).await;
+                        }
                     }
                     Ok(Err(_)) => break, // Transport error
                     Err(_) => {
@@ -712,25 +799,36 @@ impl BenchmarkRunner {
         } else {
             // Message-count-based test: loop for fixed number of messages
             let msg_count = self.get_msg_count();
+            let iterations = if self.config.include_first_message {
+                msg_count
+            } else {
+                msg_count + 1
+            };
 
-            for i in 0..msg_count {
+            for idx in 0..iterations {
                 let send_time = Instant::now();
-                let message = Message::new(i as u64, payload.clone(), MessageType::OneWay);
+                let message = Message::new(idx as u64, payload.clone(), MessageType::OneWay);
                 let _ = client_transport.send(&message).await?;
 
-                let latency = send_time.elapsed();
-                metrics_collector.record_message(self.config.message_size, Some(latency))?;
+                if idx > 0 || self.config.include_first_message {
+                    let latency = send_time.elapsed();
+                    metrics_collector.record_message(self.config.message_size, Some(latency))?;
 
-                // Stream individual latency record if enabled
-                if let Some(ref mut manager) = results_manager {
-                    let record = crate::results::MessageLatencyRecord::new(
-                        i as u64,
-                        self.mechanism,
-                        self.config.message_size,
-                        crate::metrics::LatencyType::OneWay,
-                        latency,
-                    );
-                    manager.stream_latency_record(&record).await?;
+                    // Stream individual latency record if enabled
+                    if let Some(ref mut manager) = results_manager {
+                        let record = crate::results::MessageLatencyRecord::new(
+                            idx as u64,
+                            self.mechanism,
+                            self.config.message_size,
+                            crate::metrics::LatencyType::OneWay,
+                            latency,
+                        );
+                        manager.stream_latency_record(&record).await?;
+                    }
+                }
+
+                if let Some(delay) = self.config.send_delay {
+                    sleep(delay).await;
                 }
             }
         }
@@ -771,6 +869,9 @@ impl BenchmarkRunner {
         // Use a oneshot channel to signal server readiness and propagate startup errors.
         let (tx, rx) = tokio::sync::oneshot::channel();
 
+        // Clone the necessary config values to move into the server task.
+        let include_first_message = self.config.include_first_message;
+
         // Start server in background task
         let server_handle = {
             let config = transport_config.clone();
@@ -799,7 +900,13 @@ impl BenchmarkRunner {
                         if start_time.elapsed() >= dur {
                             break;
                         }
-                    } else if received >= msg_count {
+                    } else if received
+                        >= if include_first_message {
+                            msg_count
+                        } else {
+                            msg_count + 1
+                        }
+                    {
                         break;
                     }
 
@@ -819,12 +926,11 @@ impl BenchmarkRunner {
                         }
                         Ok(Err(_)) => break, // Transport error
                         Err(_) => {
-                            // Timeout - check if duration-based test is done
-                            if duration.is_some() {
-                                continue; // Keep waiting for duration-based test
-                            } else {
-                                break; // Message-count-based test with no more messages
-                            }
+                            // Timeout on receive. For duration-based tests, we continue waiting.
+                            // For message-count tests, we also continue, as the client may
+                            // be using a long send-delay. The loop's exit condition is
+                            // receiving all messages, not a timeout.
+                            continue;
                         }
                     }
                 }
@@ -848,6 +954,13 @@ impl BenchmarkRunner {
         if let Some(duration) = self.config.duration {
             // Duration-based test: loop until time expires
             let mut i = 0u64;
+            // Send canary request/response when excluding first message
+            if !self.config.include_first_message {
+                let canary = Message::new(u64::MAX, payload.clone(), MessageType::Request);
+                if client_transport.send(&canary).await.is_ok() {
+                    let _ = client_transport.receive().await;
+                }
+            }
             while start_time.elapsed() < duration {
                 let send_time = Instant::now();
                 let message = Message::new(i, payload.clone(), MessageType::Request);
@@ -862,39 +975,6 @@ impl BenchmarkRunner {
                     Ok(Ok(_)) => {
                         // Send succeeded - increment counter immediately to ensure unique message IDs
                         i += 1;
-
-                        // Try to receive response with timeout
-                        match tokio::time::timeout(
-                            Duration::from_millis(50),
-                            client_transport.receive(),
-                        )
-                        .await
-                        {
-                            Ok(Ok(_)) => {
-                                let latency = send_time.elapsed();
-                                metrics_collector
-                                    .record_message(self.config.message_size, Some(latency))?;
-
-                                // Stream individual latency record if enabled
-                                if let Some(ref mut manager) = results_manager {
-                                    let record = crate::results::MessageLatencyRecord::new(
-                                        i - 1, // Use the actual message ID that was sent
-                                        self.mechanism,
-                                        self.config.message_size,
-                                        crate::metrics::LatencyType::RoundTrip,
-                                        latency,
-                                    );
-                                    manager.stream_latency_record(&record).await?;
-                                }
-                            }
-                            Ok(Err(_)) => break, // Transport error
-                            Err(_) => {
-                                // Receive timeout, but send was successful so we continue
-                                // Message ID was already incremented after successful send
-                                sleep(Duration::from_millis(1)).await;
-                                continue;
-                            }
-                        }
                     }
                     Ok(Err(_)) => break, // Transport error
                     Err(_) => {
@@ -903,30 +983,77 @@ impl BenchmarkRunner {
                         continue;
                     }
                 }
+
+                // Try to receive response with timeout
+                match tokio::time::timeout(Duration::from_millis(50), client_transport.receive())
+                    .await
+                {
+                    Ok(Ok(_)) => {
+                        let latency = send_time.elapsed();
+                        metrics_collector
+                            .record_message(self.config.message_size, Some(latency))?;
+
+                        // Stream individual latency record if enabled
+                        if let Some(ref mut manager) = results_manager {
+                            let record = crate::results::MessageLatencyRecord::new(
+                                i - 1, // Use the actual message ID that was sent
+                                self.mechanism,
+                                self.config.message_size,
+                                crate::metrics::LatencyType::RoundTrip,
+                                latency,
+                            );
+                            manager.stream_latency_record(&record).await?;
+                        }
+
+                        if let Some(delay) = self.config.send_delay {
+                            sleep(delay).await;
+                        }
+                    }
+                    Ok(Err(_)) => break, // Transport error
+                    Err(_) => {
+                        // Receive timeout, but send was successful so we continue
+                        // Message ID was already incremented after successful send
+                        sleep(Duration::from_millis(1)).await;
+                        continue;
+                    }
+                }
             }
         } else {
             // Message-count-based test: loop for fixed number of messages
             let msg_count = self.get_msg_count();
+            let iterations = if self.config.include_first_message {
+                msg_count
+            } else {
+                msg_count + 1
+            };
 
-            for i in 0..msg_count {
+            for idx in 0..iterations {
                 let send_time = Instant::now();
-                let message = Message::new(i as u64, payload.clone(), MessageType::Request);
+                let message = Message::new(idx as u64, payload.clone(), MessageType::Request);
                 let _ = client_transport.send(&message).await?;
 
-                let _ = client_transport.receive().await?;
-                let latency = send_time.elapsed();
-                metrics_collector.record_message(self.config.message_size, Some(latency))?;
+                if let Some(delay) = self.config.send_delay {
+                    sleep(delay).await;
+                }
 
-                // Stream individual latency record if enabled
-                if let Some(ref mut manager) = results_manager {
-                    let record = crate::results::MessageLatencyRecord::new(
-                        i as u64,
-                        self.mechanism,
-                        self.config.message_size,
-                        crate::metrics::LatencyType::RoundTrip,
-                        latency,
-                    );
-                    manager.stream_latency_record(&record).await?;
+                let _ = client_transport.receive().await?;
+
+                // Discard the first message (the canary) if not included
+                if idx > 0 || self.config.include_first_message {
+                    let latency = send_time.elapsed();
+                    metrics_collector.record_message(self.config.message_size, Some(latency))?;
+
+                    // Stream individual latency record if enabled
+                    if let Some(ref mut manager) = results_manager {
+                        let record = crate::results::MessageLatencyRecord::new(
+                            idx as u64,
+                            self.mechanism,
+                            self.config.message_size,
+                            crate::metrics::LatencyType::RoundTrip,
+                            latency,
+                        );
+                        manager.stream_latency_record(&record).await?;
+                    }
                 }
             }
         }
@@ -1450,6 +1577,7 @@ impl BenchmarkRunner {
             max_connections: self.config.concurrency.max(16), // Set based on concurrency level
             message_queue_depth: adaptive_queue_depth,
             message_queue_name: format!("ipc_benchmark_pmq_{}", unique_id),
+            pmq_priority: self.config.pmq_priority,
         })
     }
 
@@ -1487,6 +1615,9 @@ mod tests {
             buffer_size: Some(8192),
             host: "127.0.0.1".to_string(),
             port: 8080,
+            send_delay: None,
+            pmq_priority: 0,
+            include_first_message: false,
         };
 
         assert_eq!(config.message_size, 1024);
@@ -1513,6 +1644,9 @@ mod tests {
             buffer_size: Some(8192),
             host: "127.0.0.1".to_string(),
             port: 8080,
+            send_delay: None,
+            pmq_priority: 0,
+            include_first_message: false,
         };
 
         let runner = BenchmarkRunner::new(config, IpcMechanism::UnixDomainSocket);
@@ -1548,6 +1682,9 @@ mod tests {
             buffer_size: None,
             host: "127.0.0.1".to_string(),
             port: 8080,
+            send_delay: None,
+            pmq_priority: 0,
+            include_first_message: false,
         };
 
         // Scenario 1: User-provided buffer size is always respected.
@@ -1618,5 +1755,62 @@ mod tests {
                 "Automatic buffer size for PMQ in duration mode should be the safe default"
             );
         }
+    }
+
+    /// Test that the send_delay parameter is correctly applied.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn test_send_delay_is_applied() {
+        let msg_count = 5;
+        let send_delay = Duration::from_millis(20);
+
+        let config = BenchmarkConfig {
+            mechanism: IpcMechanism::UnixDomainSocket,
+            message_size: 64,
+            msg_count: Some(msg_count),
+            duration: None,
+            concurrency: 1,
+            one_way: true,
+            round_trip: false,
+            warmup_iterations: 0,
+            percentiles: vec![],
+            buffer_size: None,
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            send_delay: Some(send_delay),
+            pmq_priority: 0,
+            include_first_message: false,
+        };
+
+        let runner = BenchmarkRunner::new(config, IpcMechanism::UnixDomainSocket);
+        let transport_config = runner.create_transport_config().unwrap();
+        let mut metrics_collector = MetricsCollector::new(None, vec![]).unwrap();
+
+        let start_time = Instant::now();
+        runner
+            .run_single_threaded_one_way(&transport_config, &mut metrics_collector, None)
+            .await
+            .unwrap();
+        let elapsed = start_time.elapsed();
+
+        // The total time should be at least msg_count * delay, since there is a
+        // delay after each of the 5 messages sent in the test.
+        let expected_min_duration = send_delay * msg_count as u32;
+        assert!(
+            elapsed >= expected_min_duration,
+            "Elapsed time {:?} was less than the expected minimum {:?}",
+            elapsed,
+            expected_min_duration
+        );
+
+        // It also shouldn't take excessively long. We'll allow a generous
+        // margin for the actual IPC transport and scheduling overhead.
+        let expected_max_duration = expected_min_duration + (send_delay * 2); // Allow 2 extra delays worth of overhead
+        assert!(
+            elapsed < expected_max_duration,
+            "Elapsed time {:?} was much longer than the expected maximum {:?}",
+            elapsed,
+            expected_max_duration
+        );
     }
 }

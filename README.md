@@ -137,9 +137,61 @@ ipc-benchmark --percentiles 50 90 95 99 99.9 99.99
 # TCP-specific configuration
 ipc-benchmark -m tcp --host 127.0.0.1 --port 9090
 
+# POSIX Message Queue-specific configuration
+ipc-benchmark -m pmq --pmq-priority 1
+
 # Shared memory configuration (demonstrating a user-provided buffer size)
 ipc-benchmark -m shm --buffer-size 16384
 ```
+
+### First-Message Latency (Canary)
+
+The first message in any benchmark often has a higher latency than subsequent messages due to "cold start" effects like CPU cache misses, memory allocation, and branch prediction misses. To provide more stable and representative results, this tool automatically sends one "canary" message before starting the measurement loop. This message and its latency are discarded by default.
+
+If you need to analyze the raw performance data, including the first-message spike, you can use the `--include-first-message` flag to disable this behavior.
+
+```bash
+# Include the first message in the final results
+ipc-benchmark --include-first-message
+### Understanding Test Types: Throughput vs. Latency
+
+This benchmark suite can be used to measure two primary aspects of IPC performance: **throughput** and **latency**. The configuration you choose will determine which of these you are primarily testing.
+
+#### Throughput-Focused Testing (Default Behavior)
+
+By default, this tool is a **throughput benchmark**. It attempts to send messages as fast as the system will allow, with no artificial delays. This is ideal for answering questions like:
+
+-   "What is the maximum message rate this IPC mechanism can handle?"
+-   "How many megabytes per second can I transfer?"
+
+This mode is most useful for stress-testing the system and finding its performance limits under heavy load.
+
+```bash
+# Throughput test: Send 100,000 messages as fast as possible
+./target/release/ipc-benchmark -m uds -i 100000 -s 4096
+```
+
+#### Latency-Focused Testing (Using `--send-delay`)
+
+Sometimes, you are more interested in the latency of individual messages under a controlled, predictable load, rather than the maximum possible throughput. The `--send-delay` flag allows you to introduce a fixed pause between each message sent.
+
+This is a **latency-focused test**. It is ideal for answering questions like:
+
+-   "When my application sends a message every 10 milliseconds, what is the typical time it takes for that message to be delivered?"
+-   "Does latency remain stable or does it spike under a consistent, non-maximal load?"
+
+This mode simulates applications that are not constantly sending data at maximum speed, which is a very common real-world scenario.
+
+```bash
+# Latency test: Send messages with a 10 millisecond delay between each one
+./target/release/ipc-benchmark \
+  -m pmq \
+  -i 10000 \
+  -s 116 \
+  --send-delay 10ms
+```
+
+By using `--send-delay`, you can more accurately measure the base "travel time" of a message without the confounding factor of queue backpressure that occurs during high-throughput tests.
 
 ### Test Configuration Examples
 
@@ -153,6 +205,7 @@ ipc-benchmark \
   --buffer-size 1048576
 ```
 
+
 #### Low-Latency Testing
 ```bash
 ipc-benchmark \
@@ -160,7 +213,8 @@ ipc-benchmark \
   --message-size 64 \
   --msg-count 100000 \
   --warmup-iterations 10000 \
-  --percentiles 50 95 99 99.9 99.99
+  --percentiles 50 95 99 99.9 99.99 \
+  --send-delay 10ms
 ```
 
 #### Comparative Analysis
@@ -535,22 +589,6 @@ ipc-benchmark -m shm -i 10000 -s 1024 --buffer-size 8192
 # This may cause backpressure, which is a valid test scenario.
 ```
 
-### Recommended Usage
-
-```bash
-# ✅ Optimal for latency measurement
-ipc-benchmark -m all -c 1 -i 10000 -s 1024
-
-# ✅ Good for throughput analysis (TCP/UDS only)
-ipc-benchmark -m tcp,uds -c 4 -i 10000 -s 1024
-
-# ✅ Shared memory test
-ipc-benchmark -m shm -i 10000 -s 1024
-
-# ⚠️ Will automatically use c=1 for shared memory
-ipc-benchmark -m shm -c 4 -i 10000 -s 1024
-```
-
 ### Error Prevention
 
 Common issues and solutions:
@@ -564,4 +602,3 @@ Common issues and solutions:
 - **Single-threaded** (`-c 1`): Most accurate latency measurements
 - **Simulated concurrency** (`-c 2+`): Good for throughput scaling analysis
 - **Shared memory**: Always single-threaded for reliability
-
