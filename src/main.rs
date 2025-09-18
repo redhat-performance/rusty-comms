@@ -40,7 +40,6 @@ use ipc_benchmark::{
     results::{BenchmarkResults, ResultsManager},
 };
 use std::io::{self, Write};
-use tokio::time::{timeout, Duration};
 use tracing::{error, info};
 
 use tracing_subscriber::{filter::LevelFilter, prelude::*, Layer};
@@ -394,12 +393,10 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
     // Persistent server loop: receive messages and optionally reply to
     // round-trip patterns. Exit cleanly on disconnect or receive error.
     loop {
-        // Use a short timeout on receive. If it fires, we just continue
-        // waiting for the next message. This makes the server robust against
-        // clients with long send-delays. The server will only exit when the
-        // client disconnects, causing a transport error.
-        match timeout(Duration::from_millis(50), transport.receive()).await {
-            Ok(Ok(msg)) => {
+        // Await directly on receive so that transport-level errors (including
+        // client disconnects) are observed and the server can exit cleanly.
+        match transport.receive().await {
+            Ok(msg) => {
                 // Message received
                 match msg.message_type {
                     MessageType::Request => {
@@ -421,16 +418,10 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
                     _ => {}
                 }
             }
-            Ok(Err(e)) => {
+            Err(e) => {
                 // Transport error
                 info!("Server receive loop ending due to transport error: {}", e);
                 break;
-            }
-            Err(_) => {
-                // Timeout
-                // Timeout is not an error. The client might just have a long send_delay.
-                // We continue waiting for the next message.
-                continue;
             }
         }
     }
