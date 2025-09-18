@@ -127,6 +127,25 @@ async fn main() -> Result<()> {
     // If we don't assign it to a variable, it gets dropped immediately, and file logging stops working.
     let _log_guard = guard;
 
+    // Check for pmq_priority usage with non-PMQ mechanisms
+    if args.pmq_priority != 0 {
+        let mechanisms = IpcMechanism::expand_all(args.mechanisms.clone());
+        for &mechanism in &mechanisms {
+            let is_pmq = if cfg!(target_os = "linux") {
+                mechanism == IpcMechanism::PosixMessageQueue
+            } else {
+                false
+            };
+
+            if !is_pmq {
+                tracing::info!(
+                    "'pmq-priority' parameter ignored for mechanism '{}'",
+                    mechanism
+                );
+            }
+        }
+    }
+
     info!("Starting IPC Benchmark Suite");
     // The detailed configuration will be printed for each mechanism run.
 
