@@ -374,6 +374,32 @@ Mechanism: SharedMemory
 ```
 *Note: The `Final JSON Results` line will appear in the "Output Files Written" section if the `--output-file` flag was used.*
 
+## Result Analysis
+
+### Interactive Dashboard
+
+For comprehensive analysis and visualization of benchmark results, use the included **Performance Dashboard** - a web application designed for IPC performance analysis:
+
+```bash
+# Start the interactive dashboard
+python utils/dashboard/dashboard.py --dir /path/to/results --host 0.0.0.0 --port 8050
+```
+**Analysis Workflows:**
+- **Summary Analysis**: Performance overview cards, head-to-head comparisons, and statistical breakdowns
+- **Time Series Analysis**: Temporal patterns, anomaly detection, and moving averages with 5 preset configurations
+- **Interactive Exploration**: Filter by mechanism/message size, drill down into specific test runs
+
+**Key Features:**
+- **Advanced Visualizations**: Interactive time-series plots, statistical overlays, and comparative analysis
+- **Intelligent Insights**: AI-powered performance recommendations and mechanism comparisons  
+- **Modern UI**: interface with preset configurations for different analysis scenarios
+- **High Performance**: Handles millions of data points with threaded processing and smart caching
+- **Export Capabilities**: Generate reports and capture insights for documentation
+
+The dashboard automatically discovers all JSON and CSV output files in your results directory and provides powerful tools for understanding IPC performance characteristics across different scenarios.
+
+For detailed dashboard documentation and setup instructions, see [`utils/dashboard/README.md`](utils/dashboard/README.md).
+
 ## Performance Considerations
 
 ### System Configuration
