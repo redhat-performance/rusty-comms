@@ -1567,11 +1567,11 @@ impl BenchmarkResults {
             }
         }
 
-        // Calculate summary metrics
+        // Calculate summary metrics - using binary MB (1024^2) like C program
         let average_throughput_mbps =
-            throughput_values.iter().sum::<f64>() / throughput_values.len() as f64 / 1_000_000.0;
+            throughput_values.iter().sum::<f64>() / throughput_values.len() as f64 / (1024.0 * 1024.0);
         let peak_throughput_mbps =
-            throughput_values.iter().cloned().fold(0.0, f64::max) / 1_000_000.0;
+            throughput_values.iter().cloned().fold(0.0, f64::max) / (1024.0 * 1024.0);
 
         // Calculate properly weighted average latency across all test types
         let average_latency_ns = self.calculate_weighted_average_latency();

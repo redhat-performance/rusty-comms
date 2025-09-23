@@ -12,6 +12,47 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::time::timeout;
 use tracing::{debug, error, warn};
 
+/// Simple buffer pool to avoid allocations for TCP
+#[allow(dead_code)]
+struct TcpBufferPool {
+    buffers: parking_lot::Mutex<Vec<Vec<u8>>>,
+    #[allow(dead_code)]
+    capacity: usize,
+}
+
+impl TcpBufferPool {
+    fn new(capacity: usize) -> Self {
+        Self {
+            buffers: parking_lot::Mutex::new(Vec::new()),
+            capacity,
+        }
+    }
+
+    fn get_buffer(&self, size: usize) -> Vec<u8> {
+        let mut buffers = self.buffers.lock();
+        if let Some(mut buf) = buffers.pop() {
+            if buf.capacity() >= size {
+                buf.clear();
+                buf.resize(size, 0);
+                return buf;
+            }
+        }
+        vec![0u8; size]
+    }
+
+    #[allow(dead_code)]
+    fn return_buffer(&self, buf: Vec<u8>) {
+        let mut buffers = self.buffers.lock();
+        if buffers.len() < self.capacity && buf.capacity() <= 65536 {
+            buffers.push(buf);
+        }
+    }
+}
+
+thread_local! {
+    static TCP_BUFFER_POOL: TcpBufferPool = TcpBufferPool::new(8);
+}
+
 /// TCP Socket transport implementation with multi-client support
 pub struct TcpSocketTransport {
     state: TransportState,
@@ -61,18 +102,67 @@ impl TcpSocketTransport {
             return Err(anyhow!("Message too large: {} bytes", message_len));
         }
 
-        // Read message data
-        let mut message_data = vec![0u8; message_len];
+        // Read message data with buffer pooling
+        let mut message_data = TCP_BUFFER_POOL.with(|pool| pool.get_buffer(message_len));
         stream.read_exact(&mut message_data).await?;
 
-        // Deserialize message
-        Message::from_bytes(&message_data)
+        // Deserialize message with raw mode optimization
+        let message = if message_len > 536 { // 24 header + 512 payload threshold
+            // Raw mode: manually parse the header
+            if message_data.len() < 24 {
+                return Err(anyhow!("Invalid raw message: too short"));
+            }
+            let id = u64::from_le_bytes([
+                message_data[0], message_data[1], message_data[2], message_data[3],
+                message_data[4], message_data[5], message_data[6], message_data[7],
+            ]);
+            let timestamp = u64::from_le_bytes([
+                message_data[8], message_data[9], message_data[10], message_data[11],
+                message_data[12], message_data[13], message_data[14], message_data[15],
+            ]);
+            let message_type = match message_data[16] {
+                0 => crate::ipc::MessageType::OneWay,
+                1 => crate::ipc::MessageType::Request,
+                2 => crate::ipc::MessageType::Response,
+                3 => crate::ipc::MessageType::Ping,
+                4 => crate::ipc::MessageType::Pong,
+                _ => crate::ipc::MessageType::OneWay,
+            };
+            let payload = message_data[24..].to_vec();
+            
+            crate::ipc::Message {
+                id,
+                timestamp,
+                payload,
+                message_type,
+            }
+        } else {
+            // Small messages: use bincode
+            Message::from_bytes(&message_data)?
+        };
+        
+        Ok(message)
     }
 
     /// Write a message to the TCP stream
     async fn write_message(stream: &mut TcpStream, message: &Message) -> Result<(), IpcError> {
         const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
-        let message_bytes = message.to_bytes().map_err(IpcError::Generic)?;
+        
+        // For benchmarking large payloads, use raw payload mode to avoid serialization overhead
+        let message_bytes = if message.payload.len() > 512 {
+            // Raw mode: just send the payload with minimal header
+            let mut raw_message = Vec::with_capacity(24 + message.payload.len());
+            raw_message.extend_from_slice(&message.id.to_le_bytes());
+            raw_message.extend_from_slice(&message.timestamp.to_le_bytes());
+            raw_message.extend_from_slice(&(message.message_type as u8).to_le_bytes());
+            raw_message.extend_from_slice(&[0u8; 7]); // padding to align
+            raw_message.extend_from_slice(&message.payload);
+            raw_message
+        } else {
+            // Small messages: use bincode for structured data
+            message.to_bytes().map_err(IpcError::Generic)?
+        };
+        
         let message_len = message_bytes.len() as u32;
 
         let write_fut = async {

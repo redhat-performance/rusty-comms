@@ -1541,10 +1541,18 @@ impl BenchmarkRunner {
                 if self.mechanism == IpcMechanism::PosixMessageQueue {
                     let msg_count = self.get_msg_count();
 
-                    // Warn about PMQ limitations for high-throughput tests
-                    if msg_count > 10000 {
+                    // PMQ limitations for high-throughput tests
+                    if msg_count > 1000 {
                         warn!(
                             "PMQ with {} messages may be very slow due to system queue depth limits (typically 10). Consider using fewer messages or a different mechanism for high-throughput testing.",
+                            msg_count
+                        );
+                    }
+
+                    // Special handling for round-trip tests which are particularly problematic
+                    if self.config.round_trip && msg_count > 100 {
+                        warn!(
+                            "PMQ round-trip tests with {} messages often fail due to bidirectional queue congestion. PMQ uses a single shared queue which creates deadlocks in high-volume round-trip scenarios. Consider using --msg-count 50 or fewer for PMQ round-trip tests.",
                             msg_count
                         );
                     }

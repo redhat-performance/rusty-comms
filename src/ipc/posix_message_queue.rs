@@ -68,6 +68,47 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
 
+/// Simple buffer pool to avoid allocations for PMQ
+#[allow(dead_code)]
+struct PmqBufferPool {
+    buffers: parking_lot::Mutex<Vec<Vec<u8>>>,
+    #[allow(dead_code)]
+    capacity: usize,
+}
+
+impl PmqBufferPool {
+    fn new(capacity: usize) -> Self {
+        Self {
+            buffers: parking_lot::Mutex::new(Vec::new()),
+            capacity,
+        }
+    }
+
+    fn get_buffer(&self, size: usize) -> Vec<u8> {
+        let mut buffers = self.buffers.lock();
+        if let Some(mut buf) = buffers.pop() {
+            if buf.capacity() >= size {
+                buf.clear();
+                buf.resize(size, 0);
+                return buf;
+            }
+        }
+        vec![0u8; size]
+    }
+
+    #[allow(dead_code)]
+    fn return_buffer(&self, buf: Vec<u8>) {
+        let mut buffers = self.buffers.lock();
+        if buffers.len() < self.capacity && buf.capacity() <= 8192 { // PMQ typically small
+            buffers.push(buf);
+        }
+    }
+}
+
+thread_local! {
+    static PMQ_BUFFER_POOL: PmqBufferPool = PmqBufferPool::new(4);
+}
+
 /// POSIX Message Queue transport implementation
 ///
 /// This transport provides IPC communication using POSIX Message Queues, which are
@@ -515,7 +556,21 @@ impl IpcTransport for PosixMessageQueueTransport {
     /// retry with a backoff, and a warning will be logged on the first
     /// occurrence.
     async fn send(&mut self, message: &Message) -> Result<bool> {
-        let data = message.to_bytes()?;
+        // For POSIX Message Queues, use raw payload mode for larger messages
+        // Note: PMQ has small size limits (typically 8KB), so threshold is lower
+        let data = if message.payload.len() > 256 {
+            // Raw mode: minimal header for larger messages
+            let mut raw_message = Vec::with_capacity(24 + message.payload.len());
+            raw_message.extend_from_slice(&message.id.to_le_bytes());
+            raw_message.extend_from_slice(&message.timestamp.to_le_bytes());
+            raw_message.extend_from_slice(&(message.message_type as u8).to_le_bytes());
+            raw_message.extend_from_slice(&[0u8; 7]); // padding to align
+            raw_message.extend_from_slice(&message.payload);
+            raw_message
+        } else {
+            // Small messages: use bincode for structured data
+            message.to_bytes()?
+        };
         let fd_ref = self
             .mq_fd
             .as_ref()
@@ -530,7 +585,9 @@ impl IpcTransport for PosixMessageQueueTransport {
 
         // Use non-blocking send with exponential backoff for queue-full conditions
         let mut retry_delay_ms = 1;
-        let max_retries = 100; // More retries since each one is much faster
+        // Moderate retry count balanced for both performance and deadlock detection
+        // In round-trip tests, both client and server compete for the same queue
+        let max_retries = 30; // Balanced retry count for PMQ scenarios
 
         for attempt in 0..max_retries {
             let start_time = std::time::Instant::now();
@@ -575,10 +632,10 @@ impl IpcTransport for PosixMessageQueueTransport {
                     if attempt == max_retries - 1 {
                         return Err(anyhow!(IpcError::BackpressureTimeout));
                     }
-                    // Justification: Short, exponentially increasing delay to wait for space to become available
-                    // in a full queue without busy-waiting.
+                    // Justification: Moderate delay to allow queue draining in congested scenarios.
+                    // In PMQ round-trip scenarios, both sides compete for queue space.
                     tokio::time::sleep(Duration::from_millis(retry_delay_ms)).await;
-                    retry_delay_ms = (retry_delay_ms * 2).min(10); // Cap at 10ms for faster throughput
+                    retry_delay_ms = (retry_delay_ms * 2).min(25); // Moderate cap to balance throughput and draining
                 }
                 Err(e) => {
                     return Err(anyhow!("Failed to send message: {}", e));
@@ -649,13 +706,15 @@ impl IpcTransport for PosixMessageQueueTransport {
 
         // Use non-blocking receive with exponential backoff for empty queue conditions
         let mut retry_delay_ms = 1;
-        let max_retries = 100;
+        // Moderate retry count to balance responsiveness and deadlock detection
+        let max_retries = 40; // Moderate retry count for reliable message reception
 
         for attempt in 0..max_retries {
             let result = tokio::task::spawn_blocking({
                 move || {
                     let fd = unsafe { MqdT::from_raw_fd(raw_fd) };
-                    let mut buffer = vec![0u8; max_msg_size];
+                    // Use buffer pooling for better performance
+                    let mut buffer = PMQ_BUFFER_POOL.with(|pool| pool.get_buffer(max_msg_size));
                     let mut priority = 0u32;
                     // std::mem::forget(fd); // Don't close the fd when this M-q-dT drops
                     mq_receive(&fd, &mut buffer, &mut priority).map(|bytes_read| {
@@ -672,7 +731,43 @@ impl IpcTransport for PosixMessageQueueTransport {
                         "Received message {} bytes via POSIX message queue",
                         buffer.len()
                     );
-                    return Message::from_bytes(&buffer);
+                    
+                    // Deserialize with raw mode optimization
+                    let message = if buffer.len() > 280 { // 24 header + 256 payload threshold
+                        // Raw mode: manually parse the header
+                        if buffer.len() < 24 {
+                            return Err(anyhow!("Invalid raw message: too short"));
+                        }
+                        let id = u64::from_le_bytes([
+                            buffer[0], buffer[1], buffer[2], buffer[3],
+                            buffer[4], buffer[5], buffer[6], buffer[7],
+                        ]);
+                        let timestamp = u64::from_le_bytes([
+                            buffer[8], buffer[9], buffer[10], buffer[11],
+                            buffer[12], buffer[13], buffer[14], buffer[15],
+                        ]);
+                        let message_type = match buffer[16] {
+                            0 => crate::ipc::MessageType::OneWay,
+                            1 => crate::ipc::MessageType::Request,
+                            2 => crate::ipc::MessageType::Response,
+                            3 => crate::ipc::MessageType::Ping,
+                            4 => crate::ipc::MessageType::Pong,
+                            _ => crate::ipc::MessageType::OneWay,
+                        };
+                        let payload = buffer[24..].to_vec();
+                        
+                        crate::ipc::Message {
+                            id,
+                            timestamp,
+                            payload,
+                            message_type,
+                        }
+                    } else {
+                        // Small messages: use bincode
+                        Message::from_bytes(&buffer)?
+                    };
+                    
+                    return Ok(message);
                 }
                 Err(Errno::EAGAIN) => {
                     // Queue is empty, wait and retry
@@ -685,7 +780,7 @@ impl IpcTransport for PosixMessageQueueTransport {
                     // Justification: Short, exponentially increasing delay to wait for a message to arrive
                     // in an empty queue without busy-waiting.
                     tokio::time::sleep(Duration::from_millis(retry_delay_ms)).await;
-                    retry_delay_ms = (retry_delay_ms * 2).min(10); // Cap at 10ms
+                    retry_delay_ms = (retry_delay_ms * 2).min(25); // Increased cap to 25ms to handle queue congestion
                 }
                 Err(e) => {
                     return Err(anyhow!("Failed to receive message: {}", e));

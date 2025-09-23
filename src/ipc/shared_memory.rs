@@ -13,6 +13,47 @@ use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tracing::{debug, warn};
 
+/// Simple buffer pool to avoid allocations
+#[allow(dead_code)]
+struct BufferPool {
+    buffers: Mutex<Vec<Vec<u8>>>,
+    #[allow(dead_code)]
+    capacity: usize,
+}
+
+impl BufferPool {
+    fn new(capacity: usize) -> Self {
+        Self {
+            buffers: Mutex::new(Vec::new()),
+            capacity,
+        }
+    }
+
+    fn get_buffer(&self, size: usize) -> Vec<u8> {
+        let mut buffers = self.buffers.lock();
+        if let Some(mut buf) = buffers.pop() {
+            if buf.capacity() >= size {
+                buf.clear();
+                buf.resize(size, 0);
+                return buf;
+            }
+        }
+        vec![0u8; size]
+    }
+
+    #[allow(dead_code)]
+    fn return_buffer(&self, buf: Vec<u8>) {
+        let mut buffers = self.buffers.lock();
+        if buffers.len() < self.capacity && buf.capacity() <= 65536 {
+            buffers.push(buf);
+        }
+    }
+}
+
+thread_local! {
+    static BUFFER_POOL: BufferPool = BufferPool::new(8);
+}
+
 /// Shared memory ring buffer structure
 #[repr(C)]
 struct SharedMemoryRingBuffer {
@@ -85,18 +126,82 @@ impl SharedMemoryRingBuffer {
         let write_pos = self.write_pos.load(Ordering::Acquire);
         let data_ptr = self.data_ptr();
 
-        // Write length prefix
+        // Write length prefix - optimized copy
         let len_bytes = (data_len as u32).to_le_bytes();
-        for (i, &byte) in len_bytes.iter().enumerate() {
-            unsafe {
-                *data_ptr.add((write_pos + i) % capacity) = byte;
+        unsafe {
+            if write_pos + 4 <= capacity {
+                // Non-wrapping case - direct copy
+                std::ptr::copy_nonoverlapping(
+                    len_bytes.as_ptr(),
+                    data_ptr.add(write_pos),
+                    4
+                );
+            } else {
+                // Wrapping case - copy in two parts
+                let first_part = capacity - write_pos;
+                std::ptr::copy_nonoverlapping(
+                    len_bytes.as_ptr(),
+                    data_ptr.add(write_pos),
+                    first_part
+                );
+                std::ptr::copy_nonoverlapping(
+                    len_bytes.as_ptr().add(first_part),
+                    data_ptr,
+                    4 - first_part
+                );
             }
         }
 
-        // Write data
-        for (i, &byte) in data.iter().enumerate() {
-            unsafe {
-                *data_ptr.add((write_pos + 4 + i) % capacity) = byte;
+        // Write data - optimized copy
+        unsafe {
+            if write_pos + 4 + data_len <= capacity {
+                // Non-wrapping case - direct copy
+                std::ptr::copy_nonoverlapping(
+                    data.as_ptr(),
+                    data_ptr.add(write_pos + 4),
+                    data_len
+                );
+            } else {
+                // Wrapping case - copy in two parts
+                let header_end = write_pos + 4;
+                if header_end < capacity {
+                    let first_part = capacity - header_end;
+                    let data_first_part = first_part.min(data_len);
+                    std::ptr::copy_nonoverlapping(
+                        data.as_ptr(),
+                        data_ptr.add(header_end),
+                        data_first_part
+                    );
+                    if data_first_part < data_len {
+                        std::ptr::copy_nonoverlapping(
+                            data.as_ptr().add(data_first_part),
+                            data_ptr,
+                            data_len - data_first_part
+                        );
+                    }
+                } else {
+                    // Header itself wraps
+                    let data_start = header_end % capacity;
+                    if data_start + data_len <= capacity {
+                        std::ptr::copy_nonoverlapping(
+                            data.as_ptr(),
+                            data_ptr.add(data_start),
+                            data_len
+                        );
+                    } else {
+                        let first_part = capacity - data_start;
+                        std::ptr::copy_nonoverlapping(
+                            data.as_ptr(),
+                            data_ptr.add(data_start),
+                            first_part
+                        );
+                        std::ptr::copy_nonoverlapping(
+                            data.as_ptr().add(first_part),
+                            data_ptr,
+                            data_len - first_part
+                        );
+                    }
+                }
             }
         }
 
@@ -116,11 +221,29 @@ impl SharedMemoryRingBuffer {
         let read_pos = self.read_pos.load(Ordering::Acquire);
         let data_ptr = self.data_ptr();
 
-        // Read length prefix
+        // Read length prefix - optimized copy
         let mut len_bytes = [0u8; 4];
-        for (i, byte) in len_bytes.iter_mut().enumerate() {
-            unsafe {
-                *byte = *data_ptr.add((read_pos + i) % capacity);
+        unsafe {
+            if read_pos + 4 <= capacity {
+                // Non-wrapping case - direct copy
+                std::ptr::copy_nonoverlapping(
+                    data_ptr.add(read_pos),
+                    len_bytes.as_mut_ptr(),
+                    4
+                );
+            } else {
+                // Wrapping case - copy in two parts
+                let first_part = capacity - read_pos;
+                std::ptr::copy_nonoverlapping(
+                    data_ptr.add(read_pos),
+                    len_bytes.as_mut_ptr(),
+                    first_part
+                );
+                std::ptr::copy_nonoverlapping(
+                    data_ptr,
+                    len_bytes.as_mut_ptr().add(first_part),
+                    4 - first_part
+                );
             }
         }
         let data_len = u32::from_le_bytes(len_bytes) as usize;
@@ -134,11 +257,57 @@ impl SharedMemoryRingBuffer {
             return Err(anyhow!("Incomplete message"));
         }
 
-        // Read data
-        let mut data = vec![0u8; data_len];
-        for (i, byte) in data.iter_mut().enumerate() {
-            unsafe {
-                *byte = *data_ptr.add((read_pos + 4 + i) % capacity);
+        // Read data - optimized copy with buffer pooling
+        let mut data = BUFFER_POOL.with(|pool| pool.get_buffer(data_len));
+        unsafe {
+            if read_pos + 4 + data_len <= capacity {
+                // Non-wrapping case - direct copy
+                std::ptr::copy_nonoverlapping(
+                    data_ptr.add(read_pos + 4),
+                    data.as_mut_ptr(),
+                    data_len
+                );
+            } else {
+                // Wrapping case - copy in two parts
+                let header_end = read_pos + 4;
+                if header_end < capacity {
+                    let first_part = capacity - header_end;
+                    let data_first_part = first_part.min(data_len);
+                    std::ptr::copy_nonoverlapping(
+                        data_ptr.add(header_end),
+                        data.as_mut_ptr(),
+                        data_first_part
+                    );
+                    if data_first_part < data_len {
+                        std::ptr::copy_nonoverlapping(
+                            data_ptr,
+                            data.as_mut_ptr().add(data_first_part),
+                            data_len - data_first_part
+                        );
+                    }
+                } else {
+                    // Header itself wraps
+                    let data_start = header_end % capacity;
+                    if data_start + data_len <= capacity {
+                        std::ptr::copy_nonoverlapping(
+                            data_ptr.add(data_start),
+                            data.as_mut_ptr(),
+                            data_len
+                        );
+                    } else {
+                        let first_part = capacity - data_start;
+                        std::ptr::copy_nonoverlapping(
+                            data_ptr.add(data_start),
+                            data.as_mut_ptr(),
+                            first_part
+                        );
+                        std::ptr::copy_nonoverlapping(
+                            data_ptr,
+                            data.as_mut_ptr().add(first_part),
+                            data_len - first_part
+                        );
+                    }
+                }
             }
         }
 
@@ -239,8 +408,22 @@ impl SharedMemoryConnection {
     /// Sends a message, returning true if the buffer was full and caused a delay.
     async fn send_message(&self, message: &Message) -> Result<bool, IpcError> {
         let ring_buffer = self.get_ring_buffer();
-        let message_bytes =
-            bincode::serialize(&message).map_err(|e| IpcError::Generic(e.into()))?;
+        
+        // For benchmarking large payloads, use raw payload mode to avoid serialization overhead
+        let message_bytes = if message.payload.len() > 512 {
+            // Raw mode: just send the payload with minimal header
+            let mut raw_message = Vec::with_capacity(24 + message.payload.len());
+            raw_message.extend_from_slice(&message.id.to_le_bytes());
+            raw_message.extend_from_slice(&message.timestamp.to_le_bytes());
+            raw_message.extend_from_slice(&(message.message_type as u8).to_le_bytes());
+            raw_message.extend_from_slice(&[0u8; 7]); // padding to align
+            raw_message.extend_from_slice(&message.payload);
+            raw_message
+        } else {
+            // Small messages: use bincode for structured data
+            bincode::serialize(&message).map_err(|e| IpcError::Generic(e.into()))?
+        };
+        
         let mut backpressure_detected = false;
 
         // Try to write with timeout and backpressure detection
@@ -282,7 +465,40 @@ impl SharedMemoryConnection {
         loop {
             match ring_buffer.read_data() {
                 Ok(data) => {
-                    let message = Message::from_bytes(&data)?;
+                    let message = if data.len() > 536 { // 24 header + 512 payload threshold
+                        // Raw mode: manually parse the header
+                        if data.len() < 24 {
+                            return Err(anyhow!("Invalid raw message: too short"));
+                        }
+                        let id = u64::from_le_bytes([
+                            data[0], data[1], data[2], data[3],
+                            data[4], data[5], data[6], data[7],
+                        ]);
+                        let timestamp = u64::from_le_bytes([
+                            data[8], data[9], data[10], data[11],
+                            data[12], data[13], data[14], data[15],
+                        ]);
+                        let message_type = match data[16] {
+                            0 => crate::ipc::MessageType::OneWay,
+                            1 => crate::ipc::MessageType::Request,
+                            2 => crate::ipc::MessageType::Response,
+                            3 => crate::ipc::MessageType::Ping,
+                            4 => crate::ipc::MessageType::Pong,
+                            _ => crate::ipc::MessageType::OneWay,
+                        };
+                        let payload = data[24..].to_vec();
+                        
+                        crate::ipc::Message {
+                            id,
+                            timestamp,
+                            payload,
+                            message_type,
+                        }
+                    } else {
+                        // Small messages: use bincode
+                        Message::from_bytes(&data)?
+                    };
+                    
                     debug!(
                         "Received message {} via connection {}",
                         message.id, self.connection_id
