@@ -1,0 +1,102 @@
+#!/bin/sh
+
+set -euo pipefail
+
+echo "Running pre-commit checks..."
+
+EXIT_CODE=0
+
+# --- Rust Checks ---
+run_rust_checks() {
+    echo "Rust files changed. Running Rust-specific checks..."
+
+    run_check() {
+        echo "Running '$@'..."
+        if ! "$@"; then
+            echo "Error: '$@' failed."
+            EXIT_CODE=1
+        fi
+    }
+
+    run_check cargo audit
+    run_check cargo clippy --all-targets --all-features -- -D warnings
+    run_check cargo fmt --all -- --check
+    run_check cargo test --all-features
+    run_check scripts/msrv-check.sh
+}
+
+# --- Python Checks ---
+run_python_checks() {
+    echo "Python files changed. Running Python-specific checks..."
+    
+    VENV_PATH="utils/dashboard/.venv/bin/activate"
+    if [ -f "$VENV_PATH" ]; then
+        echo "Activating Python virtual environment..."
+        # shellcheck source=/dev/null
+        . "$VENV_PATH"
+    else
+        echo "Warning: Python virtual environment not found at $VENV_PATH. Using system python."
+    fi
+
+    MISSING_TOOLS=""
+    for tool in black isort flake8; do
+        if ! command -v "$tool" >/dev/null 2>&1; then
+            MISSING_TOOLS="$MISSING_TOOLS $tool"
+        fi
+    done
+
+    if [ -n "$MISSING_TOOLS" ]; then
+        echo "Error: Missing required Python tools:$MISSING_TOOLS"
+        echo "   Install them (e.g., 'pip install$MISSING_TOOLS') and ensure they are in your PATH."
+        EXIT_CODE=1
+        return
+    fi
+
+    echo "Formatting with black and isort..."
+    if ! black --quiet $PYTHON_FILES_CHANGED; then
+        echo "Error: 'black' formatting failed."
+        EXIT_CODE=1
+    fi
+    if ! isort --profile black $PYTHON_FILES_CHANGED; then
+        echo "Error: 'isort' formatting failed."
+        EXIT_CODE=1
+    fi
+    
+    echo "Staging formatted Python files..."
+    git add $PYTHON_FILES_CHANGED
+
+    echo "Linting with flake8..."
+    if ! flake8 --max-line-length=88 $PYTHON_FILES_CHANGED; then
+        echo "Error: 'flake8' linting failed."
+        EXIT_CODE=1
+    fi
+}
+
+# --- Main Logic ---
+RUST_FILES_CHANGED=$(git diff --cached --name-only --diff-filter=ACMRT | grep -E '\.rs$|Cargo\.toml|Cargo\.lock' || true)
+PYTHON_FILES_CHANGED=$(git diff --cached --name-only --diff-filter=ACMRT | grep -E '\.py$' || true)
+
+if [ -z "$RUST_FILES_CHANGED" ] && [ -z "$PYTHON_FILES_CHANGED" ]; then
+    echo "No Rust or Python files changed to check."
+    exit 0
+fi
+
+if [ -n "$RUST_FILES_CHANGED" ]; then
+    run_rust_checks
+else
+    echo "No Rust files changed. Skipping Rust-specific checks."
+fi
+
+if [ -n "$PYTHON_FILES_CHANGED" ]; then
+    run_python_checks
+else
+    echo "No Python files changed. Skipping Python-specific checks."
+fi
+
+if [ $EXIT_CODE -ne 0 ]; then
+    echo "Pre-commit checks failed. Aborting commit."
+    exit 1
+fi
+
+echo "Pre-commit checks passed."
+exit 0
