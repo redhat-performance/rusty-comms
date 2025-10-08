@@ -368,49 +368,50 @@ pub struct BenchmarkRunner {
 
     /// The original command-line arguments
     args: Args,
-    
+
     /// Available CPU cores (cached at startup to avoid affinity-dependent detection)
     available_cores: Option<Vec<core_affinity::CoreId>>,
 }
 
 impl BenchmarkRunner {
     /// Validate CPU core availability at startup
-    /// 
+    ///
     /// This validates that the requested cores are available using cached core information.
     fn validate_core_availability(&self) -> Result<()> {
         // Use cached core information
-        let core_ids = self.available_cores
+        let core_ids = self
+            .available_cores
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Failed to get core IDs for validation"))?;
-        
+
         if core_ids.is_empty() {
             return Err(anyhow::anyhow!("No CPU cores detected"));
         }
-        
+
         // Validate server affinity if specified
         if let Some(server_core_id) = self.config.server_affinity {
             if server_core_id >= core_ids.len() {
                 return Err(anyhow::anyhow!(
-                    "Invalid server core ID: {} (available cores: 0-{}, total: {})", 
-                    server_core_id, 
+                    "Invalid server core ID: {} (available cores: 0-{}, total: {})",
+                    server_core_id,
                     core_ids.len().saturating_sub(1),
                     core_ids.len()
                 ));
             }
         }
-        
+
         // Validate client affinity if specified
         if let Some(client_core_id) = self.config.client_affinity {
             if client_core_id >= core_ids.len() {
                 return Err(anyhow::anyhow!(
-                    "Invalid client core ID: {} (available cores: 0-{}, total: {})", 
-                    client_core_id, 
+                    "Invalid client core ID: {} (available cores: 0-{}, total: {})",
+                    client_core_id,
                     core_ids.len().saturating_sub(1),
                     core_ids.len()
                 ));
             }
         }
-        
+
         Ok(())
     }
 
@@ -425,7 +426,7 @@ impl BenchmarkRunner {
     pub fn new(config: BenchmarkConfig, mechanism: IpcMechanism, args: Args) -> Self {
         // Cache available cores at construction time to avoid affinity-dependent detection
         let available_cores = core_affinity::get_core_ids();
-        
+
         Self {
             config,
             mechanism,
@@ -463,7 +464,7 @@ impl BenchmarkRunner {
     ) -> Result<BenchmarkResults> {
         // Validate core availability before any affinity changes
         self.validate_core_availability()?;
-        
+
         let transport_config = self.create_transport_config_internal(&self.args)?;
 
         // Use the new display struct for UI output.
@@ -1046,7 +1047,8 @@ port={}",
         };
 
         // Execute client work with proper affinity using spawn_with_affinity
-        let latencies = crate::utils::spawn_with_affinity(client_future, self.config.client_affinity).await?;
+        let latencies =
+            crate::utils::spawn_with_affinity(client_future, self.config.client_affinity).await?;
 
         for (i, latency) in latencies.iter().enumerate() {
             metrics_collector.record_message(self.config.message_size, Some(*latency))?;
@@ -1181,7 +1183,8 @@ port={}",
         };
 
         // Execute client work with proper affinity using spawn_with_affinity
-        let latencies = crate::utils::spawn_with_affinity(client_future, self.config.client_affinity).await?;
+        let latencies =
+            crate::utils::spawn_with_affinity(client_future, self.config.client_affinity).await?;
 
         for (i, latency) in latencies.iter().enumerate() {
             metrics_collector.record_message(self.config.message_size, Some(*latency))?;
@@ -1465,11 +1468,15 @@ port={}",
                 }
             }
             client_transport.close().await?;
-            Ok::<(Vec<Duration>, Vec<Duration>), anyhow::Error>((one_way_latencies, round_trip_latencies))
+            Ok::<(Vec<Duration>, Vec<Duration>), anyhow::Error>((
+                one_way_latencies,
+                round_trip_latencies,
+            ))
         };
 
         // Execute client work with proper affinity using spawn_with_affinity
-        let (one_way_latencies, round_trip_latencies) = crate::utils::spawn_with_affinity(client_future, self.config.client_affinity).await?;
+        let (one_way_latencies, round_trip_latencies) =
+            crate::utils::spawn_with_affinity(client_future, self.config.client_affinity).await?;
 
         for (i, &one_way_latency) in one_way_latencies.iter().enumerate() {
             one_way_metrics.record_message(self.config.message_size, Some(one_way_latency))?;

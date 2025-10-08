@@ -36,14 +36,14 @@ where
 {
     // Use a dedicated OS thread instead of Tokio's thread pool to maintain CPU affinity
     let (sender, receiver) = tokio::sync::oneshot::channel();
-    
+
     std::thread::spawn(move || {
         // Run the async future on this dedicated thread using a local runtime
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|e| anyhow::anyhow!("Failed to build runtime: {}", e));
-            
+
         let result = match rt {
             Ok(runtime) => {
                 // Set CPU affinity AFTER creating the runtime but BEFORE running the future
@@ -59,23 +59,26 @@ where
                                 tracing::warn!("Failed to set client affinity to CPU core {} after runtime creation", core_index);
                             }
                         } else {
-                            tracing::warn!("Invalid client core ID: {} (available cores: 0-{})", 
-                                         core_index, cores.len().saturating_sub(1));
+                            tracing::warn!(
+                                "Invalid client core ID: {} (available cores: 0-{})",
+                                core_index,
+                                cores.len().saturating_sub(1)
+                            );
                         }
                     } else {
                         tracing::warn!("Failed to get core IDs for client affinity");
                     }
                 }
-                
+
                 runtime.block_on(future)
-            },
+            }
             Err(e) => Err(e),
         };
-        
+
         // Send the result back to the main async context
         let _ = sender.send(result);
     });
-    
+
     // Wait for the dedicated thread to complete
     receiver
         .await
