@@ -34,24 +34,52 @@ where
     F: std::future::Future<Output = anyhow::Result<T>> + Send + 'static,
     T: Send + 'static,
 {
-    let handle = tokio::task::spawn_blocking(move || {
-        if let Some(core_index) = core_id {
-            if let Some(cores) = core_affinity::get_core_ids() {
-                if let Some(core) = cores.into_iter().find(|c| c.id == core_index) {
-                    let _ = core_affinity::set_for_current(core);
-                }
-            }
-        }
-        // Run the async future on the current thread using a local runtime
+    // Use a dedicated OS thread instead of Tokio's thread pool to maintain CPU affinity
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    
+    std::thread::spawn(move || {
+        // Run the async future on this dedicated thread using a local runtime
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|e| anyhow::anyhow!("Failed to build runtime: {}", e))?;
-        rt.block_on(future)
+            .map_err(|e| anyhow::anyhow!("Failed to build runtime: {}", e));
+            
+        let result = match rt {
+            Ok(runtime) => {
+                // Set CPU affinity AFTER creating the runtime but BEFORE running the future
+                // This ensures the runtime and all its threads inherit the affinity
+                if let Some(core_index) = core_id {
+                    if let Some(cores) = core_affinity::get_core_ids() {
+                        // Fix: Use core_index as array index, not as core ID to match
+                        // This makes client affinity consistent with server affinity behavior
+                        if let Some(core) = cores.get(core_index) {
+                            if core_affinity::set_for_current(*core) {
+                                tracing::info!("Successfully set client affinity to CPU core {} after runtime creation", core_index);
+                            } else {
+                                tracing::warn!("Failed to set client affinity to CPU core {} after runtime creation", core_index);
+                            }
+                        } else {
+                            tracing::warn!("Invalid client core ID: {} (available cores: 0-{})", 
+                                         core_index, cores.len().saturating_sub(1));
+                        }
+                    } else {
+                        tracing::warn!("Failed to get core IDs for client affinity");
+                    }
+                }
+                
+                runtime.block_on(future)
+            },
+            Err(e) => Err(e),
+        };
+        
+        // Send the result back to the main async context
+        let _ = sender.send(result);
     });
-    handle
+    
+    // Wait for the dedicated thread to complete
+    receiver
         .await
-        .map_err(|e| anyhow::anyhow!("Join error: {}", e))?
+        .map_err(|e| anyhow::anyhow!("Thread communication error: {}", e))?
 }
 
 /// Get current timestamp as nanoseconds since Unix epoch

@@ -286,12 +286,18 @@ async fn main() -> Result<()> {
 ///   affinity could not be set.
 fn set_affinity(core_id: usize) -> Result<()> {
     let core_ids = core_affinity::get_core_ids().context("Failed to get core IDs")?;
+    info!("Server: Available cores: {} total, requesting core {}", core_ids.len(), core_id);
+    
     let core = core_ids
         .get(core_id)
         .ok_or_else(|| anyhow::anyhow!("Invalid core ID: {}", core_id))?;
+    info!("Server: Attempting to set affinity to core {:?}", core);
+    
     if core_affinity::set_for_current(*core) {
+        info!("Server: Successfully set affinity to core {}", core_id);
         Ok(())
     } else {
+        error!("Server: Failed to set affinity to core {}", core_id);
         Err(anyhow::anyhow!(
             "Failed to set affinity for core ID: {}",
             core_id
