@@ -39,8 +39,17 @@ async-trait = "0.1"
 socket2 = "0.5"
 tracing-appender = "0.2.3"
 time = ">=0.3.34, <0.3.36" # Pinned to a compatible range for MSRV 1.70
-parking_lot = "0.12.4"
+parking_lot_core = "=0.9.11"
+# MSRV: pin to a version that depends on parking_lot_core compatible with Rust 1.70
+parking_lot = "=0.12.3"
+lock_api = "=0.4.13"
+# MSRV: transitive pins to avoid newer MSRV bumps
+half = "=2.2.1"
+rayon = "=1.7.0"
+rayon-core = "=1.12.1"
 thiserror = "2.0.16"
+core_affinity = "0.8.3"
+os_pipe = "1.1.5"
 
 [dev-dependencies]
 criterion = "0.5"

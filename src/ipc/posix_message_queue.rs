@@ -304,7 +304,12 @@ impl IpcTransport for PosixMessageQueueTransport {
         debug!("Starting POSIX Message Queue server");
 
         self.config = Some(config.clone());
-        self.queue_name = format!("/{}", config.message_queue_name);
+        // Normalize to exactly one leading '/'
+        self.queue_name = if config.message_queue_name.starts_with('/') {
+            config.message_queue_name.clone()
+        } else {
+            format!("/{}", config.message_queue_name)
+        };
         self.max_msg_count = config.message_queue_depth;
         self.max_msg_size = config.buffer_size.max(1024);
         self.is_creator = true; // Mark this instance as the creator
@@ -398,7 +403,12 @@ impl IpcTransport for PosixMessageQueueTransport {
         debug!("Starting POSIX Message Queue client");
 
         self.config = Some(config.clone());
-        self.queue_name = format!("/{}", config.message_queue_name);
+        // Normalize to exactly one leading '/'
+        self.queue_name = if config.message_queue_name.starts_with('/') {
+            config.message_queue_name.clone()
+        } else {
+            format!("/{}", config.message_queue_name)
+        };
         self.max_msg_count = config.message_queue_depth;
         self.max_msg_size = config.buffer_size.max(1024);
         self.is_creator = false; // Mark this instance as a client

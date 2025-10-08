@@ -463,6 +463,7 @@ impl Drop for UnixDomainSocketTransport {
 mod tests {
     use super::*;
     use crate::ipc::MessageType;
+    use tokio::sync::oneshot;
     use tokio::time::{sleep, Duration};
 
     #[tokio::test]
@@ -479,10 +480,15 @@ mod tests {
         let mut server = UnixDomainSocketTransport::new();
         let mut client = UnixDomainSocketTransport::new();
 
+        // Use a oneshot channel to signal when the server is ready.
+        let (tx, rx) = oneshot::channel();
+
         // Start server in background
         let server_config = config.clone();
         let server_handle = tokio::spawn(async move {
             server.start_server(&server_config).await.unwrap();
+            // Signal that the server is ready.
+            tx.send(()).unwrap();
 
             // Receive message
             let message = server.receive().await.unwrap();
@@ -496,9 +502,8 @@ mod tests {
             server.close().await.unwrap();
         });
 
-        // Justification: Give the server task time to start up and create the socket file before the client connects.
-        // This is a pragmatic approach for testing to avoid race conditions on startup.
-        sleep(Duration::from_millis(100)).await;
+        // Wait for the server to be ready before starting the client.
+        rx.await.unwrap();
 
         // Start client and communicate
         client.start_client(&config).await.unwrap();
@@ -527,7 +532,7 @@ mod tests {
 
         let mut server = UnixDomainSocketTransport::new();
         let mut client = UnixDomainSocketTransport::new();
-        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let (client_done_tx, client_done_rx) = oneshot::channel::<()>();
 
         // Start server in background, but it won't receive anything, causing the buffer to fill up.
         let server_config = config.clone();
@@ -536,13 +541,17 @@ mod tests {
             // Accept a connection but do nothing with it.
             let (_stream, _addr) = server.listener.as_ref().unwrap().accept().await.unwrap();
             // Wait for the client to signal it's done.
-            rx.await.unwrap();
+            client_done_rx.await.unwrap();
             server.close().await.unwrap();
         });
 
-        // Justification: Give the server task time to start up and create the socket file before the client connects.
-        // This is a pragmatic approach for testing to avoid race conditions on startup.
-        sleep(Duration::from_millis(100)).await;
+        // Wait for the socket file to be created by the server before the client connects.
+        for _ in 0..10 {
+            if std::path::Path::new(socket_path).exists() {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
 
         // Start client
         client.start_client(&config).await.unwrap();
@@ -577,7 +586,7 @@ mod tests {
         );
 
         // Signal the server to shut down.
-        tx.send(()).unwrap();
+        client_done_tx.send(()).unwrap();
         server_handle.await.unwrap();
         client.close().await.unwrap();
     }
@@ -598,9 +607,13 @@ mod tests {
         // Start multi-server
         let mut receiver = server.start_multi_server(&config).await.unwrap();
 
-        // Justification: Give the server task time to start up and create the socket file before clients connect.
-        // This is a pragmatic approach for testing to avoid race conditions on startup.
-        sleep(Duration::from_millis(100)).await;
+        // Wait for the socket file to be created by the server before clients connect.
+        for _ in 0..10 {
+            if std::path::Path::new(socket_path).exists() {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
 
         // Start multiple clients
         let mut clients = Vec::new();

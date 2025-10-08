@@ -99,7 +99,7 @@ fn get_default_ipc_mechanism() -> Vec<IpcMechanism> {
     }
 }
 
-#[derive(Parser, Debug, Clone)]
+#[derive(Parser, Debug, Clone, Default)]
 #[command(author, version, about, long_about = None, styles = styles())]
 pub struct Args {
     /// IPC mechanisms to benchmark (space-separated: uds, shm, tcp, or all)
@@ -150,6 +150,20 @@ pub struct Args {
     /// to avoid race conditions in the current implementation.
     #[arg(short = 'c', long, default_value_t = crate::defaults::CONCURRENCY, help_heading = CONCURRENCY)]
     pub concurrency: usize,
+
+    /// Pin the server process to a specific CPU core
+    ///
+    /// When provided, the server child process will attempt to set its CPU
+    /// affinity to the given core index.
+    #[arg(long, value_name = "CORE", help_heading = CONCURRENCY)]
+    pub server_affinity: Option<usize>,
+
+    /// Pin the client workload (in the parent process) to a specific CPU core
+    ///
+    /// When provided, client-side work will be executed in a dedicated thread
+    /// bound to the given CPU core.
+    #[arg(long, value_name = "CORE", help_heading = CONCURRENCY)]
+    pub client_affinity: Option<usize>,
 
     /// Path to the final JSON output file. If used without a path, defaults to 'benchmark_results.json'.
     ///
@@ -283,7 +297,30 @@ pub struct Args {
     /// results. Use this flag to include it in the final statistics.
     #[arg(long, help_heading = ADVANCED)]
     pub include_first_message: bool,
+
+    /// (Internal) Run the process in server-only mode.
+    ///
+    /// This is a hidden flag used by the benchmark runner to spawn a child
+    /// process that acts only as the server. It is not intended for direct
+    /// use by users.
+    #[arg(long, hide = true)]
+    pub internal_run_as_server: bool,
+
+    // --- Transport-specific arguments for internal use ---
+    /// (Internal) Specifies the exact socket path for UDS.
+    #[arg(long, hide = true)]
+    pub socket_path: Option<String>,
+
+    /// (Internal) Specifies the exact name for Shared Memory.
+    #[arg(long, hide = true)]
+    pub shared_memory_name: Option<String>,
+
+    /// (Internal) Specifies the exact name for the POSIX Message Queue.
+    #[arg(long, hide = true)]
+    pub message_queue_name: Option<String>,
 }
+
+// Affinity parsing tests live in the tests module below
 
 /// Available IPC mechanisms for benchmarking
 ///
@@ -786,5 +823,57 @@ mod tests {
         // Test custom value
         let args_custom = Args::parse_from(["ipc-benchmark", "--pmq-priority", "5"]);
         assert_eq!(args_custom.pmq_priority, 5);
+    }
+
+    /// Verify mapping from `Args` to `BenchmarkConfiguration`
+    #[test]
+    fn test_benchmark_configuration_from_args_mapping() {
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "-m",
+            "tcp",
+            "-s",
+            "4096",
+            "-i",
+            "123",
+            "--concurrency",
+            "3",
+            "--include-first-message",
+        ]);
+
+        let cfg: BenchmarkConfiguration = (&args).into();
+        assert_eq!(cfg.mechanisms, vec![IpcMechanism::TcpSocket]);
+        assert_eq!(cfg.message_size, 4096);
+        assert_eq!(cfg.msg_count, Some(123));
+        assert_eq!(cfg.duration, None);
+        assert_eq!(cfg.concurrency, 3);
+        assert!(cfg.one_way && cfg.round_trip); // default when neither specified
+        assert!(cfg.include_first_message);
+
+        // Duration precedence over msg_count
+        let args_dur = Args::parse_from(["ipc-benchmark", "-d", "1s", "-i", "999"]);
+        let cfg_dur: BenchmarkConfiguration = (&args_dur).into();
+        assert_eq!(cfg_dur.duration, Some(Duration::from_secs(1)));
+        assert_eq!(cfg_dur.msg_count, None);
+    }
+
+    #[test]
+    fn parse_affinity_flags_present() {
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "--client-affinity",
+            "3",
+            "--server-affinity",
+            "5",
+        ]);
+        assert_eq!(args.client_affinity, Some(3));
+        assert_eq!(args.server_affinity, Some(5));
+    }
+
+    #[test]
+    fn parse_affinity_flags_absent() {
+        let args = Args::parse_from(["ipc-benchmark"]);
+        assert_eq!(args.client_affinity, None);
+        assert_eq!(args.server_affinity, None);
     }
 }
