@@ -415,6 +415,32 @@ Mechanism: SharedMemory
 ```
 *Note: The `Final JSON Results` line will appear in the "Output Files Written" section if the `--output-file` flag was used.*
 
+## Result Analysis
+
+### Interactive Dashboard
+
+For comprehensive analysis and visualization of benchmark results, use the included **Performance Dashboard** - a web application designed for IPC performance analysis:
+
+```bash
+# Start the interactive dashboard
+python utils/dashboard/dashboard.py --dir /path/to/results --host 0.0.0.0 --port 8050
+```
+**Analysis Workflows:**
+- **Summary Analysis**: Performance overview cards, head-to-head comparisons, and statistical breakdowns
+- **Time Series Analysis**: Temporal patterns, anomaly detection, and moving averages with 5 preset configurations
+- **Interactive Exploration**: Filter by mechanism/message size, drill down into specific test runs
+
+**Key Features:**
+- **Advanced Visualizations**: Interactive time-series plots, statistical overlays, and comparative analysis
+- **Intelligent Insights**: AI-powered performance recommendations and mechanism comparisons  
+- **Modern UI**: interface with preset configurations for different analysis scenarios
+- **High Performance**: Handles millions of data points with threaded processing and smart caching
+- **Export Capabilities**: Generate reports and capture insights for documentation
+
+The dashboard automatically discovers all JSON and CSV output files in your results directory and provides powerful tools for understanding IPC performance characteristics across different scenarios.
+
+For detailed dashboard documentation and setup instructions, see [`utils/dashboard/README.md`](utils/dashboard/README.md).
+
 ## Performance Considerations
 
 ### System Configuration
@@ -558,6 +584,112 @@ This project uses GitHub Actions for continuous integration. The CI pipeline is 
 To help maintain branch quality and streamline development, the CI includes automation for pull requests:
 
 - **Stale PR Notifier**: If a pull request becomes out-of-date with the `main` branch, a bot will post a comment to notify the author. The comment will include a list of recent commits to `main` to provide context.
+
+## Dashboard Integration
+
+The Rusty-Comms Dashboard provides powerful visualization and analysis capabilities for benchmark results. However, it requires specific output files to function properly.
+
+### Prerequisites for Dashboard Usage
+
+The dashboard requires **both** summary and streaming data files from ipc-benchmark:
+
+- **Summary JSON**: Contains aggregated performance metrics and statistical analysis
+- **Streaming JSON**: Contains individual message latency data for time series analysis
+
+### Required ipc-benchmark Parameters
+
+To generate dashboard-compatible output, you **must** include both output parameters:
+
+```bash
+# Minimum command for dashboard compatibility
+./ipc-benchmark --mechanism <MECHANISM> --message-size <SIZE> \
+                 -o results/ \
+                 --streaming-output-json \
+                 --continue-on-error
+
+# Example with specific values
+./ipc-benchmark --mechanism SharedMemory --message-size 1024 \
+                 -o ./benchmark_results/ \
+                 --streaming-output-json \
+                 --duration 30s
+```
+
+### File Output Expectations
+
+After running with the required parameters, you should see these files:
+
+```
+results/
+├── sharedmemory_1024_summary.json     # Enables Summary Analysis
+└── sharedmemory_1024_streaming.json   # Enables Time Series Analysis
+```
+
+### Dashboard Parameter Reference
+
+| Parameter | Required | Purpose | Dashboard Impact |
+|-----------|----------|---------|------------------|
+| `-o <dir>` | **Yes** | Output directory | Summary data location |
+| `--streaming-output-json` | **Yes** | Enable streaming data | Time series analysis |
+| `--mechanism <type>` | **Yes** | IPC mechanism | Data categorization |
+| `--message-size <bytes>` | **Yes** | Message size | Performance comparison |
+| `--duration <time>` | Recommended | Test duration | Data volume |
+| `--continue-on-error` | Recommended | Continue if one test fails | Complete dataset |
+
+### Quick Start: Dashboard-Ready Benchmarks
+
+#### Single Mechanism Test
+```bash
+./ipc-benchmark --mechanism SharedMemory \
+                 --message-size 1024 \
+                 -o ./dashboard_data/ \
+                 --streaming-output-json \
+                 --duration 30s
+```
+
+#### Multi-Size Comparison Test
+```bash
+for size in 64 256 1024 4096; do
+  ./ipc-benchmark --mechanism SharedMemory \
+                   --message-size $size \
+                   -o ./dashboard_data/ \
+                   --streaming-output-json \
+                   --duration 10s
+done
+```
+
+#### Multi-Mechanism Comparison
+```bash
+for mechanism in uds shm tcp pmq; do
+  ./ipc-benchmark --mechanism $mechanism \
+                   --message-size 1024 \
+                   -o ./dashboard_data/ \
+                   --streaming-output-json \
+                   --duration 15s
+done
+```
+
+### Launch Dashboard
+```bash
+cd utils/dashboard
+python3 dashboard.py --dir ../../dashboard_data/
+```
+
+### Troubleshooting Dashboard Issues
+
+#### "No Data Available" Error
+**Cause**: Missing streaming data files  
+**Solution**: Ensure ipc-benchmark runs with `--streaming-output-json`
+
+#### Dashboard Shows Only Summary Data  
+**Cause**: Missing streaming JSON files  
+**Impact**: Time Series analysis will be unavailable  
+**Solution**: Re-run benchmarks with streaming output enabled
+
+#### Empty Directory on Startup
+**Cause**: No benchmark result files in the specified directory  
+**Solution**: Run ipc-benchmark with the required parameters first, then start dashboard
+
+For detailed dashboard documentation and advanced features, see [`utils/dashboard/README.md`](utils/dashboard/README.md).
 
 ## Contributing
 
