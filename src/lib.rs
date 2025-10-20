@@ -92,6 +92,14 @@ pub mod benchmark;
 /// - Output file and streaming configuration
 pub mod cli;
 
+/// Execution mode configuration
+///
+/// Defines the execution model (async vs blocking) for IPC operations.
+/// The benchmark supports both Tokio-based async I/O and standard library
+/// blocking I/O, allowing for direct performance comparison between the two
+/// approaches. The mode is selected at runtime via CLI flags.
+pub mod execution_mode;
+
 /// IPC transport implementations and abstractions
 ///
 /// Contains the core transport abstraction (`IpcTransport` trait) and specific

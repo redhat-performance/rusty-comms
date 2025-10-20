@@ -298,6 +298,27 @@ pub struct Args {
     #[arg(long, help_heading = ADVANCED)]
     pub include_first_message: bool,
 
+    /// Use synchronous/blocking I/O instead of async I/O.
+    ///
+    /// When this flag is set, the benchmark will use pure standard library
+    /// blocking I/O operations instead of Tokio async/await. This allows
+    /// performance comparison between the two execution models.
+    ///
+    /// Default: false (uses async mode with Tokio runtime)
+    /// Only one mode runs at a time - this flag switches from async to blocking
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Run in blocking mode
+    /// ipc-benchmark -m uds --blocking
+    ///
+    /// # Run in async mode (default)
+    /// ipc-benchmark -m uds
+    /// ```
+    #[arg(long, default_value_t = false, help_heading = ADVANCED)]
+    pub blocking: bool,
+
     /// (Internal) Run the process in server-only mode.
     ///
     /// This is a hidden flag used by the benchmark runner to spawn a child
@@ -875,5 +896,37 @@ mod tests {
         let args = Args::parse_from(["ipc-benchmark"]);
         assert_eq!(args.client_affinity, None);
         assert_eq!(args.server_affinity, None);
+    }
+
+    #[test]
+    fn test_blocking_flag_default_false() {
+        // Verify blocking defaults to false (async mode)
+        let args = Args::parse_from(["ipc-benchmark", "-m", "uds"]);
+        assert!(!args.blocking, "Blocking should default to false");
+    }
+
+    #[test]
+    fn test_blocking_flag_can_be_set() {
+        // Verify blocking flag can be enabled
+        let args = Args::parse_from(["ipc-benchmark", "-m", "uds", "--blocking"]);
+        assert!(args.blocking, "Blocking flag should be set");
+    }
+
+    #[test]
+    fn test_blocking_flag_works_with_other_args() {
+        // Verify blocking flag works alongside other arguments
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "-m",
+            "uds",
+            "--blocking",
+            "-s",
+            "1024",
+            "-i",
+            "1000",
+        ]);
+        assert!(args.blocking);
+        assert_eq!(args.message_size, 1024);
+        assert_eq!(args.msg_count, 1000);
     }
 }

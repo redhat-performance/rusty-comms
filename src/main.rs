@@ -48,15 +48,59 @@ mod logging;
 use ipc_benchmark::cli;
 use logging::ColorizedFormatter;
 
-/// Main application entry point
+/// Main entry point for the IPC benchmark suite.
 ///
-/// This async function coordinates the entire benchmark execution lifecycle.
-/// It uses Tokio's multi-threaded runtime to handle async I/O operations
-/// required by the various IPC mechanisms being benchmarked.
-#[tokio::main]
-async fn main() -> Result<()> {
-    // Parse command-line arguments first, as they control logging behavior.
+/// This function determines the execution mode (async or blocking) based on
+/// the `--blocking` CLI flag and dispatches to the appropriate execution path.
+///
+/// # Execution Modes
+///
+/// - **Async (default)**: Uses Tokio runtime with async/await for
+///   non-blocking I/O
+/// - **Blocking**: Uses std library with traditional blocking I/O operations
+///
+/// The mode selection happens at runtime based on CLI arguments, allowing the
+/// same binary to run in either mode without recompilation.
+///
+/// # Examples
+///
+/// ```bash
+/// # Run in async mode (default)
+/// ipc-benchmark -m uds -s 1024 -i 10000
+///
+/// # Run in blocking mode
+/// ipc-benchmark -m uds -s 1024 -i 10000 --blocking
+/// ```
+fn main() -> Result<()> {
+    // Parse CLI arguments to determine execution mode
     let args = Args::parse();
+
+    // Branch to appropriate execution path based on mode
+    if args.blocking {
+        // Blocking mode: use std library with blocking I/O
+        run_blocking_mode(args)
+    } else {
+        // Async mode: use Tokio runtime with async/await
+        run_async_mode(args)
+    }
+}
+
+/// Run the benchmark in async mode using Tokio runtime.
+///
+/// This function contains all the existing async/await logic from the original
+/// main() function. It uses the Tokio runtime for non-blocking I/O operations.
+///
+/// # Arguments
+///
+/// * `args` - Parsed command-line arguments
+///
+/// # Returns
+///
+/// * `Ok(())` - Benchmark completed successfully
+/// * `Err(anyhow::Error)` - Benchmark failed with error
+#[tokio::main]
+async fn run_async_mode(args: Args) -> Result<()> {
+    // === ALL EXISTING MAIN() LOGIC STARTS HERE ===
 
     // Configure logging level based on verbosity flags.
     // This level applies to both the log file and stdout.
@@ -267,6 +311,33 @@ async fn main() -> Result<()> {
 
     info!("IPC Benchmark Suite completed successfully");
     Ok(())
+}
+
+/// Run the benchmark in blocking mode using std library.
+///
+/// This function implements a blocking version of the benchmark execution,
+/// using traditional blocking I/O from the standard library instead of
+/// async/await with Tokio.
+///
+/// # Arguments
+///
+/// * `args` - Parsed command-line arguments
+///
+/// # Returns
+///
+/// * `Ok(())` - Benchmark completed successfully
+/// * `Err(anyhow::Error)` - Benchmark failed with error
+///
+/// # Note
+///
+/// This is a stub implementation for Stage 1. Full implementation will be
+/// completed in later stages.
+fn run_blocking_mode(_args: Args) -> Result<()> {
+    // TODO: Implement in Stage 4 (Blocking Benchmark Runner)
+    // For now, return an error indicating it's not yet implemented
+    Err(anyhow::anyhow!(
+        "Blocking mode is not yet implemented. This will be completed in Stage 4."
+    ))
 }
 
 /// Sets the CPU affinity for the current thread to the specified core.
