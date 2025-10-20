@@ -345,6 +345,7 @@ impl BenchmarkConfig {
 /// #     send_delay: None,
 /// #     pmq_priority: 0,
 /// #     include_first_message: false,
+/// #     blocking: false,
 /// #     internal_run_as_server: false,
 /// #     socket_path: None,
 /// #     shared_memory_name: None,
