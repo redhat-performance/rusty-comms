@@ -60,6 +60,8 @@ pub mod shared_memory;
 pub mod tcp_socket;
 #[cfg(unix)]
 pub mod unix_domain_socket;
+#[cfg(unix)]
+pub mod unix_domain_socket_blocking;
 
 // Re-export transport implementations for convenient access
 pub use self::shared_memory::SharedMemoryTransport;
@@ -68,6 +70,8 @@ pub use posix_message_queue::PosixMessageQueueTransport;
 pub use tcp_socket::TcpSocketTransport;
 #[cfg(unix)]
 pub use unix_domain_socket::UnixDomainSocketTransport;
+#[cfg(unix)]
+pub use unix_domain_socket_blocking::BlockingUnixDomainSocket;
 
 /// Custom error types for IPC operations.
 #[derive(Error, Debug)]
@@ -1123,10 +1127,7 @@ impl BlockingTransportFactory {
         match mechanism {
             #[cfg(unix)]
             crate::cli::IpcMechanism::UnixDomainSocket => {
-                // TODO: Implement in Stage 3.1
-                Err(anyhow::anyhow!(
-                    "BlockingUnixDomainSocket not yet implemented (Stage 3.1)"
-                ))
+                Ok(Box::new(BlockingUnixDomainSocket::new()))
             }
             crate::cli::IpcMechanism::TcpSocket => {
                 // TODO: Implement in Stage 3.2
@@ -1188,18 +1189,16 @@ mod tests {
     }
 
     #[test]
-    fn test_factory_returns_not_implemented_for_uds() {
-        // Stage 2: implementations not yet available
+    fn test_factory_creates_uds_transport() {
+        // Stage 3.1: UDS implementation is now available
         #[cfg(unix)]
         {
             let result =
                 BlockingTransportFactory::create(&crate::cli::IpcMechanism::UnixDomainSocket);
-            assert!(result.is_err());
-            if let Err(e) = result {
-                let err_msg = e.to_string();
-                assert!(err_msg.contains("not yet implemented"));
-                assert!(err_msg.contains("Stage 3.1"));
-            }
+            assert!(
+                result.is_ok(),
+                "Factory should successfully create UDS transport"
+            );
         }
     }
 

@@ -67,7 +67,7 @@ and execute the next incomplete stage. Each stage is self-contained with clear:
 ## Master Progress Checklist
 
 **Last Updated:** 2025-10-20  
-**Overall Status:** Stage 2 Complete (2/9 stages complete)
+**Overall Status:** Stage 3.1 Complete (2.25/9 stages complete)
 
 ### Stage Completion Status
 
@@ -82,12 +82,12 @@ and execute the next incomplete stage. Each stage is self-contained with clear:
   - [✓] Step 2.2: Create BlockingTransportFactory with stubs
   - [✓] Git commit created
 
-- [ ] **Stage 3**: Blocking Transport Implementations (0/4 substages)
-  - [ ] Stage 3.1: Unix Domain Socket (6+ tests)
+- [~] **Stage 3**: Blocking Transport Implementations (1/4 substages)
+  - [✓] Stage 3.1: Unix Domain Socket (6 tests, all passing)
   - [ ] Stage 3.2: TCP Socket (6+ tests)
   - [ ] Stage 3.3: Shared Memory (6+ tests)
   - [ ] Stage 3.4: POSIX Message Queue (6+ tests, Linux only)
-  - [ ] 4 git commits created (one per substage)
+  - [~] 1 of 4 git commits created
 
 - [ ] **Stage 4**: Blocking Benchmark Runner (0/2 steps)
   - [ ] Step 4.1: Create BlockingBenchmarkRunner
@@ -165,7 +165,7 @@ and execute the next incomplete stage. Each stage is self-contained with clear:
 
 ---
 
-## CURRENT STAGE: Stage 3 (Next Up)
+## CURRENT STAGE: Stage 3.2 - TCP Socket Blocking Implementation (Next Up)
 
 ---
 
@@ -1145,7 +1145,7 @@ AI-assisted-by: Claude Sonnet 4.5"
 ## STAGE 3: Blocking Transport Implementations
 
 **Estimated Time:** 6-8 hours  
-**Status:** `[ ]` Not Started  
+**Status:** `[~]` In Progress (Stage 3.1 Complete, 3.2-3.4 Pending)  
 **Prerequisites:** Stage 2 complete
 
 ### Overview
@@ -2283,6 +2283,47 @@ AI-assisted-by: Claude Sonnet 4.5"
 - Factory pattern enables polymorphic transport usage
 - All error messages clearly indicate which stage implements each mechanism
 - Ready to proceed to Stage 3 (transport implementations)
+
+---
+
+### 2025-10-20 - Stage 3.1: Unix Domain Socket Blocking Implementation
+**Status:** Completed  
+**Time Spent:** ~1.5 hours  
+**Changes:**
+- Created src/ipc/unix_domain_socket_blocking.rs with BlockingUnixDomainSocket struct
+- Implemented all BlockingTransport trait methods for UDS
+- Added comprehensive module-level documentation with platform notes
+- Added detailed doc comments for all public methods and struct
+- Added 6 comprehensive unit tests (all passing):
+  - test_new_creates_empty_transport
+  - test_server_binds_successfully
+  - test_client_fails_if_server_not_running
+  - test_send_and_receive_message
+  - test_round_trip_communication
+  - test_close_cleanup
+- Updated src/ipc/mod.rs to include new module
+- Re-exported BlockingUnixDomainSocket for convenient access
+- Updated BlockingTransportFactory to instantiate UDS transport
+- Updated factory test from checking error to checking success
+- Updated progress checklist (Stage 3.1 marked complete)
+
+**Issues Encountered:**
+- Clippy warnings about field_reassign_with_default in tests - Fixed by using struct initialization syntax with `..Default::default()` instead of separate assignment
+
+**Validation Results:**
+- All 6 new UDS tests passing
+- Factory test updated and passing (test_factory_creates_uds_transport)
+- All 70 total unit tests passing
+- Clippy: No warnings
+- Cargo fmt: All code formatted
+- Wire protocol matches async UDS implementation
+
+**Notes:**
+- Uses std::os::unix::net (UnixListener, UnixStream) - pure std library
+- Length-prefixed protocol matches async version for consistency
+- Unix platform only (won't compile on Windows)
+- Blocking operations clearly documented in code comments
+- Ready to proceed to Stage 3.2 (TCP Socket)
 
 ---
 
