@@ -837,9 +837,407 @@ impl TransportFactory {
     }
 }
 
+/// Blocking/synchronous transport interface.
+///
+/// This trait defines the interface for IPC transports that use traditional
+/// blocking I/O operations from the standard library. It parallels the async
+/// `IpcTransport` trait but uses synchronous operations instead of async/await.
+///
+/// # Differences from IpcTransport Trait
+///
+/// - All methods are synchronous (no `async fn`)
+/// - Operations block the calling thread until complete
+/// - No Tokio runtime required
+/// - Uses std::net, std::os::unix::net, and similar std types
+///
+/// # Blocking Behavior
+///
+/// Methods in this trait will block the current thread:
+/// - `send_blocking()` blocks until message is fully sent
+/// - `receive_blocking()` blocks until message is available
+/// - `start_server_blocking()` blocks during initial setup
+/// - `start_client_blocking()` blocks during connection establishment
+///
+/// # Error Handling
+///
+/// All methods return `Result<T>` and should propagate errors using `?`.
+/// Common error conditions include:
+/// - Connection failures (network unreachable, refused, timeout)
+/// - I/O errors (broken pipe, connection reset)
+/// - Serialization errors (invalid message format)
+/// - Resource errors (out of memory, file descriptor limits)
+///
+/// # Thread Safety
+///
+/// Implementers must be `Send` to allow transfer between threads, but
+/// are not required to be `Sync` as blocking transports are typically
+/// not shared across threads simultaneously.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use ipc_benchmark::ipc::{BlockingTransport, TransportConfig, Message, MessageType};
+/// use ipc_benchmark::ipc::BlockingTransportFactory;
+/// use ipc_benchmark::cli::IpcMechanism;
+///
+/// # fn example() -> anyhow::Result<()> {
+/// // Create a blocking transport
+/// let mut transport = BlockingTransportFactory::create(&IpcMechanism::TcpSocket)?;
+///
+/// // Configure transport
+/// let config = TransportConfig::default();
+///
+/// // Start client (blocks until connected)
+/// transport.start_client_blocking(&config)?;
+///
+/// // Send message (blocks until sent)
+/// let msg = Message::new(1, vec![0u8; 1024], MessageType::OneWay);
+/// transport.send_blocking(&msg)?;
+///
+/// // Close connection
+/// transport.close_blocking()?;
+/// # Ok(())
+/// # }
+/// ```
+pub trait BlockingTransport: Send {
+    /// Start the transport in server mode.
+    ///
+    /// This method initializes the transport to accept incoming connections.
+    /// It performs all necessary setup including:
+    /// - Binding to sockets/ports/paths
+    /// - Creating shared memory regions
+    /// - Opening message queues
+    /// - Accepting initial connections
+    ///
+    /// This method blocks until the server is ready to receive messages.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Transport-specific configuration (ports, paths, buffer sizes)
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - Server started and ready to receive
+    /// * `Err(anyhow::Error)` - Server setup failed
+    ///
+    /// # Errors
+    ///
+    /// Common errors include:
+    /// - Address already in use (port/socket conflict)
+    /// - Permission denied (insufficient privileges)
+    /// - Invalid configuration (malformed paths, invalid ports)
+    fn start_server_blocking(&mut self, config: &TransportConfig) -> Result<()>;
+
+    /// Start the transport in client mode.
+    ///
+    /// This method initializes the transport to connect to an existing server.
+    /// It performs connection establishment and any necessary handshaking.
+    ///
+    /// This method blocks until the connection is established.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Transport-specific configuration (ports, paths, buffer sizes)
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - Connected and ready to send/receive
+    /// * `Err(anyhow::Error)` - Connection failed
+    ///
+    /// # Errors
+    ///
+    /// Common errors include:
+    /// - Connection refused (server not running)
+    /// - Connection timeout (server not responding)
+    /// - Network unreachable (routing issues)
+    fn start_client_blocking(&mut self, config: &TransportConfig) -> Result<()>;
+
+    /// Send a message through the transport.
+    ///
+    /// This method serializes the message and transmits it to the peer.
+    /// It blocks until the message is fully sent (written to OS buffers).
+    ///
+    /// # Arguments
+    ///
+    /// * `message` - The message to send (will be serialized)
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - Message sent successfully
+    /// * `Err(anyhow::Error)` - Send failed
+    ///
+    /// # Errors
+    ///
+    /// Common errors include:
+    /// - Broken pipe (peer disconnected)
+    /// - Connection reset (peer crashed)
+    /// - Serialization failure (invalid message data)
+    /// - Buffer full (backpressure, should retry or fail)
+    ///
+    /// # Performance
+    ///
+    /// This method blocks until the send completes. For large messages,
+    /// this may take significant time. The actual blocking behavior depends
+    /// on the underlying transport (TCP buffering, shared memory availability, etc).
+    fn send_blocking(&mut self, message: &Message) -> Result<()>;
+
+    /// Receive a message from the transport.
+    ///
+    /// This method blocks until a complete message is available, then
+    /// deserializes and returns it.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Message)` - Message received and deserialized
+    /// * `Err(anyhow::Error)` - Receive failed
+    ///
+    /// # Errors
+    ///
+    /// Common errors include:
+    /// - Connection reset (peer disconnected)
+    /// - Deserialization failure (corrupted data)
+    /// - Timeout (if configured)
+    /// - Peer shutdown gracefully (returns EOF)
+    ///
+    /// # Blocking Behavior
+    ///
+    /// This method blocks indefinitely until:
+    /// - A message arrives and is successfully deserialized
+    /// - The connection is closed by peer
+    /// - An error occurs
+    ///
+    /// There is no built-in timeout. Callers should use platform-specific
+    /// timeout mechanisms if needed (SO_RCVTIMEO on sockets, etc).
+    fn receive_blocking(&mut self) -> Result<Message>;
+
+    /// Close the transport and release resources.
+    ///
+    /// This method cleanly shuts down the transport, closing connections
+    /// and releasing any allocated resources (file descriptors, memory, etc).
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - Transport closed successfully
+    /// * `Err(anyhow::Error)` - Cleanup failed (resources may be leaked)
+    ///
+    /// # Errors
+    ///
+    /// Errors during close are typically non-fatal and can often be ignored,
+    /// but may indicate resource leaks or incomplete cleanup.
+    ///
+    /// # Note
+    ///
+    /// After calling `close_blocking()`, the transport should not be used.
+    /// Attempting further operations may panic or return errors.
+    fn close_blocking(&mut self) -> Result<()>;
+}
+
+/// Factory for creating blocking transport instances.
+///
+/// This factory provides a centralized way to instantiate the appropriate
+/// blocking transport implementation based on the IPC mechanism. It mirrors
+/// the `TransportFactory` pattern used for async transports.
+///
+/// # Design Pattern
+///
+/// This uses the Factory pattern to:
+/// - Abstract away concrete transport types
+/// - Provide a consistent instantiation interface
+/// - Enable easy addition of new transport types
+/// - Support dynamic dispatch via trait objects
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use ipc_benchmark::ipc::BlockingTransportFactory;
+/// use ipc_benchmark::cli::IpcMechanism;
+///
+/// # fn example() -> anyhow::Result<()> {
+/// // Create a Unix Domain Socket transport
+/// # #[cfg(unix)]
+/// let transport = BlockingTransportFactory::create(&IpcMechanism::UnixDomainSocket)?;
+///
+/// // Create a TCP transport
+/// let transport = BlockingTransportFactory::create(&IpcMechanism::TcpSocket)?;
+///
+/// // The returned Box<dyn BlockingTransport> can be used polymorphically
+/// # Ok(())
+/// # }
+/// ```
+pub struct BlockingTransportFactory;
+
+impl BlockingTransportFactory {
+    /// Create a blocking transport for the specified IPC mechanism.
+    ///
+    /// This method instantiates the appropriate blocking transport implementation
+    /// based on the mechanism type. The transport is returned as a boxed trait
+    /// object to enable polymorphic usage.
+    ///
+    /// # Arguments
+    ///
+    /// * `mechanism` - The IPC mechanism to create a transport for
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Box<dyn BlockingTransport>)` - Successfully created transport
+    /// * `Err(anyhow::Error)` - Mechanism not supported or creation failed
+    ///
+    /// # Supported Mechanisms
+    ///
+    /// - `UnixDomainSocket` (Unix/Linux only) - Available in Stage 3
+    /// - `TcpSocket` - Available in Stage 3
+    /// - `SharedMemory` - Available in Stage 3
+    /// - `PosixMessageQueue` (Linux only) - Available in Stage 3
+    ///
+    /// # Platform Support
+    ///
+    /// Some mechanisms are platform-specific:
+    /// - Unix Domain Sockets: Unix/Linux/macOS only
+    /// - POSIX Message Queues: Linux only
+    /// - TCP and Shared Memory: All platforms
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The mechanism is `All` (must be expanded first)
+    /// - The mechanism is not supported on this platform
+    /// - The implementation is not yet available (staged rollout)
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use ipc_benchmark::ipc::BlockingTransportFactory;
+    /// use ipc_benchmark::cli::IpcMechanism;
+    ///
+    /// # fn example() -> anyhow::Result<()> {
+    /// // Create transport for TCP
+    /// let mut tcp_transport = BlockingTransportFactory::create(&IpcMechanism::TcpSocket)?;
+    ///
+    /// // Platform-specific: Unix Domain Socket
+    /// #[cfg(unix)]
+    /// let mut uds_transport = BlockingTransportFactory::create(&IpcMechanism::UnixDomainSocket)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn create(mechanism: &crate::cli::IpcMechanism) -> Result<Box<dyn BlockingTransport>> {
+        match mechanism {
+            #[cfg(unix)]
+            crate::cli::IpcMechanism::UnixDomainSocket => {
+                // TODO: Implement in Stage 3.1
+                Err(anyhow::anyhow!(
+                    "BlockingUnixDomainSocket not yet implemented (Stage 3.1)"
+                ))
+            }
+            crate::cli::IpcMechanism::TcpSocket => {
+                // TODO: Implement in Stage 3.2
+                Err(anyhow::anyhow!(
+                    "BlockingTcpSocket not yet implemented (Stage 3.2)"
+                ))
+            }
+            crate::cli::IpcMechanism::SharedMemory => {
+                // TODO: Implement in Stage 3.3
+                Err(anyhow::anyhow!(
+                    "BlockingSharedMemory not yet implemented (Stage 3.3)"
+                ))
+            }
+            #[cfg(target_os = "linux")]
+            crate::cli::IpcMechanism::PosixMessageQueue => {
+                // TODO: Implement in Stage 3.4
+                Err(anyhow::anyhow!(
+                    "BlockingPosixMessageQueue not yet implemented (Stage 3.4)"
+                ))
+            }
+            crate::cli::IpcMechanism::All => {
+                // 'All' should be expanded before calling factory
+                Err(anyhow::anyhow!(
+                    "Cannot create transport for 'All' mechanism. \
+                     Use IpcMechanism::expand_all() first."
+                ))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ===== BlockingTransport Tests =====
+
+    #[test]
+    fn test_blocking_transport_trait_exists() {
+        // This test verifies the trait compiles and is usable
+        // Actual implementations will be tested in Stage 3
+        #[allow(dead_code)]
+        fn assert_is_blocking_transport<T: BlockingTransport>() {}
+
+        // No assertion needed - compilation is the test
+    }
+
+    // ===== BlockingTransportFactory Tests =====
+
+    #[test]
+    fn test_factory_rejects_all_mechanism() {
+        // The 'All' mechanism should return an error
+        let result = BlockingTransportFactory::create(&crate::cli::IpcMechanism::All);
+        assert!(result.is_err());
+        if let Err(e) = result {
+            let err_msg = e.to_string();
+            assert!(err_msg.contains("All") || err_msg.contains("expand"));
+        }
+    }
+
+    #[test]
+    fn test_factory_returns_not_implemented_for_uds() {
+        // Stage 2: implementations not yet available
+        #[cfg(unix)]
+        {
+            let result =
+                BlockingTransportFactory::create(&crate::cli::IpcMechanism::UnixDomainSocket);
+            assert!(result.is_err());
+            if let Err(e) = result {
+                let err_msg = e.to_string();
+                assert!(err_msg.contains("not yet implemented"));
+                assert!(err_msg.contains("Stage 3.1"));
+            }
+        }
+    }
+
+    #[test]
+    fn test_factory_returns_not_implemented_for_tcp() {
+        let result = BlockingTransportFactory::create(&crate::cli::IpcMechanism::TcpSocket);
+        assert!(result.is_err());
+        if let Err(e) = result {
+            let err_msg = e.to_string();
+            assert!(err_msg.contains("not yet implemented"));
+            assert!(err_msg.contains("Stage 3.2"));
+        }
+    }
+
+    #[test]
+    fn test_factory_returns_not_implemented_for_shm() {
+        let result = BlockingTransportFactory::create(&crate::cli::IpcMechanism::SharedMemory);
+        assert!(result.is_err());
+        if let Err(e) = result {
+            let err_msg = e.to_string();
+            assert!(err_msg.contains("not yet implemented"));
+            assert!(err_msg.contains("Stage 3.3"));
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_factory_returns_not_implemented_for_pmq() {
+        let result = BlockingTransportFactory::create(&crate::cli::IpcMechanism::PosixMessageQueue);
+        assert!(result.is_err());
+        if let Err(e) = result {
+            let err_msg = e.to_string();
+            assert!(err_msg.contains("not yet implemented"));
+            assert!(err_msg.contains("Stage 3.4"));
+        }
+    }
+
+    // ===== Existing Tests =====
 
     /// Test message creation and basic functionality
     #[test]
