@@ -56,6 +56,8 @@ use tokio::sync::mpsc;
 // Public module exports for specific transport implementations
 #[cfg(target_os = "linux")]
 pub mod posix_message_queue;
+#[cfg(target_os = "linux")]
+pub mod posix_message_queue_blocking;
 pub mod shared_memory;
 pub mod shared_memory_blocking;
 pub mod tcp_socket;
@@ -69,6 +71,8 @@ pub mod unix_domain_socket_blocking;
 pub use self::shared_memory::SharedMemoryTransport;
 #[cfg(target_os = "linux")]
 pub use posix_message_queue::PosixMessageQueueTransport;
+#[cfg(target_os = "linux")]
+pub use posix_message_queue_blocking::BlockingPosixMessageQueue;
 pub use shared_memory_blocking::BlockingSharedMemory;
 pub use tcp_socket::TcpSocketTransport;
 pub use tcp_socket_blocking::BlockingTcpSocket;
@@ -1137,10 +1141,7 @@ impl BlockingTransportFactory {
             crate::cli::IpcMechanism::SharedMemory => Ok(Box::new(BlockingSharedMemory::new())),
             #[cfg(target_os = "linux")]
             crate::cli::IpcMechanism::PosixMessageQueue => {
-                // TODO: Implement in Stage 3.4
-                Err(anyhow::anyhow!(
-                    "BlockingPosixMessageQueue not yet implemented (Stage 3.4)"
-                ))
+                Ok(Box::new(BlockingPosixMessageQueue::new()))
             }
             crate::cli::IpcMechanism::All => {
                 // 'All' should be expanded before calling factory
@@ -1218,14 +1219,13 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "linux")]
-    fn test_factory_returns_not_implemented_for_pmq() {
+    fn test_factory_creates_pmq_transport() {
+        // Stage 3.4: POSIX Message Queue implementation is now available
         let result = BlockingTransportFactory::create(&crate::cli::IpcMechanism::PosixMessageQueue);
-        assert!(result.is_err());
-        if let Err(e) = result {
-            let err_msg = e.to_string();
-            assert!(err_msg.contains("not yet implemented"));
-            assert!(err_msg.contains("Stage 3.4"));
-        }
+        assert!(
+            result.is_ok(),
+            "Factory should successfully create POSIX Message Queue transport"
+        );
     }
 
     // ===== Existing Tests =====
