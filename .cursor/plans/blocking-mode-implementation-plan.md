@@ -67,7 +67,7 @@ and execute the next incomplete stage. Each stage is self-contained with clear:
 ## Master Progress Checklist
 
 **Last Updated:** 2025-10-21  
-**Overall Status:** Stage 3.3 Complete (2.75/9 stages complete)
+**Overall Status:** Stage 3 Complete (3/9 stages complete)
 
 ### Stage Completion Status
 
@@ -82,12 +82,12 @@ and execute the next incomplete stage. Each stage is self-contained with clear:
   - [✓] Step 2.2: Create BlockingTransportFactory with stubs
   - [✓] Git commit created
 
-- [~] **Stage 3**: Blocking Transport Implementations (3/4 substages)
+- [✓] **Stage 3**: Blocking Transport Implementations (4/4 substages COMPLETE)
   - [✓] Stage 3.1: Unix Domain Socket (6 tests, all passing)
   - [✓] Stage 3.2: TCP Socket (6 tests, all passing)
   - [✓] Stage 3.3: Shared Memory (5 tests passing, 1 ignored)
-  - [ ] Stage 3.4: POSIX Message Queue (6+ tests, Linux only)
-  - [~] 3 of 4 git commits created
+  - [✓] Stage 3.4: POSIX Message Queue (6 tests, all passing, Linux only)
+  - [✓] All 4 git commits created
 
 - [ ] **Stage 4**: Blocking Benchmark Runner (0/2 steps)
   - [ ] Step 4.1: Create BlockingBenchmarkRunner
@@ -165,7 +165,7 @@ and execute the next incomplete stage. Each stage is self-contained with clear:
 
 ---
 
-## CURRENT STAGE: Stage 3.4 - POSIX Message Queue Blocking Implementation (Next Up)
+## CURRENT STAGE: Stage 4 - Blocking Benchmark Runner (Next Up)
 
 ---
 
@@ -2393,6 +2393,35 @@ AI-assisted-by: Claude Sonnet 4.5"
 - Uses shared_memory crate + atomic ring buffer
 - Busy-wait with yields to reduce CPU usage
 - Ready for Stage 3.4 (PMQ)
+
+---
+
+### 2025-10-21 - Stage 3.4: POSIX Message Queue Blocking Implementation
+**Status:** Completed  
+**Time Spent:** ~2 hours  
+**Changes:**
+- Created src/ipc/posix_message_queue_blocking.rs with BlockingPosixMessageQueue
+- Implemented blocking mq_send/mq_receive with timeout retry logic
+- Added 6 tests (all passing, Linux only)
+- Updated factory and tests
+- Updated progress checklist
+
+**Issues Encountered:**
+- Field name was `message_queue_name` not `posix_message_queue_name`
+- mq_send/mq_receive API expects references to MqdT
+- mq_receive signature returns just `usize`, not `(usize, u32)` tuple
+- Clippy warnings about needless borrow (fd already a reference from as_ref())
+
+**Validation Results:**
+- All 6 tests passing (Linux only)
+- 87 total tests passing (6 new + 81 existing)
+- Clippy: No warnings
+- Works on Linux (requires POSIX mqueue kernel support)
+
+**Notes:**
+- Uses nix crate for POSIX mqueue syscalls
+- Blocking operations with 5-second timeout and retry logic
+- All Stage 3 transports complete! Ready for Stage 4 (Benchmark Runner)
 
 ---
 
