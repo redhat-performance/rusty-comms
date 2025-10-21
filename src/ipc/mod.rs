@@ -58,6 +58,7 @@ use tokio::sync::mpsc;
 pub mod posix_message_queue;
 pub mod shared_memory;
 pub mod tcp_socket;
+pub mod tcp_socket_blocking;
 #[cfg(unix)]
 pub mod unix_domain_socket;
 #[cfg(unix)]
@@ -68,6 +69,7 @@ pub use self::shared_memory::SharedMemoryTransport;
 #[cfg(target_os = "linux")]
 pub use posix_message_queue::PosixMessageQueueTransport;
 pub use tcp_socket::TcpSocketTransport;
+pub use tcp_socket_blocking::BlockingTcpSocket;
 #[cfg(unix)]
 pub use unix_domain_socket::UnixDomainSocketTransport;
 #[cfg(unix)]
@@ -1129,12 +1131,7 @@ impl BlockingTransportFactory {
             crate::cli::IpcMechanism::UnixDomainSocket => {
                 Ok(Box::new(BlockingUnixDomainSocket::new()))
             }
-            crate::cli::IpcMechanism::TcpSocket => {
-                // TODO: Implement in Stage 3.2
-                Err(anyhow::anyhow!(
-                    "BlockingTcpSocket not yet implemented (Stage 3.2)"
-                ))
-            }
+            crate::cli::IpcMechanism::TcpSocket => Ok(Box::new(BlockingTcpSocket::new())),
             crate::cli::IpcMechanism::SharedMemory => {
                 // TODO: Implement in Stage 3.3
                 Err(anyhow::anyhow!(
@@ -1203,14 +1200,13 @@ mod tests {
     }
 
     #[test]
-    fn test_factory_returns_not_implemented_for_tcp() {
+    fn test_factory_creates_tcp_transport() {
+        // Stage 3.2: TCP implementation is now available
         let result = BlockingTransportFactory::create(&crate::cli::IpcMechanism::TcpSocket);
-        assert!(result.is_err());
-        if let Err(e) = result {
-            let err_msg = e.to_string();
-            assert!(err_msg.contains("not yet implemented"));
-            assert!(err_msg.contains("Stage 3.2"));
-        }
+        assert!(
+            result.is_ok(),
+            "Factory should successfully create TCP transport"
+        );
     }
 
     #[test]

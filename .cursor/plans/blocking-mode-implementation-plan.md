@@ -66,8 +66,8 @@ and execute the next incomplete stage. Each stage is self-contained with clear:
 
 ## Master Progress Checklist
 
-**Last Updated:** 2025-10-20  
-**Overall Status:** Stage 3.1 Complete (2.25/9 stages complete)
+**Last Updated:** 2025-10-21  
+**Overall Status:** Stage 3.2 Complete (2.5/9 stages complete)
 
 ### Stage Completion Status
 
@@ -82,12 +82,12 @@ and execute the next incomplete stage. Each stage is self-contained with clear:
   - [✓] Step 2.2: Create BlockingTransportFactory with stubs
   - [✓] Git commit created
 
-- [~] **Stage 3**: Blocking Transport Implementations (1/4 substages)
+- [~] **Stage 3**: Blocking Transport Implementations (2/4 substages)
   - [✓] Stage 3.1: Unix Domain Socket (6 tests, all passing)
-  - [ ] Stage 3.2: TCP Socket (6+ tests)
+  - [✓] Stage 3.2: TCP Socket (6 tests, all passing)
   - [ ] Stage 3.3: Shared Memory (6+ tests)
   - [ ] Stage 3.4: POSIX Message Queue (6+ tests, Linux only)
-  - [~] 1 of 4 git commits created
+  - [~] 2 of 4 git commits created
 
 - [ ] **Stage 4**: Blocking Benchmark Runner (0/2 steps)
   - [ ] Step 4.1: Create BlockingBenchmarkRunner
@@ -165,7 +165,7 @@ and execute the next incomplete stage. Each stage is self-contained with clear:
 
 ---
 
-## CURRENT STAGE: Stage 3.2 - TCP Socket Blocking Implementation (Next Up)
+## CURRENT STAGE: Stage 3.3 - Shared Memory Blocking Implementation (Next Up)
 
 ---
 
@@ -2324,6 +2324,48 @@ AI-assisted-by: Claude Sonnet 4.5"
 - Unix platform only (won't compile on Windows)
 - Blocking operations clearly documented in code comments
 - Ready to proceed to Stage 3.2 (TCP Socket)
+
+---
+
+### 2025-10-21 - Stage 3.2: TCP Socket Blocking Implementation
+**Status:** Completed  
+**Time Spent:** ~1.5 hours  
+**Changes:**
+- Created src/ipc/tcp_socket_blocking.rs with BlockingTcpSocket struct
+- Implemented all BlockingTransport trait methods for TCP
+- Added comprehensive module-level documentation
+- Added detailed doc comments for all public methods and struct
+- Added 6 comprehensive unit tests (all passing):
+  - test_new_creates_empty_transport
+  - test_server_binds_successfully
+  - test_client_fails_if_server_not_running
+  - test_send_and_receive_message
+  - test_round_trip_communication
+  - test_close_cleanup
+- Updated src/ipc/mod.rs to include new module
+- Re-exported BlockingTcpSocket for convenient access
+- Updated BlockingTransportFactory to instantiate TCP transport
+- Updated factory test from checking error to checking success
+- Updated progress checklist (Stage 3.2 marked complete)
+
+**Issues Encountered:**
+- None - implementation followed Stage 3.1 pattern seamlessly
+
+**Validation Results:**
+- All 6 new TCP tests passing
+- Factory test updated and passing (test_factory_creates_tcp_transport)
+- All 76 total unit tests passing (70 existing + 6 TCP)
+- Clippy: No warnings
+- Cargo fmt: All code formatted
+- Wire protocol matches async TCP implementation
+
+**Notes:**
+- Uses std::net (TcpListener, TcpStream) - pure std library
+- Length-prefixed protocol (little-endian) matches async version
+- Works on all platforms (Linux, macOS, Windows)
+- Uses unique ports in tests to avoid conflicts (18081-18085)
+- Blocking operations clearly documented in code comments
+- Ready to proceed to Stage 3.3 (Shared Memory)
 
 ---
 
