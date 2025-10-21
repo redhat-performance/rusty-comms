@@ -57,6 +57,7 @@ use tokio::sync::mpsc;
 #[cfg(target_os = "linux")]
 pub mod posix_message_queue;
 pub mod shared_memory;
+pub mod shared_memory_blocking;
 pub mod tcp_socket;
 pub mod tcp_socket_blocking;
 #[cfg(unix)]
@@ -68,6 +69,7 @@ pub mod unix_domain_socket_blocking;
 pub use self::shared_memory::SharedMemoryTransport;
 #[cfg(target_os = "linux")]
 pub use posix_message_queue::PosixMessageQueueTransport;
+pub use shared_memory_blocking::BlockingSharedMemory;
 pub use tcp_socket::TcpSocketTransport;
 pub use tcp_socket_blocking::BlockingTcpSocket;
 #[cfg(unix)]
@@ -1132,12 +1134,7 @@ impl BlockingTransportFactory {
                 Ok(Box::new(BlockingUnixDomainSocket::new()))
             }
             crate::cli::IpcMechanism::TcpSocket => Ok(Box::new(BlockingTcpSocket::new())),
-            crate::cli::IpcMechanism::SharedMemory => {
-                // TODO: Implement in Stage 3.3
-                Err(anyhow::anyhow!(
-                    "BlockingSharedMemory not yet implemented (Stage 3.3)"
-                ))
-            }
+            crate::cli::IpcMechanism::SharedMemory => Ok(Box::new(BlockingSharedMemory::new())),
             #[cfg(target_os = "linux")]
             crate::cli::IpcMechanism::PosixMessageQueue => {
                 // TODO: Implement in Stage 3.4
@@ -1210,14 +1207,13 @@ mod tests {
     }
 
     #[test]
-    fn test_factory_returns_not_implemented_for_shm() {
+    fn test_factory_creates_shm_transport() {
+        // Stage 3.3: Shared Memory implementation is now available
         let result = BlockingTransportFactory::create(&crate::cli::IpcMechanism::SharedMemory);
-        assert!(result.is_err());
-        if let Err(e) = result {
-            let err_msg = e.to_string();
-            assert!(err_msg.contains("not yet implemented"));
-            assert!(err_msg.contains("Stage 3.3"));
-        }
+        assert!(
+            result.is_ok(),
+            "Factory should successfully create Shared Memory transport"
+        );
     }
 
     #[test]
