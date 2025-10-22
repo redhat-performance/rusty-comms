@@ -36,6 +36,128 @@ This benchmark suite provides a systematic way to evaluate the performance of va
 - **Console Output**: User-friendly, color-coded summaries on `stdout`. Includes a configuration summary at startup and a detailed results summary upon completion.
 - **Detailed Logs**: Structured, timestamped logs written to a file or `stderr` for diagnostics.
 
+## Execution Modes: Async vs. Blocking
+
+This benchmark suite supports **two distinct execution modes**: **async** (default) and **blocking**. Both modes coexist in the same binary, enabling direct performance comparison between asynchronous and synchronous I/O approaches.
+
+### Async Mode (Default)
+
+**Technology:** Tokio runtime with async/await  
+**Best For:** Production-grade async systems, high-concurrency scenarios
+
+Async mode uses Rust's async/await syntax with the Tokio runtime. This is the default behavior and matches most modern Rust networking applications.
+
+```bash
+# Run in async mode (default)
+./target/release/ipc-benchmark -m uds --message-size 1024 --msg-count 10000
+```
+
+**Characteristics:**
+- Uses `tokio::spawn` for tasks
+- Non-blocking I/O operations
+- Efficient for high-concurrency workloads
+- Matches real-world async application behavior
+
+### Blocking Mode
+
+**Technology:** Pure standard library with blocking I/O  
+**Best For:** Synchronous systems, baseline performance comparison
+
+Blocking mode uses only the Rust standard library (`std::net`, `std::thread`, `std::fs`) without any async runtime overhead. Enable it with the `--blocking` flag.
+
+```bash
+# Run in blocking mode
+./target/release/ipc-benchmark -m uds --message-size 1024 --msg-count 10000 --blocking
+```
+
+**Characteristics:**
+- Uses `std::thread` for concurrency
+- Blocking I/O operations
+- No Tokio runtime overhead
+- Simpler execution model
+
+### When to Use Each Mode
+
+| Scenario | Recommended Mode | Reason |
+|----------|------------------|--------|
+| **Comparing I/O models** | Both | Direct performance comparison |
+| **Testing async systems** | Async | Matches your production code |
+| **Testing blocking systems** | Blocking | Matches your production code |
+| **Minimal overhead baseline** | Blocking | No runtime complexity |
+| **High concurrency (>100 connections)** | Async | More efficient resource usage |
+| **Simple request-response** | Either | Similar performance characteristics |
+
+### Performance Comparison Methodology
+
+To fairly compare async vs. blocking performance:
+
+1. **Use identical test parameters:**
+```bash
+# Async test
+./target/release/ipc-benchmark -m tcp --message-size 1024 --msg-count 50000 \
+  --output-file async_results.json
+
+# Blocking test
+./target/release/ipc-benchmark -m tcp --message-size 1024 --msg-count 50000 \
+  --blocking --output-file blocking_results.json
+```
+
+2. **Control for system variability:**
+   - Run tests on an idle system
+   - Use CPU affinity (`--server-affinity`, `--client-affinity`)
+   - Run multiple iterations and average results
+   - Use warmup iterations (`--warmup-iterations 1000`)
+
+3. **Analyze the results:**
+```bash
+# Compare latency distributions
+cat async_results.json | jq '.results[0].one_way_results.latency'
+cat blocking_results.json | jq '.results[0].one_way_results.latency'
+
+# Compare throughput
+cat async_results.json | jq '.results[0].one_way_results.throughput'
+cat blocking_results.json | jq '.results[0].one_way_results.throughput'
+```
+
+### Example: Side-by-Side Comparison
+
+```bash
+# Test all mechanisms in both modes
+for mode in "" "--blocking"; do
+  mode_name=$([ -z "$mode" ] && echo "async" || echo "blocking")
+  
+  ./target/release/ipc-benchmark \
+    -m uds tcp shm \
+    --message-size 1024 \
+    --msg-count 50000 \
+    --warmup-iterations 1000 \
+    --percentiles 50 95 99 99.9 \
+    $mode \
+    --output-file ${mode_name}_comparison.json
+done
+
+# Results in: async_comparison.json and blocking_comparison.json
+```
+
+### Implementation Details
+
+**Async Mode (`src/benchmark.rs`):**
+- Uses `tokio::spawn` for concurrent tasks
+- `async fn` with `.await` points
+- `tokio::net::TcpListener`, `tokio::fs::File`
+- Non-blocking operations throughout
+
+**Blocking Mode (`src/benchmark_blocking.rs`):**
+- Uses `std::thread::spawn` for concurrency
+- Pure synchronous functions (no `async`)
+- `std::net::TcpListener`, `std::fs::File`
+- Blocking operations throughout
+- No Tokio dependency in execution path
+
+### Backward Compatibility
+
+**The `--blocking` flag is completely optional.** If omitted, the benchmark runs in async mode exactly as before. This ensures no breaking changes for existing users and scripts.
+
 ## Installation
 
 ### Prerequisites
@@ -73,11 +195,17 @@ The optimized binary will be available at `target/release/ipc-benchmark`.
 ### Basic Usage
 
 ```bash
-# Run benchmark with default settings (prints summary to console, no file output)
+# Run benchmark with default settings (async mode, prints summary to console)
 ipc-benchmark
+
+# Run in blocking mode
+ipc-benchmark --blocking
 
 # Run with specific mechanisms
 ipc-benchmark -m uds shm pmq
+
+# Run in blocking mode with specific mechanisms
+ipc-benchmark -m tcp uds --blocking
 
 # Run all mechanisms (including PMQ)
 ipc-benchmark -m all
