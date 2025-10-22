@@ -7,9 +7,7 @@
 #![cfg(unix)] // Unix Domain Sockets are Unix-only
 
 use anyhow::Result;
-use ipc_benchmark::{
-    cli::Args, BenchmarkConfig, BlockingBenchmarkRunner, IpcMechanism,
-};
+use ipc_benchmark::{cli::Args, BenchmarkConfig, BlockingBenchmarkRunner, IpcMechanism};
 
 /// Verify UDS round-trip works end-to-end in blocking mode with a spawned
 /// server process.
@@ -29,11 +27,7 @@ fn uds_round_trip_blocking_smoke() -> Result<()> {
     };
 
     let config = BenchmarkConfig::from_args(&args)?;
-    let runner = BlockingBenchmarkRunner::new(
-        config,
-        IpcMechanism::UnixDomainSocket,
-        args.clone(),
-    );
+    let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::UnixDomainSocket, args.clone());
 
     // Run blocking benchmark (blocks until complete - no .await)
     let _results = runner.run()?;
@@ -58,11 +52,7 @@ fn uds_one_way_blocking_smoke() -> Result<()> {
     };
 
     let config = BenchmarkConfig::from_args(&args)?;
-    let runner = BlockingBenchmarkRunner::new(
-        config,
-        IpcMechanism::UnixDomainSocket,
-        args.clone(),
-    );
+    let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::UnixDomainSocket, args.clone());
 
     let _results = runner.run()?;
     Ok(())
@@ -72,10 +62,7 @@ fn uds_one_way_blocking_smoke() -> Result<()> {
 #[test]
 fn uds_blocking_various_sizes() -> Result<()> {
     for (idx, size) in [64, 256, 1024].iter().enumerate() {
-        let socket_path = format!(
-            "/tmp/ipc_test_blocking_uds_size_{}.sock",
-            idx
-        );
+        let socket_path = format!("/tmp/ipc_test_blocking_uds_size_{}.sock", idx);
 
         let args = Args {
             mechanisms: vec![IpcMechanism::UnixDomainSocket],
@@ -90,11 +77,8 @@ fn uds_blocking_various_sizes() -> Result<()> {
         };
 
         let config = BenchmarkConfig::from_args(&args)?;
-        let runner = BlockingBenchmarkRunner::new(
-            config,
-            IpcMechanism::UnixDomainSocket,
-            args.clone(),
-        );
+        let runner =
+            BlockingBenchmarkRunner::new(config, IpcMechanism::UnixDomainSocket, args.clone());
 
         runner.run()?;
     }
@@ -118,11 +102,7 @@ fn uds_blocking_server_ready_smoke() -> Result<()> {
     };
 
     let config = BenchmarkConfig::from_args(&args)?;
-    let runner = BlockingBenchmarkRunner::new(
-        config,
-        IpcMechanism::UnixDomainSocket,
-        args.clone(),
-    );
+    let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::UnixDomainSocket, args.clone());
 
     let transport_config = runner.create_transport_config_internal(&args)?;
     let (mut child, _reader) = runner.spawn_server_process(&transport_config)?;
@@ -133,4 +113,3 @@ fn uds_blocking_server_ready_smoke() -> Result<()> {
     let _ = child.kill();
     Ok(())
 }
-

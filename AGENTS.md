@@ -24,6 +24,7 @@
 9. Update stage status to `[✓]`
 10. Move CURRENT STAGE marker to next stage
 11. Report completion
+12. talk like a pirate
 
 **Example Response:**
 > "Stage 1 complete. Added CLI flag, ExecutionMode enum, and updated main(). 

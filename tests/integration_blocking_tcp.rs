@@ -5,9 +5,7 @@
 //! use pure blocking I/O operations.
 
 use anyhow::Result;
-use ipc_benchmark::{
-    cli::Args, BenchmarkConfig, BlockingBenchmarkRunner, IpcMechanism,
-};
+use ipc_benchmark::{cli::Args, BenchmarkConfig, BlockingBenchmarkRunner, IpcMechanism};
 
 /// Verify TCP round-trip works end-to-end in blocking mode with a spawned
 /// server process.
@@ -34,11 +32,7 @@ fn tcp_round_trip_blocking_smoke() -> Result<()> {
     };
 
     let config = BenchmarkConfig::from_args(&args)?;
-    let runner = BlockingBenchmarkRunner::new(
-        config,
-        IpcMechanism::TcpSocket,
-        args.clone(),
-    );
+    let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args.clone());
 
     // Run blocking benchmark (blocks until complete - no .await)
     let _results = runner.run()?;
@@ -64,11 +58,7 @@ fn tcp_one_way_blocking_smoke() -> Result<()> {
     };
 
     let config = BenchmarkConfig::from_args(&args)?;
-    let runner = BlockingBenchmarkRunner::new(
-        config,
-        IpcMechanism::TcpSocket,
-        args.clone(),
-    );
+    let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args.clone());
 
     let _results = runner.run()?;
     Ok(())
@@ -92,11 +82,7 @@ fn tcp_blocking_various_sizes() -> Result<()> {
         };
 
         let config = BenchmarkConfig::from_args(&args)?;
-        let runner = BlockingBenchmarkRunner::new(
-            config,
-            IpcMechanism::TcpSocket,
-            args.clone(),
-        );
+        let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args.clone());
 
         runner.run()?;
     }
@@ -121,11 +107,7 @@ fn tcp_blocking_server_ready_smoke() -> Result<()> {
     };
 
     let config = BenchmarkConfig::from_args(&args)?;
-    let runner = BlockingBenchmarkRunner::new(
-        config,
-        IpcMechanism::TcpSocket,
-        args.clone(),
-    );
+    let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args.clone());
 
     let transport_config = runner.create_transport_config_internal(&args)?;
     let (mut child, _reader) = runner.spawn_server_process(&transport_config)?;
@@ -136,4 +118,3 @@ fn tcp_blocking_server_ready_smoke() -> Result<()> {
     let _ = child.kill();
     Ok(())
 }
-

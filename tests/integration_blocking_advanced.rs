@@ -4,9 +4,7 @@
 //! and consistency checks between async and blocking modes.
 
 use anyhow::Result;
-use ipc_benchmark::{
-    cli::Args, BenchmarkConfig, BlockingBenchmarkRunner, IpcMechanism,
-};
+use ipc_benchmark::{cli::Args, BenchmarkConfig, BlockingBenchmarkRunner, IpcMechanism};
 
 /// Test blocking mode with CPU affinity for client
 #[test]
@@ -34,11 +32,7 @@ fn blocking_with_cpu_affinity() -> Result<()> {
     };
 
     let config = BenchmarkConfig::from_args(&args)?;
-    let runner = BlockingBenchmarkRunner::new(
-        config,
-        IpcMechanism::TcpSocket,
-        args.clone(),
-    );
+    let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args.clone());
 
     let _results = runner.run()?;
     Ok(())
@@ -62,11 +56,7 @@ fn blocking_with_send_delay() -> Result<()> {
     };
 
     let config = BenchmarkConfig::from_args(&args)?;
-    let runner = BlockingBenchmarkRunner::new(
-        config,
-        IpcMechanism::TcpSocket,
-        args.clone(),
-    );
+    let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args.clone());
 
     let _results = runner.run()?;
     Ok(())
@@ -77,7 +67,7 @@ fn blocking_with_send_delay() -> Result<()> {
 fn blocking_both_test_types() -> Result<()> {
     let args = Args {
         mechanisms: vec![IpcMechanism::TcpSocket],
-        one_way: true,  // Both enabled
+        one_way: true, // Both enabled
         round_trip: true,
         warmup_iterations: 0,
         blocking: true,
@@ -89,11 +79,7 @@ fn blocking_both_test_types() -> Result<()> {
     };
 
     let config = BenchmarkConfig::from_args(&args)?;
-    let runner = BlockingBenchmarkRunner::new(
-        config,
-        IpcMechanism::TcpSocket,
-        args.clone(),
-    );
+    let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args.clone());
 
     let results = runner.run()?;
 
@@ -128,28 +114,24 @@ fn blocking_result_structure() -> Result<()> {
     };
 
     let config = BenchmarkConfig::from_args(&args)?;
-    let runner = BlockingBenchmarkRunner::new(
-        config,
-        IpcMechanism::TcpSocket,
-        args.clone(),
-    );
+    let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args.clone());
 
     let results = runner.run()?;
 
     // Verify result structure
     assert_eq!(results.mechanism, IpcMechanism::TcpSocket);
     assert!(results.one_way_results.is_some());
-    
+
     // Verify one-way results have expected structure
     let one_way = results.one_way_results.unwrap();
     assert!(one_way.latency.is_some());
-    
+
     let latency = one_way.latency.unwrap();
     assert_eq!(latency.total_samples, 8); // Should match msg_count
     assert!(latency.mean_ns > 0.0);
     assert!(latency.median_ns > 0.0);
     assert!(!latency.percentiles.is_empty());
-    
+
     // Verify throughput metrics
     assert!(one_way.throughput.messages_per_second > 0.0);
 
@@ -174,11 +156,7 @@ fn blocking_error_handling() -> Result<()> {
     };
 
     let config = BenchmarkConfig::from_args(&args)?;
-    let runner = BlockingBenchmarkRunner::new(
-        config,
-        IpcMechanism::TcpSocket,
-        args.clone(),
-    );
+    let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args.clone());
 
     // This should fail, but we're testing that it fails gracefully
     let result = runner.run();
@@ -206,19 +184,16 @@ fn blocking_duration_based() -> Result<()> {
     };
 
     let config = BenchmarkConfig::from_args(&args)?;
-    let runner = BlockingBenchmarkRunner::new(
-        config,
-        IpcMechanism::TcpSocket,
-        args.clone(),
-    );
+    let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args.clone());
 
     let results = runner.run()?;
-    
+
     // Should have run for approximately 1 second (allow some overhead)
-    assert!(results.test_duration.as_millis() >= 800, 
-            "Expected at least 800ms, got {}ms", 
-            results.test_duration.as_millis());
+    assert!(
+        results.test_duration.as_millis() >= 800,
+        "Expected at least 800ms, got {}ms",
+        results.test_duration.as_millis()
+    );
 
     Ok(())
 }
-

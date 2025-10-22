@@ -406,7 +406,7 @@ impl BlockingBenchmarkRunner {
         // IMPORTANT: Add --blocking flag so the server runs in blocking mode
         cmd.arg("--blocking");
 
-        // Add mechanism-specific arguments  
+        // Add mechanism-specific arguments
         // Use possible_value name (e.g., "tcp") not Display name (e.g., "TCP Socket")
         cmd.arg("-m")
             .arg(self.mechanism.to_possible_value().unwrap().get_name());

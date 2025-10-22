@@ -287,7 +287,7 @@ mod tests {
                 ..Default::default()
             };
             server.start_server_blocking(&config).unwrap();
-            
+
             // Trigger accept by receiving a message
             let _msg = server.receive_blocking().unwrap();
             server.close_blocking().unwrap();
@@ -304,7 +304,7 @@ mod tests {
             ..Default::default()
         };
         client.start_client_blocking(&client_config).unwrap();
-        
+
         // Send a message so server can receive it
         let msg = Message::new(1, vec![0u8; 10], MessageType::OneWay);
         client.send_blocking(&msg).unwrap();

@@ -346,6 +346,17 @@ async fn run_async_mode(args: Args) -> Result<()> {
 /// * `Ok(())` - Benchmark completed successfully
 /// * `Err(anyhow::Error)` - Benchmark failed with error
 fn run_blocking_mode(args: Args) -> Result<()> {
+    // Check for server mode FIRST before setting up logging
+    // Server mode uses stderr for logging to avoid interfering with stdout pipe
+    if args.internal_run_as_server {
+        // Minimal logging setup for server mode - log to stderr only
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .with_max_level(tracing::Level::DEBUG)
+            .init();
+        return run_server_mode_blocking(args);
+    }
+
     // Configure logging level based on verbosity flags
     let log_level = match args.verbose {
         0 => LevelFilter::INFO,
@@ -389,7 +400,7 @@ fn run_blocking_mode(args: Args) -> Result<()> {
     }
 
     // Stdout layer for user-facing output (disabled in server mode)
-    let stdout_log = if !args.quiet && !args.internal_run_as_server {
+    let stdout_log = if !args.quiet {
         Some(
             tracing_subscriber::fmt::layer()
                 .with_writer(std::io::stdout)
@@ -408,11 +419,6 @@ fn run_blocking_mode(args: Args) -> Result<()> {
 
     // Keep the logging guard alive
     let _log_guard = guard;
-
-    // If the internal server flag is present, run in server-only mode
-    if args.internal_run_as_server {
-        return run_server_mode_blocking(args);
-    }
 
     info!("Starting IPC Benchmark Suite (Blocking Mode)");
 

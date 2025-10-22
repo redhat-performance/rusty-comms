@@ -6,9 +6,7 @@
 #![cfg(target_os = "linux")] // POSIX message queues are Linux-only
 
 use anyhow::Result;
-use ipc_benchmark::{
-    cli::Args, BenchmarkConfig, BlockingBenchmarkRunner, IpcMechanism,
-};
+use ipc_benchmark::{cli::Args, BenchmarkConfig, BlockingBenchmarkRunner, IpcMechanism};
 
 /// Verify PMQ round-trip works end-to-end in blocking mode with a spawned
 /// server process.
@@ -28,11 +26,8 @@ fn pmq_round_trip_blocking_smoke() -> Result<()> {
     };
 
     let config = BenchmarkConfig::from_args(&args)?;
-    let runner = BlockingBenchmarkRunner::new(
-        config,
-        IpcMechanism::PosixMessageQueue,
-        args.clone(),
-    );
+    let runner =
+        BlockingBenchmarkRunner::new(config, IpcMechanism::PosixMessageQueue, args.clone());
 
     // Run blocking benchmark (blocks until complete - no .await)
     let _results = runner.run()?;
@@ -57,11 +52,8 @@ fn pmq_one_way_blocking_smoke() -> Result<()> {
     };
 
     let config = BenchmarkConfig::from_args(&args)?;
-    let runner = BlockingBenchmarkRunner::new(
-        config,
-        IpcMechanism::PosixMessageQueue,
-        args.clone(),
-    );
+    let runner =
+        BlockingBenchmarkRunner::new(config, IpcMechanism::PosixMessageQueue, args.clone());
 
     let _results = runner.run()?;
     Ok(())
@@ -87,11 +79,8 @@ fn pmq_blocking_various_sizes() -> Result<()> {
         };
 
         let config = BenchmarkConfig::from_args(&args)?;
-        let runner = BlockingBenchmarkRunner::new(
-            config,
-            IpcMechanism::PosixMessageQueue,
-            args.clone(),
-        );
+        let runner =
+            BlockingBenchmarkRunner::new(config, IpcMechanism::PosixMessageQueue, args.clone());
 
         runner.run()?;
     }
@@ -109,19 +98,14 @@ fn pmq_blocking_with_priority() -> Result<()> {
         blocking: true,
         msg_count: 16,
         message_size: 128,
-        message_queue_name: Some(
-            "/ipc_test_blocking_pmq_prio".to_string()
-        ),
+        message_queue_name: Some("/ipc_test_blocking_pmq_prio".to_string()),
         pmq_priority: 5, // Non-zero priority
         ..Default::default()
     };
 
     let config = BenchmarkConfig::from_args(&args)?;
-    let runner = BlockingBenchmarkRunner::new(
-        config,
-        IpcMechanism::PosixMessageQueue,
-        args.clone(),
-    );
+    let runner =
+        BlockingBenchmarkRunner::new(config, IpcMechanism::PosixMessageQueue, args.clone());
 
     let _results = runner.run()?;
     Ok(())
@@ -144,11 +128,8 @@ fn pmq_blocking_server_ready_smoke() -> Result<()> {
     };
 
     let config = BenchmarkConfig::from_args(&args)?;
-    let runner = BlockingBenchmarkRunner::new(
-        config,
-        IpcMechanism::PosixMessageQueue,
-        args.clone(),
-    );
+    let runner =
+        BlockingBenchmarkRunner::new(config, IpcMechanism::PosixMessageQueue, args.clone());
 
     let transport_config = runner.create_transport_config_internal(&args)?;
     let (mut child, _reader) = runner.spawn_server_process(&transport_config)?;
@@ -159,4 +140,3 @@ fn pmq_blocking_server_ready_smoke() -> Result<()> {
     let _ = child.kill();
     Ok(())
 }
-
