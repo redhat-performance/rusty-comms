@@ -35,12 +35,13 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use ipc_benchmark::{
     benchmark::{BenchmarkConfig, BenchmarkRunner},
+    benchmark_blocking::BlockingBenchmarkRunner,
     cli::{Args, IpcMechanism},
     ipc::{Message, MessageType, TransportFactory},
     results::{BenchmarkResults, ResultsManager},
 };
 use std::io::{self, Write};
-use tracing::{error, info};
+use tracing::{debug, error, info, warn};
 
 use tracing_subscriber::{filter::LevelFilter, prelude::*, Layer};
 
@@ -319,6 +320,22 @@ async fn run_async_mode(args: Args) -> Result<()> {
 /// using traditional blocking I/O from the standard library instead of
 /// async/await with Tokio.
 ///
+/// ## Key Differences from Async Mode
+///
+/// - Uses `BlockingBenchmarkRunner` instead of `BenchmarkRunner`
+/// - No streaming output support (will be added in Stage 5)
+/// - All operations block the calling thread
+/// - Uses standard library I/O instead of Tokio
+///
+/// ## Execution Flow
+///
+/// 1. **Logging Setup**: Configure logging based on verbosity flags
+/// 2. **Server Mode Check**: Handle --internal-run-as-server flag
+/// 3. **Configuration**: Create benchmark configuration from CLI args
+/// 4. **Mechanism Expansion**: Handle 'all' mechanism expansion
+/// 5. **Benchmark Execution**: Run benchmarks for each mechanism
+/// 6. **Results Output**: Print results summary
+///
 /// # Arguments
 ///
 /// * `args` - Parsed command-line arguments
@@ -327,17 +344,327 @@ async fn run_async_mode(args: Args) -> Result<()> {
 ///
 /// * `Ok(())` - Benchmark completed successfully
 /// * `Err(anyhow::Error)` - Benchmark failed with error
+fn run_blocking_mode(args: Args) -> Result<()> {
+    // Configure logging level based on verbosity flags
+    let log_level = match args.verbose {
+        0 => LevelFilter::INFO,
+        1 => LevelFilter::DEBUG,
+        _ => LevelFilter::TRACE,
+    };
+
+    // Configure the detailed log layer (file or stderr)
+    let guard;
+    let detailed_log_layer;
+
+    if let Some("stderr") = args.log_file.as_deref() {
+        // Log detailed messages to stderr
+        detailed_log_layer = tracing_subscriber::fmt::layer()
+            .with_writer(std::io::stderr)
+            .with_filter(log_level)
+            .boxed();
+        guard = None;
+    } else {
+        // Log to a file, either specified or default
+        let file_appender = match args.log_file.as_deref() {
+            Some(path_str) => {
+                let log_path = std::path::Path::new(path_str);
+                let log_dir = log_path
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."));
+                let log_filename = log_path
+                    .file_name()
+                    .unwrap_or_else(|| std::ffi::OsStr::new("ipc_benchmark.log"));
+                tracing_appender::rolling::daily(log_dir, log_filename)
+            }
+            None => tracing_appender::rolling::daily(".", "ipc_benchmark.log"),
+        };
+        let (non_blocking_writer, file_guard) = tracing_appender::non_blocking(file_appender);
+        detailed_log_layer = tracing_subscriber::fmt::layer()
+            .with_writer(non_blocking_writer)
+            .with_ansi(false)
+            .with_filter(log_level)
+            .boxed();
+        guard = Some(file_guard);
+    }
+
+    // Stdout layer for user-facing output (disabled in server mode)
+    let stdout_log = if !args.quiet && !args.internal_run_as_server {
+        Some(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stdout)
+                .event_format(ColorizedFormatter)
+                .with_filter(log_level),
+        )
+    } else {
+        None
+    };
+
+    // Initialize the tracing subscriber
+    tracing_subscriber::registry()
+        .with(detailed_log_layer)
+        .with(stdout_log)
+        .init();
+
+    // Keep the logging guard alive
+    let _log_guard = guard;
+
+    // If the internal server flag is present, run in server-only mode
+    if args.internal_run_as_server {
+        return run_server_mode_blocking(args);
+    }
+
+    info!("Starting IPC Benchmark Suite (Blocking Mode)");
+
+    // Create benchmark configuration from parsed CLI arguments
+    let config = BenchmarkConfig::from_args(&args)?;
+
+    // Get expanded mechanisms (handles 'all' expansion)
+    let mechanisms = IpcMechanism::expand_all(args.mechanisms.clone());
+
+    // Collect all results
+    let mut all_results = Vec::new();
+
+    // Run benchmarks for each selected mechanism
+    for &mechanism in &mechanisms {
+        match run_blocking_benchmark_for_mechanism(&config, &mechanism, &args) {
+            Ok(results) => {
+                all_results.push(results);
+            }
+            Err(e) => {
+                let error_msg = e.to_string();
+                error!(
+                    "Benchmark for {} failed: {}. {}",
+                    mechanism,
+                    error_msg,
+                    if args.continue_on_error {
+                        "Continuing to next mechanism."
+                    } else {
+                        "Aborting."
+                    }
+                );
+
+                if args.continue_on_error {
+                    // Create a failed result and add it to the results
+                    let mut failed_result = BenchmarkResults::new(
+                        mechanism,
+                        config.message_size,
+                        0,
+                        config.concurrency,
+                        config.msg_count,
+                        config.duration,
+                    );
+                    failed_result.set_failure(error_msg);
+                    all_results.push(failed_result);
+                } else {
+                    return Err(e);
+                }
+            }
+        }
+    }
+
+    // Print results summary
+    info!("\n{}", "=".repeat(80));
+    info!("Benchmark Summary (Blocking Mode)");
+    info!("{}", "=".repeat(80));
+
+    for result in &all_results {
+        info!("\nMechanism: {}", result.mechanism);
+        info!("Status: {:?}", result.status);
+
+        if let Some(ref one_way) = result.one_way_results {
+            info!("\nOne-way Latency:");
+            if let Some(ref latency) = one_way.latency {
+                info!("  Samples: {}", latency.total_samples);
+                info!("  Mean: {:.2} µs", latency.mean_ns / 1000.0);
+                info!("  Median (P50): {:.2} µs", latency.median_ns / 1000.0);
+
+                // Display other percentiles if available
+                for p in &latency.percentiles {
+                    if p.percentile == 95.0 || p.percentile == 99.0 || p.percentile == 99.9 {
+                        info!("  P{}: {:.2} µs", p.percentile, p.value_ns as f64 / 1000.0);
+                    }
+                }
+            }
+            info!(
+                "  Throughput: {:.2} msgs/sec",
+                one_way.throughput.messages_per_second
+            );
+        }
+
+        if let Some(ref round_trip) = result.round_trip_results {
+            info!("\nRound-trip Latency:");
+            if let Some(ref latency) = round_trip.latency {
+                info!("  Samples: {}", latency.total_samples);
+                info!("  Mean: {:.2} µs", latency.mean_ns / 1000.0);
+                info!("  Median (P50): {:.2} µs", latency.median_ns / 1000.0);
+
+                // Display other percentiles if available
+                for p in &latency.percentiles {
+                    if p.percentile == 95.0 || p.percentile == 99.0 || p.percentile == 99.9 {
+                        info!("  P{}: {:.2} µs", p.percentile, p.value_ns as f64 / 1000.0);
+                    }
+                }
+            }
+            info!(
+                "  Throughput: {:.2} msgs/sec",
+                round_trip.throughput.messages_per_second
+            );
+        }
+    }
+
+    info!("\n{}", "=".repeat(80));
+    info!("IPC Benchmark Suite (Blocking Mode) completed successfully");
+
+    Ok(())
+}
+
+/// Run a blocking benchmark for a specific mechanism
 ///
-/// # Note
+/// This function executes the complete benchmark lifecycle for a single IPC mechanism
+/// using blocking I/O operations.
 ///
-/// This is a stub implementation for Stage 1. Full implementation will be
-/// completed in later stages.
-fn run_blocking_mode(_args: Args) -> Result<()> {
-    // TODO: Implement in Stage 4 (Blocking Benchmark Runner)
-    // For now, return an error indicating it's not yet implemented
-    Err(anyhow::anyhow!(
-        "Blocking mode is not yet implemented. This will be completed in Stage 4."
-    ))
+/// ## Arguments
+///
+/// * `config` - Benchmark configuration
+/// * `mechanism` - IPC mechanism to test
+/// * `args` - Command-line arguments
+///
+/// ## Returns
+///
+/// * `Ok(BenchmarkResults)` - Benchmark completed successfully with results
+/// * `Err(anyhow::Error)` - Benchmark failed
+fn run_blocking_benchmark_for_mechanism(
+    config: &BenchmarkConfig,
+    mechanism: &IpcMechanism,
+    args: &Args,
+) -> Result<BenchmarkResults> {
+    // Create blocking benchmark runner for this mechanism
+    let runner = BlockingBenchmarkRunner::new(config.clone(), *mechanism, args.clone());
+
+    // Run the benchmark (this blocks until complete)
+    let results = runner
+        .run()
+        .context(format!("Benchmark failed for {}", mechanism))?;
+
+    Ok(results)
+}
+
+/// Run server mode in blocking mode
+///
+/// This function handles the `--internal-run-as-server` flag for blocking mode.
+/// It sets up a blocking server that listens for client connections and handles
+/// messages.
+///
+/// ## Server Loop
+///
+/// The server runs a persistent loop that:
+/// 1. Receives messages from the client
+/// 2. For Request messages, sends a Response back
+/// 3. For OneWay messages, no response needed
+/// 4. Exits on client disconnect or error
+///
+/// ## Returns
+///
+/// * `Ok(())` - Server completed successfully
+/// * `Err(anyhow::Error)` - Server setup or execution failed
+fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
+    use ipc_benchmark::ipc::{BlockingTransportFactory, MessageType};
+
+    info!("Running in server-only mode (blocking)");
+
+    // In server mode, we only care about the first mechanism specified
+    let mechanism = match args.mechanisms.first() {
+        Some(&m) => m,
+        None => {
+            return Err(anyhow::anyhow!(
+                "No IPC mechanism specified for server mode"
+            ))
+        }
+    };
+
+    // Set CPU affinity for the server process if specified
+    if let Some(core) = args.server_affinity {
+        if let Err(e) = set_affinity(core) {
+            error!("Failed to set server CPU affinity to core {}: {}", core, e);
+        } else {
+            info!("Successfully set server affinity to CPU core {}", core);
+        }
+    }
+
+    let config = BenchmarkConfig::from_args(&args)?;
+    let runner = BlockingBenchmarkRunner::new(config.clone(), mechanism, args.clone());
+
+    // Build transport config, ensuring we honor exact endpoints passed from parent
+    let mut transport_config = runner.create_transport_config_internal(&args)?;
+    match mechanism {
+        #[cfg(unix)]
+        IpcMechanism::UnixDomainSocket => {
+            if let Some(ref p) = args.socket_path {
+                transport_config.socket_path = p.clone();
+            }
+        }
+        IpcMechanism::TcpSocket => {
+            transport_config.host = args.host.clone();
+            transport_config.port = args.port;
+        }
+        IpcMechanism::SharedMemory => {
+            if let Some(ref n) = args.shared_memory_name {
+                transport_config.shared_memory_name = n.clone();
+            }
+        }
+        #[cfg(target_os = "linux")]
+        IpcMechanism::PosixMessageQueue => {
+            if let Some(ref n) = args.message_queue_name {
+                transport_config.message_queue_name = n.clone();
+            }
+        }
+        IpcMechanism::All => {}
+    }
+
+    let mut transport = BlockingTransportFactory::create(&mechanism)?;
+    transport
+        .start_server_blocking(&transport_config)
+        .context("Server failed to start transport")?;
+
+    // Signal to the parent process that the server is ready
+    io::stdout()
+        .write_all(&[1])
+        .context("Failed to write server ready byte to stdout")?;
+    io::stdout().flush().ok();
+
+    // Persistent server loop: receive messages and optionally reply
+    loop {
+        match transport.receive_blocking() {
+            Ok(message) => {
+                // If it's a Request, send a Response back
+                if message.message_type == MessageType::Request {
+                    let response = Message::new(message.id, Vec::new(), MessageType::Response);
+                    if let Err(e) = transport.send_blocking(&response) {
+                        warn!(
+                            "Server failed to send response: {}. Exiting server loop.",
+                            e
+                        );
+                        break;
+                    }
+                } else if message.message_type == MessageType::Ping {
+                    let pong = Message::new(message.id, Vec::new(), MessageType::Pong);
+                    if let Err(e) = transport.send_blocking(&pong) {
+                        warn!("Server failed to send pong: {}. Exiting server loop.", e);
+                        break;
+                    }
+                }
+                // For OneWay messages, no response needed
+            }
+            Err(e) => {
+                debug!("Server receive error (client likely disconnected): {}", e);
+                break;
+            }
+        }
+    }
+
+    transport.close_blocking()?;
+    info!("Server exiting cleanly.");
+    Ok(())
 }
 
 /// Sets the CPU affinity for the current thread to the specified core.

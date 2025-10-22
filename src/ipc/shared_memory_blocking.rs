@@ -33,7 +33,7 @@
 //! let mut server = BlockingSharedMemory::new();
 //! let mut config = TransportConfig::default();
 //! config.shared_memory_name = "test_shm".to_string();
-//! config.buffer_size = Some(8192);
+//! config.buffer_size = 8192;
 //!
 //! // Server: create shared memory
 //! server.start_server_blocking(&config)?;
