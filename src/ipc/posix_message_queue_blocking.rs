@@ -173,6 +173,10 @@ impl BlockingTransport for BlockingPosixMessageQueue {
         self.queue_name = queue_name.clone();
         self.priority = config.pmq_priority;
 
+        // Try to clean up any existing queue (from previous runs)
+        // Best-effort cleanup - ignore errors
+        let _ = mq_unlink(queue_name.as_str());
+
         // Set queue attributes
         let attrs = MqAttr::new(
             0,                         // flags (not used for create)

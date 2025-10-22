@@ -101,6 +101,30 @@ impl BlockingTcpSocket {
             stream: None,
         }
     }
+
+    /// Accept a connection if we haven't already.
+    /// This is called automatically on first send/receive in server mode.
+    fn ensure_connection(&mut self) -> Result<()> {
+        // If we already have a stream, we're connected
+        if self.stream.is_some() {
+            return Ok(());
+        }
+
+        // If we have a listener, accept a connection
+        if let Some(ref listener) = self.listener {
+            debug!("Accepting connection on TCP server");
+            let (stream, peer_addr) = listener
+                .accept()
+                .context("Failed to accept connection on TCP socket")?;
+
+            debug!("TCP server accepted connection from: {}", peer_addr);
+            self.stream = Some(stream);
+            Ok(())
+        } else {
+            // Not a server or already connected - this is fine
+            Ok(())
+        }
+    }
 }
 
 impl BlockingTransport for BlockingTcpSocket {
@@ -117,19 +141,13 @@ impl BlockingTransport for BlockingTcpSocket {
             )
         })?;
 
-        debug!("TCP server bound, waiting for connection");
+        debug!("TCP server bound and listening on: {}", addr);
 
-        // Accept one connection (blocks until client connects).
-        // This is intentional - we only support one client per server
-        // instance in blocking mode.
-        let (stream, peer_addr) = listener
-            .accept()
-            .context("Failed to accept connection on TCP socket")?;
-
-        debug!("TCP server accepted connection from: {}", peer_addr);
-
+        // Store the listener but DON'T accept yet
+        // Accept will happen on first send/receive call
+        // This matches the async version and allows server to signal
+        // readiness before accepting connections
         self.listener = Some(listener);
-        self.stream = Some(stream);
 
         Ok(())
     }
@@ -155,6 +173,9 @@ impl BlockingTransport for BlockingTcpSocket {
 
     fn send_blocking(&mut self, message: &Message) -> Result<()> {
         trace!("Sending message ID {} via blocking TCP", message.id);
+
+        // Accept connection if server and not yet accepted
+        self.ensure_connection()?;
 
         let stream = self.stream.as_mut().context(
             "Cannot send: socket not connected. \
@@ -184,6 +205,9 @@ impl BlockingTransport for BlockingTcpSocket {
 
     fn receive_blocking(&mut self) -> Result<Message> {
         trace!("Waiting to receive message via blocking TCP");
+
+        // Accept connection if server and not yet accepted
+        self.ensure_connection()?;
 
         let stream = self.stream.as_mut().context(
             "Cannot receive: socket not connected. \
@@ -253,18 +277,23 @@ mod tests {
     fn test_server_binds_successfully() {
         let port = 18081; // Use unique port to avoid conflicts
 
-        let mut server = BlockingTcpSocket::new();
-        let config = TransportConfig {
-            host: "127.0.0.1".to_string(),
-            port,
-            ..Default::default()
-        };
+        // Server now only binds in start_server_blocking(), doesn't accept yet
+        // Accept happens on first send/receive via ensure_connection()
+        let handle = thread::spawn(move || {
+            let mut server = BlockingTcpSocket::new();
+            let config = TransportConfig {
+                host: "127.0.0.1".to_string(),
+                port,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+            
+            // Trigger accept by receiving a message
+            let _msg = server.receive_blocking().unwrap();
+            server.close_blocking().unwrap();
+        });
 
-        // Start server in separate thread (it will block on accept)
-        let handle = thread::spawn(move || server.start_server_blocking(&config));
-
-        // Give server time to bind. This sleep is necessary because we need
-        // the server to reach the accept() call before client connects.
+        // Give server time to bind
         thread::sleep(Duration::from_millis(100));
 
         // Connect from client
@@ -275,13 +304,14 @@ mod tests {
             ..Default::default()
         };
         client.start_client_blocking(&client_config).unwrap();
-
-        // Server should now complete
-        let result = handle.join().unwrap();
-        assert!(result.is_ok());
-
-        // Cleanup
+        
+        // Send a message so server can receive it
+        let msg = Message::new(1, vec![0u8; 10], MessageType::OneWay);
+        client.send_blocking(&msg).unwrap();
         client.close_blocking().unwrap();
+
+        // Server should complete
+        handle.join().unwrap();
     }
 
     #[test]
@@ -396,39 +426,26 @@ mod tests {
     fn test_close_cleanup() {
         let port = 18085; // Use unique port
 
-        let server_handle = thread::spawn(move || {
-            let mut server = BlockingTcpSocket::new();
-            let config = TransportConfig {
-                host: "127.0.0.1".to_string(),
-                port,
-                ..Default::default()
-            };
-            server.start_server_blocking(&config).unwrap();
-
-            // Close immediately
-            server.close_blocking().unwrap();
-
-            // Verify fields are None after close
-            assert!(server.listener.is_none());
-            assert!(server.stream.is_none());
-        });
-
-        // Give server time to bind and accept
-        thread::sleep(Duration::from_millis(100));
-
-        let mut client = BlockingTcpSocket::new();
+        // Test that close() properly cleans up resources
+        let mut server = BlockingTcpSocket::new();
         let config = TransportConfig {
             host: "127.0.0.1".to_string(),
             port,
             ..Default::default()
         };
-        client.start_client_blocking(&config).unwrap();
+        server.start_server_blocking(&config).unwrap();
+        server.close_blocking().unwrap();
+
+        // Verify server fields are None after close
+        assert!(server.listener.is_none());
+        assert!(server.stream.is_none());
+
+        // Test client cleanup
+        let mut client = BlockingTcpSocket::new();
         client.close_blocking().unwrap();
 
         // Verify client fields are None after close
         assert!(client.listener.is_none());
         assert!(client.stream.is_none());
-
-        server_handle.join().unwrap();
     }
 }

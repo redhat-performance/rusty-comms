@@ -103,6 +103,30 @@ impl BlockingUnixDomainSocket {
             stream: None,
         }
     }
+
+    /// Accept a connection if we haven't already.
+    /// This is called automatically on first send/receive in server mode.
+    fn ensure_connection(&mut self) -> Result<()> {
+        // If we already have a stream, we're connected
+        if self.stream.is_some() {
+            return Ok(());
+        }
+
+        // If we have a listener, accept a connection
+        if let Some(ref listener) = self.listener {
+            debug!("Accepting connection on UDS server");
+            let (stream, addr) = listener
+                .accept()
+                .context("Failed to accept connection on Unix domain socket")?;
+
+            debug!("UDS server accepted connection from: {:?}", addr);
+            self.stream = Some(stream);
+            Ok(())
+        } else {
+            // Not a server or already connected - this is fine
+            Ok(())
+        }
+    }
 }
 
 impl BlockingTransport for BlockingUnixDomainSocket {
@@ -122,19 +146,12 @@ impl BlockingTransport for BlockingUnixDomainSocket {
             )
         })?;
 
-        debug!("UDS server bound, waiting for connection");
+        debug!("UDS server bound successfully");
 
-        // Accept one connection (blocks until client connects).
-        // This is intentional - we only support one client per server
-        // instance in blocking mode.
-        let (stream, addr) = listener
-            .accept()
-            .context("Failed to accept connection on Unix domain socket")?;
-
-        debug!("UDS server accepted connection from: {:?}", addr);
-
+        // Store the listener but don't accept yet.
+        // The accept() will happen on the first send/receive via ensure_connection().
+        // This allows the server to signal readiness before blocking on accept.
         self.listener = Some(listener);
-        self.stream = Some(stream);
 
         Ok(())
     }
@@ -162,6 +179,9 @@ impl BlockingTransport for BlockingUnixDomainSocket {
 
     fn send_blocking(&mut self, message: &Message) -> Result<()> {
         trace!("Sending message ID {} via blocking UDS", message.id);
+
+        // Ensure we have a connection (accept if server, no-op if client)
+        self.ensure_connection()?;
 
         let stream = self.stream.as_mut().context(
             "Cannot send: socket not connected. \
@@ -191,6 +211,9 @@ impl BlockingTransport for BlockingUnixDomainSocket {
 
     fn receive_blocking(&mut self) -> Result<Message> {
         trace!("Waiting to receive message via blocking UDS");
+
+        // Ensure we have a connection (accept if server, no-op if client)
+        self.ensure_connection()?;
 
         let stream = self.stream.as_mut().context(
             "Cannot receive: socket not connected. \
@@ -261,17 +284,22 @@ mod tests {
         let socket_path = "/tmp/test_uds_blocking_server.sock";
         let _ = std::fs::remove_file(socket_path);
 
-        let mut server = BlockingUnixDomainSocket::new();
-        let config = TransportConfig {
-            socket_path: socket_path.to_string(),
-            ..Default::default()
-        };
+        // Server now only binds in start_server_blocking(), doesn't accept yet
+        // Accept happens on first send/receive via ensure_connection()
+        let handle = thread::spawn(move || {
+            let mut server = BlockingUnixDomainSocket::new();
+            let config = TransportConfig {
+                socket_path: socket_path.to_string(),
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+            
+            // Trigger accept by receiving a message
+            let _msg = server.receive_blocking().unwrap();
+            server.close_blocking().unwrap();
+        });
 
-        // Start server in separate thread (it will block on accept)
-        let handle = thread::spawn(move || server.start_server_blocking(&config));
-
-        // Give server time to bind. This sleep is necessary because we need
-        // the server to reach the accept() call before client connects.
+        // Give server time to bind
         thread::sleep(Duration::from_millis(100));
 
         // Connect from client
@@ -281,13 +309,14 @@ mod tests {
             ..Default::default()
         };
         client.start_client_blocking(&client_config).unwrap();
-
-        // Server should now complete
-        let result = handle.join().unwrap();
-        assert!(result.is_ok());
-
-        // Cleanup
+        
+        // Send a message so server can receive it
+        let msg = Message::new(1, vec![0u8; 10], MessageType::OneWay);
+        client.send_blocking(&msg).unwrap();
         client.close_blocking().unwrap();
+
+        // Server should complete
+        handle.join().unwrap();
         let _ = std::fs::remove_file(socket_path);
     }
 
@@ -409,39 +438,27 @@ mod tests {
         let socket_path = "/tmp/test_uds_blocking_close.sock";
         let _ = std::fs::remove_file(socket_path);
 
-        let server_path = socket_path.to_string();
-        let server_handle = thread::spawn(move || {
-            let mut server = BlockingUnixDomainSocket::new();
-            let config = TransportConfig {
-                socket_path: server_path,
-                ..Default::default()
-            };
-            server.start_server_blocking(&config).unwrap();
-
-            // Close immediately
-            server.close_blocking().unwrap();
-
-            // Verify fields are None after close
-            assert!(server.listener.is_none());
-            assert!(server.stream.is_none());
-        });
-
-        // Give server time to bind and accept
-        thread::sleep(Duration::from_millis(100));
-
-        let mut client = BlockingUnixDomainSocket::new();
+        // Test that close() properly cleans up resources
+        let mut server = BlockingUnixDomainSocket::new();
         let config = TransportConfig {
             socket_path: socket_path.to_string(),
             ..Default::default()
         };
-        client.start_client_blocking(&config).unwrap();
+        server.start_server_blocking(&config).unwrap();
+        server.close_blocking().unwrap();
+
+        // Verify server fields are None after close
+        assert!(server.listener.is_none());
+        assert!(server.stream.is_none());
+
+        // Test client cleanup
+        let mut client = BlockingUnixDomainSocket::new();
         client.close_blocking().unwrap();
 
         // Verify client fields are None after close
         assert!(client.listener.is_none());
         assert!(client.stream.is_none());
 
-        server_handle.join().unwrap();
         let _ = std::fs::remove_file(socket_path);
     }
 }
