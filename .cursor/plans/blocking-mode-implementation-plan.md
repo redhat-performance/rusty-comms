@@ -67,7 +67,7 @@ and execute the next incomplete stage. Each stage is self-contained with clear:
 ## Master Progress Checklist
 
 **Last Updated:** 2025-10-22  
-**Overall Status:** Stage 4 Complete (4/9 stages complete)
+**Overall Status:** Stage 5 Complete (5/9 stages complete)
 
 ### Stage Completion Status
 
@@ -96,10 +96,12 @@ and execute the next incomplete stage. Each stage is self-contained with clear:
   - [✓] Git commit created
   - [✓] Includes run_server_mode_blocking() (Stage 6 functionality)
 
-- [ ] **Stage 5**: Blocking Results Manager (0/1 step)
-  - [ ] Create BlockingResultsManager
-  - [ ] Support all output formats
-  - [ ] Git commit created
+- [✓] **Stage 5**: Blocking Results Manager (1/1 step COMPLETE)
+  - [✓] Create BlockingResultsManager with blocking I/O
+  - [✓] Support all output formats (JSON, CSV, streaming)
+  - [✓] Integrated into run_blocking_mode()
+  - [✓] 7 comprehensive tests (all passing)
+  - [✓] Git commit created
 
 - [ ] **Stage 6**: Server Mode Blocking Support (0/1 step)
   - [ ] Update server mode for blocking
@@ -157,7 +159,7 @@ and execute the next incomplete stage. Each stage is self-contained with clear:
 - [✓] Stage 3.3 commit (SHM)
 - [✓] Stage 3.4 commit (PMQ)
 - [✓] Stage 4 commit
-- [ ] Stage 5 commit
+- [✓] Stage 5 commit
 - [ ] Stage 6 commit
 - [ ] Stage 7 commit
 - [ ] Stage 8 commit
@@ -166,7 +168,7 @@ and execute the next incomplete stage. Each stage is self-contained with clear:
 
 ---
 
-## CURRENT STAGE: Stage 5 - Blocking Results Manager (Next Up)
+## CURRENT STAGE: Stage 6 - Server Mode Blocking Support (Next Up - Mostly Complete via Stage 4)
 
 ---
 
@@ -2468,6 +2470,63 @@ AI-assisted-by: Claude Sonnet 4.5"
 - Results currently printed to console; Stage 5 will add file output support
 - CPU affinity support included for both client and server
 - Ready to proceed to Stage 5 (Blocking Results Manager)
+
+---
+
+### 2025-10-22 - Stage 5: Blocking Results Manager
+**Status:** Completed  
+**Time Spent:** ~2 hours  
+**Changes:**
+- Created src/results_blocking.rs (1,360+ lines) with BlockingResultsManager
+- Implemented all core methods using pure blocking I/O:
+  - `new()` - Create manager with output file configuration
+  - `enable_streaming()` - Enable JSON streaming output
+  - `enable_per_message_streaming()` - Enable per-message latency streaming
+  - `enable_combined_streaming()` - Enable combined one-way/round-trip streaming
+  - `enable_csv_streaming()` - Enable CSV format streaming
+  - `stream_latency_record()` - Stream individual message latency records
+  - `add_results()` - Add benchmark results to collection
+  - `finalize()` - Write final results and close streaming files
+  - All helper methods for file I/O, summaries, and system info
+- Updated src/lib.rs to export results_blocking module
+- Updated src/main.rs to integrate BlockingResultsManager:
+  - Added BlockingResultsManager import
+  - Created manager with output file and log file paths
+  - Enabled JSON and CSV streaming if requested
+  - Call add_results() for each completed benchmark
+  - Call finalize() at end to write final results
+  - Call print_summary() to display file paths
+- Removed all async/await - uses pure std::fs::File blocking I/O
+- Added 7 comprehensive tests (all passing):
+  - test_new_manager - Creation and initialization
+  - test_enable_streaming - JSON streaming setup
+  - test_enable_per_message_streaming - Per-message JSON setup
+  - test_enable_csv_streaming - CSV streaming setup
+  - test_enable_combined_streaming - Combined mode setup
+  - test_add_results_and_finalize - Full workflow test
+  - test_print_summary - Summary output test
+
+**Issues Encountered:**
+- Unused imports in test module - Removed unused imports (BenchmarkStatus, BenchmarkSummary, etc.)
+- Test helper function had incorrect field names for TestConfiguration - Fixed by using BenchmarkResults::new() constructor instead of manual struct creation
+
+**Validation Results:**
+- All 101 unit tests passing (7 new tests for BlockingResultsManager + 94 existing)
+- All 36 doctests passing  
+- Clippy: No warnings (cargo clippy --all-targets -- -D warnings)
+- Cargo fmt: All code formatted
+- Cargo build --release: Success
+- Manual test verified streaming files created correctly (JSON and CSV headers present)
+
+**Notes:**
+- Pure standard library implementation (no async/await, no Tokio)
+- Matches ResultsManager API for consistency - same method names, similar signatures
+- Reuses BenchmarkResults and other data structures from results module
+- Supports all output formats: final JSON, streaming JSON, streaming CSV
+- Successfully integrated into run_blocking_mode() in main.rs
+- File operations use std::fs::File, std::io::Write (all blocking)
+- Stage 6 mostly complete via Stage 4's run_server_mode_blocking()
+- Ready to proceed to Stage 7 (Integration Testing)
 
 ---
 

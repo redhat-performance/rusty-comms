@@ -140,6 +140,20 @@ pub mod metrics;
 /// - System information collection for reproducibility
 pub mod results;
 
+/// Blocking results management module
+///
+/// This module provides result collection, aggregation, and output
+/// functionality using synchronous/blocking I/O operations. It mirrors
+/// the async `results` module but uses standard library blocking I/O.
+///
+/// ## Key Features
+///
+/// - JSON and CSV output formats
+/// - Real-time streaming results during execution (blocking I/O)
+/// - Cross-mechanism comparison and ranking
+/// - System information collection for reproducibility
+pub mod results_blocking;
+
 pub mod utils;
 
 // Re-export key types for convenient library usage
@@ -174,8 +188,10 @@ pub use metrics::{LatencyMetrics, ThroughputMetrics};
 /// Result collection and management
 ///
 /// Key types for handling benchmark results, including the main `BenchmarkResults`
-/// structure and the `ResultsManager` for output handling.
+/// structure and the `ResultsManager` for output handling (async mode) and
+/// `BlockingResultsManager` for blocking mode.
 pub use results::{BenchmarkResults, ResultsManager};
+pub use results_blocking::BlockingResultsManager;
 
 /// The current version of the IPC benchmark suite
 ///
