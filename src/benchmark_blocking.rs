@@ -63,6 +63,7 @@ use crate::{
     results::BenchmarkResults,
 };
 use anyhow::{Context, Result};
+use clap::ValueEnum;
 use os_pipe::PipeReader;
 use std::{
     io::Read,
@@ -405,8 +406,10 @@ impl BlockingBenchmarkRunner {
         // IMPORTANT: Add --blocking flag so the server runs in blocking mode
         cmd.arg("--blocking");
 
-        // Add mechanism-specific arguments
-        cmd.arg("--mechanism").arg(self.mechanism.to_string());
+        // Add mechanism-specific arguments  
+        // Use possible_value name (e.g., "tcp") not Display name (e.g., "TCP Socket")
+        cmd.arg("-m")
+            .arg(self.mechanism.to_possible_value().unwrap().get_name());
 
         // Add message size and count
         cmd.arg("--message-size")
@@ -615,6 +618,9 @@ impl BlockingBenchmarkRunner {
     /// - `Ok(BenchmarkResults)`: Complete test results with metrics
     /// - `Err(anyhow::Error)`: Test execution failure with diagnostic information
     pub fn run(&self) -> Result<BenchmarkResults> {
+        // Track total benchmark duration
+        let total_start = Instant::now();
+
         // Validate core availability before any affinity changes
         self.validate_core_availability()?;
 
@@ -662,6 +668,9 @@ impl BlockingBenchmarkRunner {
             let round_trip_results = self.run_round_trip_test(&transport_config)?;
             results.add_round_trip_results(round_trip_results);
         }
+
+        // Set total benchmark duration
+        results.test_duration = total_start.elapsed();
 
         info!("Benchmark completed for {} mechanism", self.mechanism);
         Ok(results)

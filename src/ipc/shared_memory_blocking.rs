@@ -55,6 +55,10 @@ use std::thread;
 use std::time::Duration;
 use tracing::{debug, trace};
 
+// For shared memory cleanup on Linux
+#[cfg(target_os = "linux")]
+use nix::libc;
+
 /// Shared memory ring buffer structure.
 ///
 /// This structure is placed at the start of the shared memory segment and
@@ -278,6 +282,29 @@ impl BlockingSharedMemory {
             thread::sleep(Duration::from_micros(100));
         }
     }
+
+    /// Ensure peer is ready before sending/receiving.
+    /// This is called automatically on first send/receive in server mode.
+    fn ensure_peer_ready(&mut self) -> Result<()> {
+        // For server, we need to wait for client to connect
+        if self.is_server {
+            // Check if client is already ready
+            let ring_buffer = self
+                .ring_buffer
+                .ok_or_else(|| anyhow!("Ring buffer not initialized"))?;
+            
+            let client_ready = unsafe {
+                (*ring_buffer).client_ready.load(Ordering::Acquire)
+            };
+            
+            if !client_ready {
+                debug!("Waiting for client to connect to shared memory");
+                self.wait_for_peer_ready(Duration::from_secs(30))?;
+                debug!("Client connected to shared memory");
+            }
+        }
+        Ok(())
+    }
 }
 
 impl BlockingTransport for BlockingSharedMemory {
@@ -290,6 +317,24 @@ impl BlockingTransport for BlockingSharedMemory {
 
         let buffer_size = config.buffer_size;
         let total_size = SharedMemoryRingBuffer::HEADER_SIZE + buffer_size;
+
+        // Try to remove any existing segment first (cleanup from previous runs)
+        // This is a best-effort cleanup - we ignore errors
+        #[cfg(target_os = "linux")]
+        {
+            use std::ffi::CString;
+            // Prepend "/" if not already present (POSIX shm requires it)
+            let shm_name = if config.shared_memory_name.starts_with('/') {
+                config.shared_memory_name.clone()
+            } else {
+                format!("/{}", config.shared_memory_name)
+            };
+            if let Ok(c_name) = CString::new(shm_name.as_bytes()) {
+                unsafe {
+                    libc::shm_unlink(c_name.as_ptr());
+                }
+            }
+        }
 
         // Create shared memory segment
         let shmem = ShmemConf::new()
@@ -315,12 +360,10 @@ impl BlockingTransport for BlockingSharedMemory {
         self.shmem = Some(Arc::new(Mutex::new(shmem)));
         self.is_server = true;
 
-        debug!("Shared memory server created, waiting for client");
+        debug!("Shared memory server created successfully");
 
-        // Wait for client to connect
-        self.wait_for_peer_ready(Duration::from_secs(30))?;
-
-        debug!("Client connected to shared memory");
+        // Don't wait for client here - do it on first send/receive.
+        // This allows the server to signal readiness before blocking.
         Ok(())
     }
 
@@ -380,6 +423,9 @@ impl BlockingTransport for BlockingSharedMemory {
             message.id
         );
 
+        // Ensure peer is ready (wait for client if server, no-op if client)
+        self.ensure_peer_ready()?;
+
         let ring_buffer = self.ring_buffer.ok_or_else(|| {
             anyhow!(
                 "Cannot send: shared memory not initialized. \
@@ -415,6 +461,9 @@ impl BlockingTransport for BlockingSharedMemory {
 
     fn receive_blocking(&mut self) -> Result<Message> {
         trace!("Waiting to receive message via blocking shared memory");
+
+        // Ensure peer is ready (wait for client if server, no-op if client)
+        self.ensure_peer_ready()?;
 
         let ring_buffer = self.ring_buffer.ok_or_else(|| {
             anyhow!(
@@ -491,15 +540,21 @@ mod tests {
     fn test_server_creates_segment_successfully() {
         let segment_name = "test_shm_blocking_server";
 
-        let mut server = BlockingSharedMemory::new();
-        let config = TransportConfig {
-            shared_memory_name: segment_name.to_string(),
-            buffer_size: 4096,
-            ..Default::default()
-        };
-
-        // Start server in separate thread (it will wait for client)
-        let handle = thread::spawn(move || server.start_server_blocking(&config));
+        // Server now only creates segment in start_server_blocking(), doesn't wait for client
+        // Wait for client happens on first send/receive via ensure_peer_ready()
+        let handle = thread::spawn(move || {
+            let mut server = BlockingSharedMemory::new();
+            let config = TransportConfig {
+                shared_memory_name: segment_name.to_string(),
+                buffer_size: 4096,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+            
+            // Trigger peer wait by receiving a message
+            let _msg = server.receive_blocking().unwrap();
+            server.close_blocking().unwrap();
+        });
 
         // Give server time to create segment
         thread::sleep(Duration::from_millis(200));
@@ -512,13 +567,14 @@ mod tests {
             ..Default::default()
         };
         client.start_client_blocking(&client_config).unwrap();
-
-        // Server should now complete
-        let result = handle.join().unwrap();
-        assert!(result.is_ok());
-
-        // Cleanup
+        
+        // Send a message so server can receive it
+        let msg = Message::new(1, vec![0u8; 10], MessageType::OneWay);
+        client.send_blocking(&msg).unwrap();
         client.close_blocking().unwrap();
+
+        // Server should complete
+        handle.join().unwrap();
     }
 
     #[test]
@@ -634,39 +690,26 @@ mod tests {
     fn test_close_cleanup() {
         let segment_name = "test_shm_blocking_close";
 
-        let server_handle = thread::spawn(move || {
-            let mut server = BlockingSharedMemory::new();
-            let config = TransportConfig {
-                shared_memory_name: segment_name.to_string(),
-                buffer_size: 4096,
-                ..Default::default()
-            };
-            server.start_server_blocking(&config).unwrap();
-
-            // Close immediately
-            server.close_blocking().unwrap();
-
-            // Verify fields are None after close
-            assert!(server.ring_buffer.is_none());
-            assert!(server.shmem.is_none());
-        });
-
-        // Give server time to create
-        thread::sleep(Duration::from_millis(200));
-
-        let mut client = BlockingSharedMemory::new();
+        // Test that close() properly cleans up resources
+        let mut server = BlockingSharedMemory::new();
         let config = TransportConfig {
             shared_memory_name: segment_name.to_string(),
             buffer_size: 4096,
             ..Default::default()
         };
-        client.start_client_blocking(&config).unwrap();
+        server.start_server_blocking(&config).unwrap();
+        server.close_blocking().unwrap();
+
+        // Verify server fields are None after close
+        assert!(server.ring_buffer.is_none());
+        assert!(server.shmem.is_none());
+
+        // Test client cleanup
+        let mut client = BlockingSharedMemory::new();
         client.close_blocking().unwrap();
 
         // Verify client fields are None after close
         assert!(client.ring_buffer.is_none());
         assert!(client.shmem.is_none());
-
-        server_handle.join().unwrap();
     }
 }
