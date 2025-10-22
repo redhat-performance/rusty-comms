@@ -42,10 +42,7 @@
 
 use anyhow::Result;
 use ipc_benchmark::{
-    benchmark_blocking::BlockingBenchmarkRunner,
-    cli::Args,
-    BenchmarkConfig,
-    IpcMechanism,
+    benchmark_blocking::BlockingBenchmarkRunner, cli::Args, BenchmarkConfig, IpcMechanism,
 };
 
 fn main() -> Result<()> {
@@ -63,34 +60,34 @@ fn main() -> Result<()> {
     let args = Args {
         // Use TCP sockets for this example (works on all platforms)
         mechanisms: vec![IpcMechanism::TcpSocket],
-        
+
         // Enable blocking mode - this is the key flag!
         blocking: true,
-        
+
         // Message configuration
-        message_size: 1024,  // 1 KB messages
-        msg_count: 10000,    // Send 10,000 messages
-        
+        message_size: 1024, // 1 KB messages
+        msg_count: 10000,   // Send 10,000 messages
+
         // Test types
-        one_way: true,       // Measure one-way latency
-        round_trip: true,    // Measure round-trip latency
-        
+        one_way: true,    // Measure one-way latency
+        round_trip: true, // Measure round-trip latency
+
         // Warmup for stable measurements
         warmup_iterations: 1000,
-        
+
         // Performance analysis
         percentiles: vec![50.0, 95.0, 99.0, 99.9],
-        
+
         // TCP-specific configuration
         host: "127.0.0.1".to_string(),
-        port: 19000,  // Use a non-standard port
-        
+        port: 19000, // Use a non-standard port
+
         // Single-threaded for simplicity
         concurrency: 1,
-        
+
         // No output file - just print to console
         output_file: None,
-        
+
         // Other flags - use sensible defaults
         duration: None,
         streaming_output_json: None,
@@ -103,13 +100,13 @@ fn main() -> Result<()> {
         client_affinity: None,
         buffer_size: None,
         pmq_priority: 0,
-        
+
         // Internal flag (not for external use)
         internal_run_as_server: false,
-        
+
         // Verbosity
         verbose: 0,
-        
+
         // Other internal fields
         quiet: false,
         socket_path: None,
@@ -131,62 +128,69 @@ fn main() -> Result<()> {
     let config = BenchmarkConfig::from_args(&args)?;
 
     // Create the blocking benchmark runner for TCP
-    let runner = BlockingBenchmarkRunner::new(
-        config,
-        IpcMechanism::TcpSocket,
-        args,
-    );
+    let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args);
 
     // Run the benchmark - this is a blocking call
     match runner.run() {
         Ok(results) => {
             println!("\n=== Benchmark Complete ===\n");
-            
+
             // Print one-way results
             if let Some(one_way) = &results.one_way_results {
                 if let Some(latency) = &one_way.latency {
                     println!("One-Way Latency:");
-                    println!("  Mean:   {:.2} µs", latency.mean_ns as f64 / 1000.0);
-                    println!("  Median: {:.2} µs", latency.median_ns as f64 / 1000.0);
+                    println!("  Mean:   {:.2} µs", latency.mean_ns / 1000.0);
+                    println!("  Median: {:.2} µs", latency.median_ns / 1000.0);
                     println!("  Min:    {:.2} µs", latency.min_ns as f64 / 1000.0);
                     println!("  Max:    {:.2} µs", latency.max_ns as f64 / 1000.0);
-                    
+
                     for percentile in &latency.percentiles {
-                        println!("  P{:.1}:    {:.2} µs", 
-                            percentile.percentile, 
-                            percentile.value_ns as f64 / 1000.0);
+                        println!(
+                            "  P{:.1}:    {:.2} µs",
+                            percentile.percentile,
+                            percentile.value_ns as f64 / 1000.0
+                        );
                     }
                 }
-                
+
                 println!("\nOne-Way Throughput:");
                 println!("  {:.2} msg/s", one_way.throughput.messages_per_second);
-                println!("  {:.2} MB/s", 
-                    one_way.throughput.bytes_per_second / 1_000_000.0);
+                println!(
+                    "  {:.2} MB/s",
+                    one_way.throughput.bytes_per_second / 1_000_000.0
+                );
             }
-            
+
             // Print round-trip results
             if let Some(round_trip) = &results.round_trip_results {
                 if let Some(latency) = &round_trip.latency {
                     println!("\nRound-Trip Latency:");
-                    println!("  Mean:   {:.2} µs", latency.mean_ns as f64 / 1000.0);
-                    println!("  Median: {:.2} µs", latency.median_ns as f64 / 1000.0);
+                    println!("  Mean:   {:.2} µs", latency.mean_ns / 1000.0);
+                    println!("  Median: {:.2} µs", latency.median_ns / 1000.0);
                     println!("  Min:    {:.2} µs", latency.min_ns as f64 / 1000.0);
                     println!("  Max:    {:.2} µs", latency.max_ns as f64 / 1000.0);
-                    
+
                     for percentile in &latency.percentiles {
-                        println!("  P{:.1}:    {:.2} µs", 
-                            percentile.percentile, 
-                            percentile.value_ns as f64 / 1000.0);
+                        println!(
+                            "  P{:.1}:    {:.2} µs",
+                            percentile.percentile,
+                            percentile.value_ns as f64 / 1000.0
+                        );
                     }
                 }
-                
+
                 println!("\nRound-Trip Throughput:");
                 println!("  {:.2} msg/s", round_trip.throughput.messages_per_second);
-                println!("  {:.2} MB/s", 
-                    round_trip.throughput.bytes_per_second / 1_000_000.0);
+                println!(
+                    "  {:.2} MB/s",
+                    round_trip.throughput.bytes_per_second / 1_000_000.0
+                );
             }
-            
-            println!("\nTest Duration: {:.2}s", results.test_duration.as_secs_f64());
+
+            println!(
+                "\nTest Duration: {:.2}s",
+                results.test_duration.as_secs_f64()
+            );
             println!("\nSuccess! Blocking mode works perfectly.");
             Ok(())
         }
@@ -247,4 +251,3 @@ fn main() -> Result<()> {
 // === Benchmark Complete ===
 // Results are displayed above.
 // Log file: blocking_basic_example.log
-
