@@ -66,8 +66,8 @@ and execute the next incomplete stage. Each stage is self-contained with clear:
 
 ## Master Progress Checklist
 
-**Last Updated:** 2025-10-21  
-**Overall Status:** Stage 3 Complete (3/9 stages complete)
+**Last Updated:** 2025-10-22  
+**Overall Status:** Stage 4 Complete (4/9 stages complete)
 
 ### Stage Completion Status
 
@@ -89,11 +89,12 @@ and execute the next incomplete stage. Each stage is self-contained with clear:
   - [✓] Stage 3.4: POSIX Message Queue (6 tests, all passing, Linux only)
   - [✓] All 4 git commits created
 
-- [ ] **Stage 4**: Blocking Benchmark Runner (0/2 steps)
-  - [ ] Step 4.1: Create BlockingBenchmarkRunner
-  - [ ] Step 4.2: Update run_blocking_mode() in main.rs
-  - [ ] All tests passing, no async/await
-  - [ ] Git commit created
+- [✓] **Stage 4**: Blocking Benchmark Runner (2/2 steps COMPLETE)
+  - [✓] Step 4.1: Create BlockingBenchmarkRunner
+  - [✓] Step 4.2: Update run_blocking_mode() in main.rs
+  - [✓] All tests passing, no async/await
+  - [✓] Git commit created
+  - [✓] Includes run_server_mode_blocking() (Stage 6 functionality)
 
 - [ ] **Stage 5**: Blocking Results Manager (0/1 step)
   - [ ] Create BlockingResultsManager
@@ -151,11 +152,11 @@ and execute the next incomplete stage. Each stage is self-contained with clear:
 
 - [✓] Stage 1 commit
 - [✓] Stage 2 commit
-- [ ] Stage 3.1 commit (UDS)
-- [ ] Stage 3.2 commit (TCP)
-- [ ] Stage 3.3 commit (SHM)
-- [ ] Stage 3.4 commit (PMQ)
-- [ ] Stage 4 commit
+- [✓] Stage 3.1 commit (UDS)
+- [✓] Stage 3.2 commit (TCP)
+- [✓] Stage 3.3 commit (SHM)
+- [✓] Stage 3.4 commit (PMQ)
+- [✓] Stage 4 commit
 - [ ] Stage 5 commit
 - [ ] Stage 6 commit
 - [ ] Stage 7 commit
@@ -165,7 +166,7 @@ and execute the next incomplete stage. Each stage is self-contained with clear:
 
 ---
 
-## CURRENT STAGE: Stage 4 - Blocking Benchmark Runner (Next Up)
+## CURRENT STAGE: Stage 5 - Blocking Results Manager (Next Up)
 
 ---
 
@@ -2425,4 +2426,49 @@ AI-assisted-by: Claude Sonnet 4.5"
 
 ---
 
-**End of Implementation Plan**
+### 2025-10-22 - Stage 4: Blocking Benchmark Runner
+**Status:** Completed  
+**Time Spent:** ~3.5 hours  
+**Changes:**
+- Created src/benchmark_blocking.rs (1,200+ lines) with BlockingBenchmarkRunner
+- Implemented all core methods:
+  - `run()` - Main orchestrator for blocking benchmarks
+  - `run_warmup()` - Warmup iterations with blocking I/O
+  - `run_one_way_test()` and `run_single_threaded_one_way()` - One-way latency tests
+  - `run_round_trip_test()` and `run_single_threaded_round_trip()` - Round-trip tests
+  - `spawn_server_process()` - Spawns blocking server with --blocking flag
+  - `create_transport_config_internal()` - Transport configuration
+- Replaced stub `run_blocking_mode()` in main.rs with full implementation
+- Added `run_blocking_benchmark_for_mechanism()` helper function
+- Implemented `run_server_mode_blocking()` for blocking server execution (Stage 6 functionality)
+- Updated src/lib.rs to export benchmark_blocking module
+- Fixed doctests in posix_message_queue_blocking.rs and shared_memory_blocking.rs
+- Added 6 comprehensive tests for BlockingBenchmarkRunner (all passing)
+
+**Issues Encountered:**
+- Import paths needed adjustment (use ipc_benchmark::ipc:: instead of crate::ipc::)
+- Field names in BenchmarkResults changed from `one_way`/`round_trip` to `one_way_results`/`round_trip_results`
+- LatencyMetrics fields are `median_ns` and `percentiles` array, not direct `p50_ns`, `p95_ns` fields
+- ThroughputMetrics field is `messages_per_second` not `messages_per_sec`
+- TransportConfig fields are `message_queue_depth` and `max_connections`, not just `queue_depth`
+- Doctest field mismatches fixed (buffer_size is usize not Option<usize>)
+- Clippy warning about collapsible_if - fixed by combining conditions
+
+**Validation Results:**
+- All 94 unit tests passing (6 new tests for BlockingBenchmarkRunner)
+- All 28 doctests passing
+- Clippy: No warnings (cargo clippy --all-targets -- -D warnings)
+- Cargo fmt: All code formatted
+- Blocking mode fully functional for all 4 IPC mechanisms
+
+**Notes:**
+- Pure standard library implementation (no async/await, no Tokio)
+- Uses BlockingTransport trait for all transport operations
+- Server mode blocking support already implemented (covers Stage 6 objective)
+- Results currently printed to console; Stage 5 will add file output support
+- CPU affinity support included for both client and server
+- Ready to proceed to Stage 5 (Blocking Results Manager)
+
+---
+
+**End of Implementation Plan
