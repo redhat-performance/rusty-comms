@@ -4,9 +4,7 @@
 //! mode with spawned server processes.
 
 use anyhow::Result;
-use ipc_benchmark::{
-    cli::Args, BenchmarkConfig, BlockingBenchmarkRunner, IpcMechanism,
-};
+use ipc_benchmark::{cli::Args, BenchmarkConfig, BlockingBenchmarkRunner, IpcMechanism};
 
 /// Verify Shared Memory one-way works end-to-end in blocking mode
 ///
@@ -23,18 +21,12 @@ fn shm_one_way_blocking_smoke() -> Result<()> {
         concurrency: 1,
         msg_count: 32,
         message_size: 128,
-        shared_memory_name: Some(
-            "ipc_test_blocking_shm_ow".to_string()
-        ),
+        shared_memory_name: Some("ipc_test_blocking_shm_ow".to_string()),
         ..Default::default()
     };
 
     let config = BenchmarkConfig::from_args(&args)?;
-    let runner = BlockingBenchmarkRunner::new(
-        config,
-        IpcMechanism::SharedMemory,
-        args.clone(),
-    );
+    let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::SharedMemory, args.clone());
 
     // Run blocking benchmark (blocks until complete - no .await)
     let _results = runner.run()?;
@@ -61,11 +53,7 @@ fn shm_blocking_various_sizes() -> Result<()> {
         };
 
         let config = BenchmarkConfig::from_args(&args)?;
-        let runner = BlockingBenchmarkRunner::new(
-            config,
-            IpcMechanism::SharedMemory,
-            args.clone(),
-        );
+        let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::SharedMemory, args.clone());
 
         runner.run()?;
     }
@@ -83,19 +71,13 @@ fn shm_blocking_with_first_message() -> Result<()> {
         blocking: true,
         msg_count: 16,
         message_size: 128,
-        shared_memory_name: Some(
-            "ipc_test_blocking_shm_first".to_string()
-        ),
+        shared_memory_name: Some("ipc_test_blocking_shm_first".to_string()),
         include_first_message: true,
         ..Default::default()
     };
 
     let config = BenchmarkConfig::from_args(&args)?;
-    let runner = BlockingBenchmarkRunner::new(
-        config,
-        IpcMechanism::SharedMemory,
-        args.clone(),
-    );
+    let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::SharedMemory, args.clone());
 
     let _results = runner.run()?;
     Ok(())
@@ -112,19 +94,13 @@ fn shm_blocking_server_ready_smoke() -> Result<()> {
         blocking: true,
         msg_count: 1,
         message_size: 64,
-        shared_memory_name: Some(
-            "ipc_test_blocking_shm_srv".to_string()
-        ),
+        shared_memory_name: Some("ipc_test_blocking_shm_srv".to_string()),
         include_first_message: true,
         ..Default::default()
     };
 
     let config = BenchmarkConfig::from_args(&args)?;
-    let runner = BlockingBenchmarkRunner::new(
-        config,
-        IpcMechanism::SharedMemory,
-        args.clone(),
-    );
+    let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::SharedMemory, args.clone());
 
     let transport_config = runner.create_transport_config_internal(&args)?;
     let (mut child, _reader) = runner.spawn_server_process(&transport_config)?;
@@ -135,4 +111,3 @@ fn shm_blocking_server_ready_smoke() -> Result<()> {
     let _ = child.kill();
     Ok(())
 }
-

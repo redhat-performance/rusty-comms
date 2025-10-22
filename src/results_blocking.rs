@@ -32,8 +32,8 @@
 //! - No async/await or Tokio runtime required
 
 use crate::results::{
-    BenchmarkMetadata, BenchmarkResults, FinalBenchmarkResults,
-    MechanismSummary, MessageLatencyRecord, OverallSummary, SystemInfo,
+    BenchmarkMetadata, BenchmarkResults, FinalBenchmarkResults, MechanismSummary,
+    MessageLatencyRecord, OverallSummary, SystemInfo,
 };
 use anyhow::Result;
 use std::collections::HashMap;
@@ -1197,11 +1197,11 @@ mod tests {
         // results object
         BenchmarkResults::new(
             IpcMechanism::TcpSocket,
-            1024,    // message_size
-            8192,    // buffer_size
-            1,       // concurrency
+            1024,       // message_size
+            8192,       // buffer_size
+            1,          // concurrency
             Some(1000), // msg_count
-            None,    // duration
+            None,       // duration
         )
     }
 
