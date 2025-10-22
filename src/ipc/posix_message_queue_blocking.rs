@@ -37,7 +37,7 @@
 //! # fn example() -> anyhow::Result<()> {
 //! let mut server = BlockingPosixMessageQueue::new();
 //! let mut config = TransportConfig::default();
-//! config.posix_message_queue_name = "/test_pmq".to_string();
+//! config.message_queue_name = "/test_pmq".to_string();
 //!
 //! // Server: create message queue
 //! server.start_server_blocking(&config)?;

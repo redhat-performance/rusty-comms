@@ -82,6 +82,17 @@
 /// - Adaptive configuration based on mechanism capabilities
 pub mod benchmark;
 
+/// Blocking benchmarking functionality
+///
+/// Contains the `BlockingBenchmarkRunner` that provides synchronous/blocking
+/// execution of performance tests. This module mirrors the async benchmark
+/// module but uses standard library blocking I/O instead of Tokio. Features:
+/// - Pure standard library implementation (no async/await or Tokio)
+/// - Identical measurement methodology to async version for fair comparison
+/// - Uses `BlockingTransport` trait for blocking I/O operations
+/// - Supports all IPC mechanisms in blocking mode
+pub mod benchmark_blocking;
+
 /// Command-line interface and configuration
 ///
 /// Provides argument parsing using clap and converts user-friendly CLI options
@@ -137,8 +148,10 @@ pub mod utils;
 /// Main benchmark execution engine
 ///
 /// Re-exported from the benchmark module for easy access. The `BenchmarkRunner`
-/// is the primary interface for executing performance tests.
+/// is the primary interface for executing performance tests in async mode.
+/// `BlockingBenchmarkRunner` provides the blocking/synchronous execution mode.
 pub use benchmark::{BenchmarkConfig, BenchmarkRunner};
+pub use benchmark_blocking::BlockingBenchmarkRunner;
 
 /// Command-line interface types
 ///
