@@ -617,7 +617,10 @@ impl BlockingBenchmarkRunner {
     /// ## Returns
     /// - `Ok(BenchmarkResults)`: Complete test results with metrics
     /// - `Err(anyhow::Error)`: Test execution failure with diagnostic information
-    pub fn run(&self) -> Result<BenchmarkResults> {
+    pub fn run(
+        &self,
+        mut results_manager: Option<&mut crate::results_blocking::BlockingResultsManager>,
+    ) -> Result<BenchmarkResults> {
         // Track total benchmark duration
         let total_start = Instant::now();
 
@@ -658,15 +661,37 @@ impl BlockingBenchmarkRunner {
         // Run one-way latency test if enabled
         if self.config.one_way {
             info!("Running one-way latency test");
-            let one_way_results = self.run_one_way_test(&transport_config)?;
+            let one_way_results = self.run_one_way_test(&transport_config, results_manager.as_deref_mut())?;
             results.add_one_way_results(one_way_results);
         }
 
         // Run round-trip latency test if enabled
+        // Note: Some mechanisms in blocking mode don't support bidirectional communication
         if self.config.round_trip {
-            info!("Running round-trip latency test");
-            let round_trip_results = self.run_round_trip_test(&transport_config)?;
-            results.add_round_trip_results(round_trip_results);
+            let skip_round_trip = match self.mechanism {
+                IpcMechanism::SharedMemory => {
+                    warn!(
+                        "Shared memory in blocking mode does not support bidirectional \
+                        communication. Skipping round-trip test."
+                    );
+                    true
+                }
+                #[cfg(target_os = "linux")]
+                IpcMechanism::PosixMessageQueue => {
+                    warn!(
+                        "POSIX message queue in blocking mode does not support bidirectional \
+                        communication reliably. Skipping round-trip test."
+                    );
+                    true
+                }
+                _ => false,
+            };
+
+            if !skip_round_trip {
+                info!("Running round-trip latency test");
+                let round_trip_results = self.run_round_trip_test(&transport_config, results_manager.as_deref_mut())?;
+                results.add_round_trip_results(round_trip_results);
+            }
         }
 
         // Set total benchmark duration
@@ -758,7 +783,11 @@ impl BlockingBenchmarkRunner {
     /// ## Returns
     /// - `Ok(PerformanceMetrics)`: Comprehensive latency and throughput metrics
     /// - `Err(anyhow::Error)`: Test execution failure
-    fn run_one_way_test(&self, transport_config: &TransportConfig) -> Result<PerformanceMetrics> {
+    fn run_one_way_test(
+        &self,
+        transport_config: &TransportConfig,
+        results_manager: Option<&mut crate::results_blocking::BlockingResultsManager>,
+    ) -> Result<PerformanceMetrics> {
         let mut metrics_collector =
             MetricsCollector::new(Some(LatencyType::OneWay), self.config.percentiles.clone())?;
 
@@ -771,7 +800,7 @@ impl BlockingBenchmarkRunner {
 
         // For blocking mode, we only implement single-threaded execution
         // Multi-threaded execution can be added in future if needed
-        self.run_single_threaded_one_way(transport_config, &mut metrics_collector)?;
+        self.run_single_threaded_one_way(transport_config, &mut metrics_collector, results_manager)?;
 
         Ok(metrics_collector.get_metrics())
     }
@@ -800,6 +829,7 @@ impl BlockingBenchmarkRunner {
     fn run_round_trip_test(
         &self,
         transport_config: &TransportConfig,
+        results_manager: Option<&mut crate::results_blocking::BlockingResultsManager>,
     ) -> Result<PerformanceMetrics> {
         let mut metrics_collector = MetricsCollector::new(
             Some(LatencyType::RoundTrip),
@@ -814,7 +844,7 @@ impl BlockingBenchmarkRunner {
         }
 
         // For blocking mode, we only implement single-threaded execution
-        self.run_single_threaded_round_trip(transport_config, &mut metrics_collector)?;
+        self.run_single_threaded_round_trip(transport_config, &mut metrics_collector, results_manager)?;
 
         Ok(metrics_collector.get_metrics())
     }
@@ -851,6 +881,7 @@ impl BlockingBenchmarkRunner {
         &self,
         transport_config: &TransportConfig,
         metrics_collector: &mut MetricsCollector,
+        mut results_manager: Option<&mut crate::results_blocking::BlockingResultsManager>,
     ) -> Result<()> {
         let mut client_transport = BlockingTransportFactory::create(&self.mechanism)?;
 
@@ -895,7 +926,6 @@ impl BlockingBenchmarkRunner {
 
         let payload = vec![0u8; self.config.message_size];
         let start_time = Instant::now();
-        let mut latencies = Vec::new();
 
         if let Some(duration) = self.config.duration {
             // Duration-based test
@@ -913,7 +943,23 @@ impl BlockingBenchmarkRunner {
 
                 match client_transport.send_blocking(&message) {
                     Ok(_) => {
-                        latencies.push(send_time.elapsed());
+                        let latency = send_time.elapsed();
+                        
+                        // Stream latency if enabled
+                        if let Some(ref mut manager) = results_manager {
+                            let record = crate::results::MessageLatencyRecord::new(
+                                i,
+                                self.mechanism,
+                                self.config.message_size,
+                                crate::metrics::LatencyType::OneWay,
+                                latency,
+                            );
+                            let _ = manager.stream_latency_record(&record);
+                        }
+                        
+                        // Record in metrics collector
+                        metrics_collector.record_message(self.config.message_size, Some(latency))?;
+                        
                         i += 1;
                         if let Some(delay) = self.config.send_delay {
                             std::thread::sleep(delay);
@@ -935,21 +981,31 @@ impl BlockingBenchmarkRunner {
                 let send_time = Instant::now();
                 let message = Message::new(i as u64, payload.clone(), MessageType::OneWay);
                 client_transport.send_blocking(&message)?;
+                
+                let latency = send_time.elapsed();
 
                 // Only record latency for measured messages
                 if i > 0 || self.config.include_first_message {
-                    latencies.push(send_time.elapsed());
+                    // Stream latency if enabled
+                    if let Some(ref mut manager) = results_manager {
+                        let record = crate::results::MessageLatencyRecord::new(
+                            i as u64,
+                            self.mechanism,
+                            self.config.message_size,
+                            crate::metrics::LatencyType::OneWay,
+                            latency,
+                        );
+                        let _ = manager.stream_latency_record(&record);
+                    }
+                    
+                    // Record in metrics collector
+                    metrics_collector.record_message(self.config.message_size, Some(latency))?;
                 }
 
                 if let Some(delay) = self.config.send_delay {
                     std::thread::sleep(delay);
                 }
             }
-        }
-
-        // Record all latencies in metrics collector
-        for latency in latencies {
-            metrics_collector.record_message(self.config.message_size, Some(latency))?;
         }
 
         // --- Cleanup ---
@@ -986,6 +1042,7 @@ impl BlockingBenchmarkRunner {
         &self,
         transport_config: &TransportConfig,
         metrics_collector: &mut MetricsCollector,
+        mut results_manager: Option<&mut crate::results_blocking::BlockingResultsManager>,
     ) -> Result<()> {
         let mut client_transport = BlockingTransportFactory::create(&self.mechanism)?;
 
@@ -1020,7 +1077,6 @@ impl BlockingBenchmarkRunner {
 
         let payload = vec![0u8; self.config.message_size];
         let start_time = Instant::now();
-        let mut latencies = Vec::new();
 
         if let Some(duration) = self.config.duration {
             // Duration-based test
@@ -1040,13 +1096,28 @@ impl BlockingBenchmarkRunner {
 
                 match client_transport.send_blocking(&message) {
                     Ok(_) => {
-                        i += 1;
                         if let Some(delay) = self.config.send_delay {
                             std::thread::sleep(delay);
                         }
                         if client_transport.receive_blocking().is_ok() {
-                            latencies.push(send_time.elapsed());
+                            let latency = send_time.elapsed();
+                            
+                            // Stream latency if enabled
+                            if let Some(ref mut manager) = results_manager {
+                                let record = crate::results::MessageLatencyRecord::new(
+                                    i,
+                                    self.mechanism,
+                                    self.config.message_size,
+                                    crate::metrics::LatencyType::RoundTrip,
+                                    latency,
+                                );
+                                let _ = manager.stream_latency_record(&record);
+                            }
+                            
+                            // Record in metrics collector
+                            metrics_collector.record_message(self.config.message_size, Some(latency))?;
                         }
+                        i += 1;
                     }
                     Err(_) => break,
                 }
@@ -1070,17 +1141,27 @@ impl BlockingBenchmarkRunner {
                 }
 
                 client_transport.receive_blocking()?;
+                
+                let latency = send_time.elapsed();
 
                 // Only record latency for measured messages
                 if i > 0 || self.config.include_first_message {
-                    latencies.push(send_time.elapsed());
+                    // Stream latency if enabled
+                    if let Some(ref mut manager) = results_manager {
+                        let record = crate::results::MessageLatencyRecord::new(
+                            i as u64,
+                            self.mechanism,
+                            self.config.message_size,
+                            crate::metrics::LatencyType::RoundTrip,
+                            latency,
+                        );
+                        let _ = manager.stream_latency_record(&record);
+                    }
+                    
+                    // Record in metrics collector
+                    metrics_collector.record_message(self.config.message_size, Some(latency))?;
                 }
             }
-        }
-
-        // Record all latencies in metrics collector
-        for latency in latencies {
-            metrics_collector.record_message(self.config.message_size, Some(latency))?;
         }
 
         // --- Cleanup ---

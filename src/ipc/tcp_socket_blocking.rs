@@ -117,6 +117,11 @@ impl BlockingTcpSocket {
                 .accept()
                 .context("Failed to accept connection on TCP socket")?;
 
+            // Disable Nagle's algorithm for low latency
+            stream.set_nodelay(true).context(
+                "Failed to set TCP_NODELAY on accepted connection"
+            )?;
+
             debug!("TCP server accepted connection from: {}", peer_addr);
             self.stream = Some(stream);
             Ok(())
@@ -164,6 +169,12 @@ impl BlockingTransport for BlockingTcpSocket {
                 addr
             )
         })?;
+
+        // Disable Nagle's algorithm for low latency
+        // This prevents TCP from buffering small packets (up to 200ms delay)
+        stream
+            .set_nodelay(true)
+            .context("Failed to set TCP_NODELAY on client connection")?;
 
         debug!("TCP client connected successfully");
 

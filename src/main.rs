@@ -479,7 +479,7 @@ fn run_blocking_mode(args: Args) -> Result<()> {
 
     // Run benchmarks for each selected mechanism
     for &mechanism in &mechanisms {
-        match run_blocking_benchmark_for_mechanism(&config, &mechanism, &args) {
+        match run_blocking_benchmark_for_mechanism(&config, &mechanism, &args, &mut results_manager) {
             Ok(results) => {
                 info!(
                     "Successfully completed benchmark for {} mechanism",
@@ -552,6 +552,7 @@ fn run_blocking_mode(args: Args) -> Result<()> {
 /// * `config` - Benchmark configuration
 /// * `mechanism` - IPC mechanism to test
 /// * `args` - Command-line arguments
+/// * `results_manager` - Results manager for streaming output
 ///
 /// ## Returns
 ///
@@ -561,13 +562,15 @@ fn run_blocking_benchmark_for_mechanism(
     config: &BenchmarkConfig,
     mechanism: &IpcMechanism,
     args: &Args,
+    results_manager: &mut BlockingResultsManager,
 ) -> Result<BenchmarkResults> {
     // Create blocking benchmark runner for this mechanism
     let runner = BlockingBenchmarkRunner::new(config.clone(), *mechanism, args.clone());
 
     // Run the benchmark (this blocks until complete)
+    // Pass results_manager for streaming latency records
     let results = runner
-        .run()
+        .run(Some(results_manager))
         .context(format!("Benchmark failed for {}", mechanism))?;
 
     Ok(results)
