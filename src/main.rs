@@ -663,6 +663,12 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
     loop {
         match transport.receive_blocking() {
             Ok(message) => {
+                // Check for shutdown message (used by PMQ and other queue-based transports)
+                if message.message_type == MessageType::Shutdown {
+                    debug!("Server received shutdown message, exiting cleanly");
+                    break;
+                }
+                
                 // If it's a Request, send a Response back
                 if message.message_type == MessageType::Request {
                     let response = Message::new(message.id, Vec::new(), MessageType::Response);
