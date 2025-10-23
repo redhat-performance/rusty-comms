@@ -666,28 +666,14 @@ impl BlockingBenchmarkRunner {
         }
 
         // Run round-trip latency test if enabled
-        // Note: Some mechanisms in blocking mode don't support bidirectional communication
+        // Note: Shared memory in blocking mode doesn't support bidirectional communication
         if self.config.round_trip {
-            let skip_round_trip = match self.mechanism {
-                IpcMechanism::SharedMemory => {
-                    warn!(
-                        "Shared memory in blocking mode does not support bidirectional \
-                        communication. Skipping round-trip test."
-                    );
-                    true
-                }
-                #[cfg(target_os = "linux")]
-                IpcMechanism::PosixMessageQueue => {
-                    warn!(
-                        "POSIX message queue in blocking mode does not support bidirectional \
-                        communication reliably. Skipping round-trip test."
-                    );
-                    true
-                }
-                _ => false,
-            };
-
-            if !skip_round_trip {
+            if self.mechanism == IpcMechanism::SharedMemory {
+                warn!(
+                    "Shared memory in blocking mode does not support bidirectional \
+                    communication. Skipping round-trip test."
+                );
+            } else {
                 info!("Running round-trip latency test");
                 let round_trip_results = self.run_round_trip_test(&transport_config, results_manager.as_deref_mut())?;
                 results.add_round_trip_results(round_trip_results);
@@ -752,6 +738,16 @@ impl BlockingBenchmarkRunner {
         }
 
         // --- Cleanup ---
+        // For PMQ, send a shutdown message to signal the server to exit
+        #[cfg(target_os = "linux")]
+        if self.mechanism == IpcMechanism::PosixMessageQueue {
+            debug!("Sending shutdown message to PMQ server (warmup)");
+            let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+            let _ = client_transport.send_blocking(&shutdown);
+            // Give server a moment to process shutdown
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        
         client_transport.close_blocking()?;
         server_process
             .wait()
@@ -1009,6 +1005,16 @@ impl BlockingBenchmarkRunner {
         }
 
         // --- Cleanup ---
+        // For PMQ, send a shutdown message to signal the server to exit
+        #[cfg(target_os = "linux")]
+        if self.mechanism == IpcMechanism::PosixMessageQueue {
+            debug!("Sending shutdown message to PMQ server");
+            let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+            let _ = client_transport.send_blocking(&shutdown);
+            // Give server a moment to process shutdown
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        
         client_transport.close_blocking()?;
         server_process
             .wait()
@@ -1165,6 +1171,16 @@ impl BlockingBenchmarkRunner {
         }
 
         // --- Cleanup ---
+        // For PMQ, send a shutdown message to signal the server to exit
+        #[cfg(target_os = "linux")]
+        if self.mechanism == IpcMechanism::PosixMessageQueue {
+            debug!("Sending shutdown message to PMQ server (round-trip)");
+            let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+            let _ = client_transport.send_blocking(&shutdown);
+            // Give server a moment to process shutdown
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        
         client_transport.close_blocking()?;
         server_process
             .wait()

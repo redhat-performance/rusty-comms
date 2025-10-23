@@ -212,6 +212,14 @@ pub enum MessageType {
     /// Used for pure round-trip latency measurement with minimal
     /// processing overhead.
     Pong,
+
+    /// Shutdown message (signals client completion)
+    ///
+    /// Special control message sent by the client to signal that
+    /// all test messages have been sent and the server should
+    /// terminate gracefully. Only used by mechanisms that lack
+    /// connection-based semantics (e.g., POSIX Message Queues).
+    Shutdown,
 }
 
 impl Message {
