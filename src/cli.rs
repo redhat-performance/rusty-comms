@@ -339,6 +339,15 @@ pub struct Args {
     /// (Internal) Specifies the exact name for the POSIX Message Queue.
     #[arg(long, hide = true)]
     pub message_queue_name: Option<String>,
+
+    /// (Internal) File path for server to write measured latencies.
+    ///
+    /// Used internally when spawning the server process to communicate
+    /// server-side latency measurements back to the client. The server calculates
+    /// true IPC latency by comparing receive time to the timestamp embedded in
+    /// each message, matching the methodology used by the C benchmarks.
+    #[arg(long, hide = true)]
+    pub internal_latency_file: Option<String>,
 }
 
 // Affinity parsing tests live in the tests module below

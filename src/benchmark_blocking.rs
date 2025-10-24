@@ -323,6 +323,28 @@ impl BlockingBenchmarkRunner {
         &self,
         transport_config: &TransportConfig,
     ) -> Result<(std::process::Child, PipeReader)> {
+        self.spawn_server_process_with_latency_file(transport_config, None)
+    }
+
+    /// Spawn the server process with optional latency file for true IPC measurement
+    ///
+    /// This variant allows passing a latency file path to the server, enabling
+    /// server-side latency calculation that matches the C benchmark methodology.
+    ///
+    /// ## Parameters
+    ///
+    /// - `transport_config`: Transport configuration
+    /// - `latency_file_path`: Optional path for server to write measured latencies
+    ///
+    /// ## Returns
+    ///
+    /// - `Ok((Child, PipeReader))`: Spawned process and ready signal pipe
+    /// - `Err(anyhow::Error)`: Spawn failure
+    pub fn spawn_server_process_with_latency_file(
+        &self,
+        transport_config: &TransportConfig,
+        latency_file_path: Option<&str>,
+    ) -> Result<(std::process::Child, PipeReader)> {
         let (reader, writer) =
             os_pipe::pipe().context("Failed to create OS pipe for server signaling")?;
 
@@ -447,6 +469,11 @@ impl BlockingBenchmarkRunner {
         if self.mechanism == IpcMechanism::PosixMessageQueue {
             cmd.arg("--pmq-priority")
                 .arg(self.config.pmq_priority.to_string());
+        }
+
+        // Add latency file path if provided (for true IPC measurement)
+        if let Some(path) = latency_file_path {
+            cmd.arg("--internal-latency-file").arg(path);
         }
 
         debug!("Spawning blocking server process with command: {:?}", cmd);
@@ -855,15 +882,18 @@ impl BlockingBenchmarkRunner {
     ///
     /// 1. **Server Setup**: Spawn server process, wait for readiness signal
     /// 2. **Client Setup**: Create client transport and connect
-    /// 3. **Data Collection**: Send messages and measure latencies
-    /// 4. **Metrics Processing**: Record latencies in MetricsCollector
+    /// 3. **Data Collection**: Send messages (server measures latencies)
+    /// 4. **Metrics Processing**: Read server-measured latencies from file
     /// 5. **Cleanup**: Close transport and wait for server to exit
     ///
     /// ## Timing Methodology
     ///
-    /// Each message transmission is timed individually using high-precision
-    /// timestamps. The latency is measured from just before the send call
-    /// to just after it completes, capturing the actual transmission time.
+    /// TRUE IPC latency measurement matching C benchmark methodology:
+    /// - Client embeds timestamp in message when sending
+    /// - Server calculates latency = receive_time - message.timestamp
+    /// - Server writes latencies to file
+    /// - Client reads latencies from file after server completes
+    /// This measures actual IPC transit time, not just buffer copy time.
     ///
     /// ## Duration vs Iteration Modes
     ///
@@ -881,8 +911,17 @@ impl BlockingBenchmarkRunner {
     ) -> Result<()> {
         let mut client_transport = BlockingTransportFactory::create(&self.mechanism)?;
 
+        // Create a temporary file for server to write latencies
+        let latency_file_path = std::env::temp_dir()
+            .join(format!("ipc_benchmark_latencies_{}.txt", Uuid::new_v4()))
+            .to_string_lossy()
+            .to_string();
+
         // --- Server Process Spawning ---
-        let (mut server_process, mut pipe_reader) = self.spawn_server_process(transport_config)?;
+        let (mut server_process, mut pipe_reader) = self.spawn_server_process_with_latency_file(
+            transport_config,
+            Some(&latency_file_path),
+        )?;
 
         // Wait for the server to signal that it's ready
         let mut buf = [0; 1];
@@ -923,6 +962,7 @@ impl BlockingBenchmarkRunner {
         let payload = vec![0u8; self.config.message_size];
         let start_time = Instant::now();
 
+        // Client just sends messages - server measures and records latencies
         if let Some(duration) = self.config.duration {
             // Duration-based test
             let mut i = 0u64;
@@ -934,28 +974,10 @@ impl BlockingBenchmarkRunner {
             }
 
             while start_time.elapsed() < duration {
-                let send_time = Instant::now();
                 let message = Message::new(i, payload.clone(), MessageType::OneWay);
 
                 match client_transport.send_blocking(&message) {
                     Ok(_) => {
-                        let latency = send_time.elapsed();
-                        
-                        // Stream latency if enabled
-                        if let Some(ref mut manager) = results_manager {
-                            let record = crate::results::MessageLatencyRecord::new(
-                                i,
-                                self.mechanism,
-                                self.config.message_size,
-                                crate::metrics::LatencyType::OneWay,
-                                latency,
-                            );
-                            let _ = manager.stream_latency_record(&record);
-                        }
-                        
-                        // Record in metrics collector
-                        metrics_collector.record_message(self.config.message_size, Some(latency))?;
-                        
                         i += 1;
                         if let Some(delay) = self.config.send_delay {
                             std::thread::sleep(delay);
@@ -974,29 +996,8 @@ impl BlockingBenchmarkRunner {
             };
 
             for i in 0..iterations {
-                let send_time = Instant::now();
                 let message = Message::new(i as u64, payload.clone(), MessageType::OneWay);
                 client_transport.send_blocking(&message)?;
-                
-                let latency = send_time.elapsed();
-
-                // Only record latency for measured messages
-                if i > 0 || self.config.include_first_message {
-                    // Stream latency if enabled
-                    if let Some(ref mut manager) = results_manager {
-                        let record = crate::results::MessageLatencyRecord::new(
-                            i as u64,
-                            self.mechanism,
-                            self.config.message_size,
-                            crate::metrics::LatencyType::OneWay,
-                            latency,
-                        );
-                        let _ = manager.stream_latency_record(&record);
-                    }
-                    
-                    // Record in metrics collector
-                    metrics_collector.record_message(self.config.message_size, Some(latency))?;
-                }
 
                 if let Some(delay) = self.config.send_delay {
                     std::thread::sleep(delay);
@@ -1020,6 +1021,41 @@ impl BlockingBenchmarkRunner {
             .wait()
             .context("Server process exited with an error")?;
 
+        // --- Read server-measured latencies from file ---
+        debug!("Reading server-measured latencies from: {}", latency_file_path);
+        use std::io::{BufRead, BufReader};
+        let file = std::fs::File::open(&latency_file_path)
+            .context("Failed to open latency file")?;
+        let reader = BufReader::new(file);
+        
+        for (i, line) in reader.lines().enumerate() {
+            let line = line.context("Failed to read line from latency file")?;
+            let latency_ns: u64 = line.parse()
+                .with_context(|| format!("Failed to parse latency from line: {}", line))?;
+            
+            let latency = std::time::Duration::from_nanos(latency_ns);
+            
+            // Record in metrics collector
+            metrics_collector.record_message(self.config.message_size, Some(latency))?;
+            
+            // Stream latency if enabled
+            if let Some(ref mut manager) = results_manager {
+                let record = crate::results::MessageLatencyRecord::new(
+                    i as u64,
+                    self.mechanism,
+                    self.config.message_size,
+                    crate::metrics::LatencyType::OneWay,
+                    latency,
+                );
+                let _ = manager.stream_latency_record(&record);
+            }
+        }
+
+        debug!("Successfully read and recorded server-measured latencies");
+        
+        // Clean up temporary latency file
+        let _ = std::fs::remove_file(&latency_file_path);
+        
         Ok(())
     }
 

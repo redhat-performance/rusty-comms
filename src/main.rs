@@ -659,10 +659,28 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
         .context("Failed to write server ready byte to stdout")?;
     io::stdout().flush().ok();
 
+    // Open latency file for writing if specified
+    let mut latency_file = if let Some(ref path) = args.internal_latency_file {
+        Some(std::fs::File::create(path)
+            .with_context(|| format!("Failed to create latency file: {}", path))?)
+    } else {
+        None
+    };
+
     // Persistent server loop: receive messages and optionally reply
     loop {
         match transport.receive_blocking() {
             Ok(message) => {
+                // Calculate actual IPC latency: receive_time - send_time
+                let receive_time_ns = time::OffsetDateTime::now_utc().unix_timestamp_nanos() as u64;
+                let latency_ns = receive_time_ns.saturating_sub(message.timestamp);
+                
+                // Write latency to file if enabled (one latency per line in nanoseconds)
+                if let Some(ref mut file) = latency_file {
+                    use std::io::Write;
+                    writeln!(file, "{}", latency_ns).ok();
+                }
+                
                 // Check for shutdown message (used by PMQ and other queue-based transports)
                 if message.message_type == MessageType::Shutdown {
                     debug!("Server received shutdown message, exiting cleanly");
@@ -831,6 +849,14 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
         .context("Failed to write server ready byte to stdout")?;
     io::stdout().flush().ok();
 
+    // Open latency file for writing if specified
+    let mut latency_file = if let Some(ref path) = args.internal_latency_file {
+        Some(tokio::fs::File::create(path).await
+            .with_context(|| format!("Failed to create latency file: {}", path))?)
+    } else {
+        None
+    };
+
     // Persistent server loop: receive messages and optionally reply to
     // round-trip patterns. Exit cleanly on disconnect or receive error.
     loop {
@@ -838,6 +864,16 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
         // client disconnects) are observed and the server can exit cleanly.
         match transport.receive().await {
             Ok(msg) => {
+                // Calculate actual IPC latency: receive_time - send_time
+                let receive_time_ns = time::OffsetDateTime::now_utc().unix_timestamp_nanos() as u64;
+                let latency_ns = receive_time_ns.saturating_sub(msg.timestamp);
+                
+                // Write latency to file if enabled (one latency per line in nanoseconds)
+                if let Some(ref mut file) = latency_file {
+                    use tokio::io::AsyncWriteExt;
+                    let _ = file.write_all(format!("{}\n", latency_ns).as_bytes()).await;
+                }
+                
                 // Message received
                 match msg.message_type {
                     MessageType::Request => {
