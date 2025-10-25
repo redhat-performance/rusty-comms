@@ -30,7 +30,7 @@ fn pmq_round_trip_blocking_smoke() -> Result<()> {
         BlockingBenchmarkRunner::new(config, IpcMechanism::PosixMessageQueue, args.clone());
 
     // Run blocking benchmark (blocks until complete - no .await)
-    let _results = runner.run()?;
+    let _results = runner.run(None)?;
 
     Ok(())
 }
@@ -55,7 +55,7 @@ fn pmq_one_way_blocking_smoke() -> Result<()> {
     let runner =
         BlockingBenchmarkRunner::new(config, IpcMechanism::PosixMessageQueue, args.clone());
 
-    let _results = runner.run()?;
+    let _results = runner.run(None)?;
     Ok(())
 }
 
@@ -82,7 +82,7 @@ fn pmq_blocking_various_sizes() -> Result<()> {
         let runner =
             BlockingBenchmarkRunner::new(config, IpcMechanism::PosixMessageQueue, args.clone());
 
-        runner.run()?;
+        runner.run(None)?;
     }
     Ok(())
 }
@@ -107,7 +107,7 @@ fn pmq_blocking_with_priority() -> Result<()> {
     let runner =
         BlockingBenchmarkRunner::new(config, IpcMechanism::PosixMessageQueue, args.clone());
 
-    let _results = runner.run()?;
+    let _results = runner.run(None)?;
     Ok(())
 }
 

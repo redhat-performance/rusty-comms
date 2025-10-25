@@ -1238,6 +1238,22 @@ mod tests {
 
     // ===== Existing Tests =====
 
+    /// Test message size comparison with C program
+    #[test]
+    fn test_message_size_comparison_with_c() {
+        // Test with 100 bytes payload like C program
+        let payload = vec![0u8; 100];
+        let msg = Message::new(1, payload, MessageType::OneWay);
+        
+        let serialized = bincode::serialize(&msg).unwrap();
+        
+        println!("\n=== Message Size Analysis ===");
+        println!("Payload size: 100 bytes");
+        println!("Bincode serialized size: {} bytes", serialized.len());
+        println!("  C program struct size: 116 bytes (100 + 16 for timespec)");
+        println!("  Difference: {} bytes", serialized.len() as i32 - 116);
+    }
+
     /// Test message creation and basic functionality
     #[test]
     fn test_message_creation() {

@@ -112,6 +112,7 @@ fn main() -> Result<()> {
         socket_path: None,
         shared_memory_name: None,
         message_queue_name: None,
+        internal_latency_file: None,
     };
 
     println!("Configuration:");
@@ -131,7 +132,7 @@ fn main() -> Result<()> {
     let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args);
 
     // Run the benchmark - this is a blocking call
-    match runner.run() {
+    match runner.run(None) {
         Ok(results) => {
             println!("\n=== Benchmark Complete ===\n");
 

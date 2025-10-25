@@ -35,7 +35,7 @@ fn tcp_round_trip_blocking_smoke() -> Result<()> {
     let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args.clone());
 
     // Run blocking benchmark (blocks until complete - no .await)
-    let _results = runner.run()?;
+    let _results = runner.run(None)?;
 
     Ok(())
 }
@@ -60,7 +60,7 @@ fn tcp_one_way_blocking_smoke() -> Result<()> {
     let config = BenchmarkConfig::from_args(&args)?;
     let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args.clone());
 
-    let _results = runner.run()?;
+    let _results = runner.run(None)?;
     Ok(())
 }
 
@@ -84,7 +84,7 @@ fn tcp_blocking_various_sizes() -> Result<()> {
         let config = BenchmarkConfig::from_args(&args)?;
         let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args.clone());
 
-        runner.run()?;
+        runner.run(None)?;
     }
     Ok(())
 }

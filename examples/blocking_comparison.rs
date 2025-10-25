@@ -114,7 +114,7 @@ async fn main() -> Result<()> {
     let blocking_runner =
         BlockingBenchmarkRunner::new(blocking_config, IpcMechanism::TcpSocket, blocking_args);
 
-    let blocking_results = blocking_runner.run()?;
+    let blocking_results = blocking_runner.run(None)?;
     let blocking_duration = blocking_start.elapsed();
     println!("  Completed in {:.2}s\n", blocking_duration.as_secs_f64());
 
@@ -292,6 +292,7 @@ fn create_args(
         socket_path: None,
         shared_memory_name: None,
         message_queue_name: None,
+        internal_latency_file: None,
     }
 }
 
