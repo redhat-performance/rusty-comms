@@ -34,7 +34,7 @@ fn blocking_with_cpu_affinity() -> Result<()> {
     let config = BenchmarkConfig::from_args(&args)?;
     let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args.clone());
 
-    let _results = runner.run()?;
+    let _results = runner.run(None)?;
     Ok(())
 }
 
@@ -58,7 +58,7 @@ fn blocking_with_send_delay() -> Result<()> {
     let config = BenchmarkConfig::from_args(&args)?;
     let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args.clone());
 
-    let _results = runner.run()?;
+    let _results = runner.run(None)?;
     Ok(())
 }
 
@@ -81,7 +81,7 @@ fn blocking_both_test_types() -> Result<()> {
     let config = BenchmarkConfig::from_args(&args)?;
     let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args.clone());
 
-    let results = runner.run()?;
+    let results = runner.run(None)?;
 
     // Verify both test types produced results
     assert!(
@@ -116,7 +116,7 @@ fn blocking_result_structure() -> Result<()> {
     let config = BenchmarkConfig::from_args(&args)?;
     let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args.clone());
 
-    let results = runner.run()?;
+    let results = runner.run(None)?;
 
     // Verify result structure
     assert_eq!(results.mechanism, IpcMechanism::TcpSocket);
@@ -159,7 +159,7 @@ fn blocking_error_handling() -> Result<()> {
     let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args.clone());
 
     // This should fail, but we're testing that it fails gracefully
-    let result = runner.run();
+    let result = runner.run(None);
     assert!(result.is_err(), "Should fail with invalid port");
 
     Ok(())
@@ -186,7 +186,7 @@ fn blocking_duration_based() -> Result<()> {
     let config = BenchmarkConfig::from_args(&args)?;
     let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args.clone());
 
-    let results = runner.run()?;
+    let results = runner.run(None)?;
 
     // Should have run for approximately 1 second (allow some overhead)
     assert!(

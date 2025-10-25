@@ -29,7 +29,7 @@ fn shm_one_way_blocking_smoke() -> Result<()> {
     let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::SharedMemory, args.clone());
 
     // Run blocking benchmark (blocks until complete - no .await)
-    let _results = runner.run()?;
+    let _results = runner.run(None)?;
 
     Ok(())
 }
@@ -55,7 +55,7 @@ fn shm_blocking_various_sizes() -> Result<()> {
         let config = BenchmarkConfig::from_args(&args)?;
         let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::SharedMemory, args.clone());
 
-        runner.run()?;
+        runner.run(None)?;
     }
     Ok(())
 }
@@ -79,7 +79,7 @@ fn shm_blocking_with_first_message() -> Result<()> {
     let config = BenchmarkConfig::from_args(&args)?;
     let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::SharedMemory, args.clone());
 
-    let _results = runner.run()?;
+    let _results = runner.run(None)?;
     Ok(())
 }
 
