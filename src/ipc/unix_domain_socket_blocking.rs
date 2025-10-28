@@ -188,8 +188,15 @@ impl BlockingTransport for BlockingUnixDomainSocket {
                  Call start_server_blocking() or start_client_blocking() first.",
         )?;
 
+        // Create a mutable copy to update timestamp right before serialization.
+        // This matches C benchmark methodology where timestamp is captured
+        // immediately before the send syscall, measuring pure IPC transit time.
+        let mut message_with_timestamp = message.clone();
+        message_with_timestamp.set_timestamp_now();
+
         // Serialize message using bincode (same as async version)
-        let serialized = bincode::serialize(message).context("Failed to serialize message")?;
+        let serialized =
+            bincode::serialize(&message_with_timestamp).context("Failed to serialize message")?;
 
         // Send length prefix (4 bytes, little-endian) to match async protocol
         let len_bytes = (serialized.len() as u32).to_le_bytes();
