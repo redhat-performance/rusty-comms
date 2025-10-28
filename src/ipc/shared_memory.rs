@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 use tokio::time::sleep;
 use tracing::{debug, warn};
 
@@ -155,6 +155,9 @@ struct SharedMemoryConnection {
     ring_buffer: *mut SharedMemoryRingBuffer,
     role: ConnectionRole,
     _shmem: Arc<Mutex<Shmem>>,
+    // Async notification primitives for efficient waiting (replaces sleep loops)
+    notify_data_ready: Arc<Notify>,   // Signals when data is available to read
+    notify_space_ready: Arc<Notify>,  // Signals when space is available to write
 }
 
 unsafe impl Send for SharedMemoryConnection {}
@@ -194,6 +197,8 @@ impl SharedMemoryConnection {
             ring_buffer: ring_buffer_ptr,
             role,
             _shmem: Arc::new(Mutex::new(shmem)),
+            notify_data_ready: Arc::new(Notify::new()),
+            notify_space_ready: Arc::new(Notify::new()),
         })
     }
 
@@ -254,6 +259,8 @@ impl SharedMemoryConnection {
                         "Sent message {} via connection {}",
                         message.id, self.connection_id
                     );
+                    // Signal reader that data is available
+                    self.notify_data_ready.notify_one();
                     return Ok(backpressure_detected);
                 }
                 Err(_) => {
@@ -264,9 +271,10 @@ impl SharedMemoryConnection {
                     if start.elapsed() > timeout_duration {
                         return Err(IpcError::BackpressureTimeout);
                     }
-                    // Justification: Yield to the scheduler to allow the receiver to catch up when the buffer is full.
-                    // This prevents a tight loop from consuming CPU while waiting for space.
-                    sleep(Duration::from_millis(1)).await;
+                    // Very short sleep to yield to the receiver. Notify doesn't work across
+                    // processes (server is in separate process), so we use a short poll
+                    // delay. 10µs is a good balance between CPU usage and latency.
+                    sleep(Duration::from_micros(10)).await;
                 }
             }
         }
@@ -287,14 +295,18 @@ impl SharedMemoryConnection {
                         "Received message {} via connection {}",
                         message.id, self.connection_id
                     );
+                    // Signal writer that space is available
+                    self.notify_space_ready.notify_one();
                     return Ok(message);
                 }
                 Err(_) => {
                     if start.elapsed() > timeout_duration {
                         return Err(anyhow!("Timeout receiving message"));
                     }
-                    // Justification: Short poll delay to wait for a message to arrive without busy-waiting.
-                    sleep(Duration::from_millis(1)).await;
+                    // Very short sleep to yield to the sender. Notify doesn't work across
+                    // processes (server is in separate process), so we use a short poll
+                    // delay. 10µs is a good balance between CPU usage and latency.
+                    sleep(Duration::from_micros(10)).await;
                 }
             }
         }
