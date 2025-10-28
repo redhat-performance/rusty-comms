@@ -37,7 +37,7 @@ use ipc_benchmark::{
     benchmark::{BenchmarkConfig, BenchmarkRunner},
     benchmark_blocking::BlockingBenchmarkRunner,
     cli::{Args, IpcMechanism},
-    ipc::{Message, MessageType, TransportFactory},
+    ipc::{get_monotonic_time_ns, Message, MessageType, TransportFactory},
     results::{BenchmarkResults, ResultsManager},
     results_blocking::BlockingResultsManager,
 };
@@ -479,7 +479,8 @@ fn run_blocking_mode(args: Args) -> Result<()> {
 
     // Run benchmarks for each selected mechanism
     for &mechanism in &mechanisms {
-        match run_blocking_benchmark_for_mechanism(&config, &mechanism, &args, &mut results_manager) {
+        match run_blocking_benchmark_for_mechanism(&config, &mechanism, &args, &mut results_manager)
+        {
             Ok(results) => {
                 info!(
                     "Successfully completed benchmark for {} mechanism",
@@ -661,8 +662,10 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
 
     // Open latency file for writing if specified
     let mut latency_file = if let Some(ref path) = args.internal_latency_file {
-        Some(std::fs::File::create(path)
-            .with_context(|| format!("Failed to create latency file: {}", path))?)
+        Some(
+            std::fs::File::create(path)
+                .with_context(|| format!("Failed to create latency file: {}", path))?,
+        )
     } else {
         None
     };
@@ -672,21 +675,23 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
         match transport.receive_blocking() {
             Ok(message) => {
                 // Calculate actual IPC latency: receive_time - send_time
-                let receive_time_ns = time::OffsetDateTime::now_utc().unix_timestamp_nanos() as u64;
+                // Use monotonic clock to match C benchmark methodology and avoid
+                // NTP adjustments affecting measurements
+                let receive_time_ns = get_monotonic_time_ns();
                 let latency_ns = receive_time_ns.saturating_sub(message.timestamp);
-                
+
                 // Write latency to file if enabled (one latency per line in nanoseconds)
                 if let Some(ref mut file) = latency_file {
                     use std::io::Write;
                     writeln!(file, "{}", latency_ns).ok();
                 }
-                
+
                 // Check for shutdown message (used by PMQ and other queue-based transports)
                 if message.message_type == MessageType::Shutdown {
                     debug!("Server received shutdown message, exiting cleanly");
                     break;
                 }
-                
+
                 // If it's a Request, send a Response back
                 if message.message_type == MessageType::Request {
                     let response = Message::new(message.id, Vec::new(), MessageType::Response);
@@ -851,8 +856,11 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
 
     // Open latency file for writing if specified
     let mut latency_file = if let Some(ref path) = args.internal_latency_file {
-        Some(tokio::fs::File::create(path).await
-            .with_context(|| format!("Failed to create latency file: {}", path))?)
+        Some(
+            tokio::fs::File::create(path)
+                .await
+                .with_context(|| format!("Failed to create latency file: {}", path))?,
+        )
     } else {
         None
     };
@@ -865,15 +873,17 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
         match transport.receive().await {
             Ok(msg) => {
                 // Calculate actual IPC latency: receive_time - send_time
-                let receive_time_ns = time::OffsetDateTime::now_utc().unix_timestamp_nanos() as u64;
+                // Use monotonic clock to match C benchmark methodology and avoid
+                // NTP adjustments affecting measurements
+                let receive_time_ns = get_monotonic_time_ns();
                 let latency_ns = receive_time_ns.saturating_sub(msg.timestamp);
-                
+
                 // Write latency to file if enabled (one latency per line in nanoseconds)
                 if let Some(ref mut file) = latency_file {
                     use tokio::io::AsyncWriteExt;
                     let _ = file.write_all(format!("{}\n", latency_ns).as_bytes()).await;
                 }
-                
+
                 // Message received
                 match msg.message_type {
                     MessageType::Request => {

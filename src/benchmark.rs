@@ -974,6 +974,7 @@ impl BenchmarkRunner {
     /// - Server calculates latency = receive_time - message.timestamp
     /// - Server writes latencies to file
     /// - Client reads latencies from file after server completes
+    ///
     /// This measures actual IPC transit time, not just buffer copy time.
     ///
     /// ## Duration vs Iteration Modes
@@ -990,15 +991,16 @@ impl BenchmarkRunner {
 
         // Create a temporary file for server to write latencies
         let latency_file_path = std::env::temp_dir()
-            .join(format!("ipc_benchmark_latencies_async_{}.txt", Uuid::new_v4()))
+            .join(format!(
+                "ipc_benchmark_latencies_async_{}.txt",
+                Uuid::new_v4()
+            ))
             .to_string_lossy()
             .to_string();
 
         // --- Server Process Spawning ---
-        let (mut server_process, mut pipe_reader) = self.spawn_server_process_with_latency_file(
-            transport_config,
-            Some(&latency_file_path),
-        )?;
+        let (mut server_process, mut pipe_reader) = self
+            .spawn_server_process_with_latency_file(transport_config, Some(&latency_file_path))?;
 
         // Wait for the server to signal that it's ready by reading one byte from the pipe.
         let mut buf = [0; 1];
@@ -1086,7 +1088,10 @@ port={}",
             .context("Server process exited with an error")?;
 
         // --- Read server-measured latencies from file ---
-        debug!("Reading server-measured latencies from: {}", latency_file_path);
+        debug!(
+            "Reading server-measured latencies from: {}",
+            latency_file_path
+        );
         let file = tokio::fs::File::open(&latency_file_path)
             .await
             .context("Failed to open latency file")?;
@@ -1094,16 +1099,21 @@ port={}",
         use tokio::io::AsyncBufReadExt;
         let mut lines = reader.lines();
         let mut line_num = 0;
-        
-        while let Some(line) = lines.next_line().await.context("Failed to read line from latency file")? {
-            let latency_ns: u64 = line.parse()
+
+        while let Some(line) = lines
+            .next_line()
+            .await
+            .context("Failed to read line from latency file")?
+        {
+            let latency_ns: u64 = line
+                .parse()
                 .with_context(|| format!("Failed to parse latency from line: {}", line))?;
-            
+
             let latency = Duration::from_nanos(latency_ns);
-            
+
             // Record in metrics collector
             metrics_collector.record_message(self.config.message_size, Some(latency))?;
-            
+
             // Stream latency if enabled
             if let Some(ref mut manager) = results_manager {
                 let record = crate::results::MessageLatencyRecord::new(
@@ -1119,10 +1129,10 @@ port={}",
         }
 
         debug!("Successfully read and recorded server-measured latencies");
-        
+
         // Clean up temporary latency file
         let _ = tokio::fs::remove_file(&latency_file_path).await;
-        
+
         Ok(())
     }
 

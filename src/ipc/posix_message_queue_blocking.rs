@@ -272,8 +272,15 @@ impl BlockingTransport for BlockingPosixMessageQueue {
             )
         })?;
 
+        // Create a mutable copy to update timestamp right before serialization.
+        // This matches C benchmark methodology where timestamp is captured
+        // immediately before the send syscall, measuring pure IPC transit time.
+        let mut message_with_timestamp = message.clone();
+        message_with_timestamp.set_timestamp_now();
+
         // Serialize message
-        let serialized = bincode::serialize(message).context("Failed to serialize message")?;
+        let serialized =
+            bincode::serialize(&message_with_timestamp).context("Failed to serialize message")?;
 
         if serialized.len() > self.max_msg_size {
             return Err(anyhow!(

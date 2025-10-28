@@ -81,6 +81,44 @@ pub use unix_domain_socket::UnixDomainSocketTransport;
 #[cfg(unix)]
 pub use unix_domain_socket_blocking::BlockingUnixDomainSocket;
 
+/// Get current monotonic time in nanoseconds.
+///
+/// This function provides access to a monotonic clock (CLOCK_MONOTONIC on Linux)
+/// which is not affected by NTP adjustments or system time changes. This matches
+/// the behavior of the C benchmark programs which use clock_gettime(CLOCK_MONOTONIC).
+///
+/// Monotonic clocks measure time from an arbitrary starting point (typically system
+/// boot) and only move forward, making them ideal for measuring intervals and
+/// latencies without worrying about time adjustments.
+///
+/// ## Returns
+/// Current monotonic time in nanoseconds since an unspecified epoch
+///
+/// ## Platform Support
+/// - **Linux/Unix**: Uses CLOCK_MONOTONIC via nix crate
+/// - **Other platforms**: Falls back to system time (less accurate)
+pub fn get_monotonic_time_ns() -> u64 {
+    #[cfg(unix)]
+    {
+        use nix::time::{clock_gettime, ClockId};
+        match clock_gettime(ClockId::CLOCK_MONOTONIC) {
+            Ok(timespec) => {
+                (timespec.tv_sec() as u64) * 1_000_000_000 + (timespec.tv_nsec() as u64)
+            }
+            Err(_) => {
+                // Fallback to system time if monotonic clock fails
+                OffsetDateTime::now_utc().unix_timestamp_nanos() as u64
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // Non-Unix platforms: fallback to system time
+        // Note: This is less accurate for latency measurement
+        OffsetDateTime::now_utc().unix_timestamp_nanos() as u64
+    }
+}
+
 /// Custom error types for IPC operations.
 #[derive(Error, Debug)]
 pub enum IpcError {
@@ -240,13 +278,65 @@ impl Message {
     ///
     /// The timestamp is captured at creation time using high-precision
     /// system timing, providing the baseline for latency calculations.
+    ///
+    /// ## Note for Blocking Mode
+    ///
+    /// For accurate IPC latency measurement in blocking mode (matching C
+    /// benchmark methodology), use `new_for_blocking()` instead which
+    /// captures the timestamp using a monotonic clock right before
+    /// serialization.
     pub fn new(id: u64, payload: Vec<u8>, message_type: MessageType) -> Self {
         Self {
             id,
-            timestamp: OffsetDateTime::now_utc().unix_timestamp_nanos() as u64,
+            timestamp: get_monotonic_time_ns(),  // Use monotonic clock for both async and blocking
             payload,
             message_type,
         }
+    }
+
+    /// Create a new message for blocking mode with monotonic timestamp
+    ///
+    /// This method creates a message and captures the timestamp using a
+    /// monotonic clock (CLOCK_MONOTONIC on Linux), matching the methodology
+    /// used in C benchmark programs. The monotonic clock is not affected by
+    /// NTP adjustments or system time changes.
+    ///
+    /// ## Parameters
+    /// - `id`: Unique identifier for the message
+    /// - `payload`: Message content as byte vector
+    /// - `message_type`: Type classification for the message
+    ///
+    /// ## Returns
+    /// Message with monotonic timestamp captured at creation time
+    ///
+    /// ## Use Case
+    ///
+    /// This method should be used by blocking transport implementations
+    /// to capture timestamps right before serialization, providing accurate
+    /// IPC latency measurements that exclude serialization overhead from
+    /// the measurement.
+    pub fn new_for_blocking(id: u64, payload: Vec<u8>, message_type: MessageType) -> Self {
+        Self {
+            id,
+            timestamp: get_monotonic_time_ns(),
+            payload,
+            message_type,
+        }
+    }
+
+    /// Update the message timestamp to current monotonic time
+    ///
+    /// This method updates the timestamp field to the current monotonic
+    /// time, which is useful for capturing the timestamp right before
+    /// serialization in blocking transport implementations.
+    ///
+    /// ## Use Case
+    ///
+    /// Used in blocking mode to capture timestamp after message creation
+    /// but right before serialization and transmission, ensuring accurate
+    /// IPC latency measurement.
+    pub fn set_timestamp_now(&mut self) {
+        self.timestamp = get_monotonic_time_ns();
     }
 
     /// Get the message size in bytes
@@ -1244,9 +1334,9 @@ mod tests {
         // Test with 100 bytes payload like C program
         let payload = vec![0u8; 100];
         let msg = Message::new(1, payload, MessageType::OneWay);
-        
+
         let serialized = bincode::serialize(&msg).unwrap();
-        
+
         println!("\n=== Message Size Analysis ===");
         println!("Payload size: 100 bytes");
         println!("Bincode serialized size: {} bytes", serialized.len());

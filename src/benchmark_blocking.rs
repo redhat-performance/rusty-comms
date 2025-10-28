@@ -688,7 +688,8 @@ impl BlockingBenchmarkRunner {
         // Run one-way latency test if enabled
         if self.config.one_way {
             info!("Running one-way latency test");
-            let one_way_results = self.run_one_way_test(&transport_config, results_manager.as_deref_mut())?;
+            let one_way_results =
+                self.run_one_way_test(&transport_config, results_manager.as_deref_mut())?;
             results.add_one_way_results(one_way_results);
         }
 
@@ -702,7 +703,8 @@ impl BlockingBenchmarkRunner {
                 );
             } else {
                 info!("Running round-trip latency test");
-                let round_trip_results = self.run_round_trip_test(&transport_config, results_manager.as_deref_mut())?;
+                let round_trip_results =
+                    self.run_round_trip_test(&transport_config, results_manager)?;
                 results.add_round_trip_results(round_trip_results);
             }
         }
@@ -774,7 +776,7 @@ impl BlockingBenchmarkRunner {
             // Give server a moment to process shutdown
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
-        
+
         client_transport.close_blocking()?;
         server_process
             .wait()
@@ -823,7 +825,11 @@ impl BlockingBenchmarkRunner {
 
         // For blocking mode, we only implement single-threaded execution
         // Multi-threaded execution can be added in future if needed
-        self.run_single_threaded_one_way(transport_config, &mut metrics_collector, results_manager)?;
+        self.run_single_threaded_one_way(
+            transport_config,
+            &mut metrics_collector,
+            results_manager,
+        )?;
 
         Ok(metrics_collector.get_metrics())
     }
@@ -867,7 +873,11 @@ impl BlockingBenchmarkRunner {
         }
 
         // For blocking mode, we only implement single-threaded execution
-        self.run_single_threaded_round_trip(transport_config, &mut metrics_collector, results_manager)?;
+        self.run_single_threaded_round_trip(
+            transport_config,
+            &mut metrics_collector,
+            results_manager,
+        )?;
 
         Ok(metrics_collector.get_metrics())
     }
@@ -893,6 +903,7 @@ impl BlockingBenchmarkRunner {
     /// - Server calculates latency = receive_time - message.timestamp
     /// - Server writes latencies to file
     /// - Client reads latencies from file after server completes
+    ///
     /// This measures actual IPC transit time, not just buffer copy time.
     ///
     /// ## Duration vs Iteration Modes
@@ -918,10 +929,8 @@ impl BlockingBenchmarkRunner {
             .to_string();
 
         // --- Server Process Spawning ---
-        let (mut server_process, mut pipe_reader) = self.spawn_server_process_with_latency_file(
-            transport_config,
-            Some(&latency_file_path),
-        )?;
+        let (mut server_process, mut pipe_reader) = self
+            .spawn_server_process_with_latency_file(transport_config, Some(&latency_file_path))?;
 
         // Wait for the server to signal that it's ready
         let mut buf = [0; 1];
@@ -1015,29 +1024,33 @@ impl BlockingBenchmarkRunner {
             // Give server a moment to process shutdown
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
-        
+
         client_transport.close_blocking()?;
         server_process
             .wait()
             .context("Server process exited with an error")?;
 
         // --- Read server-measured latencies from file ---
-        debug!("Reading server-measured latencies from: {}", latency_file_path);
+        debug!(
+            "Reading server-measured latencies from: {}",
+            latency_file_path
+        );
         use std::io::{BufRead, BufReader};
-        let file = std::fs::File::open(&latency_file_path)
-            .context("Failed to open latency file")?;
+        let file =
+            std::fs::File::open(&latency_file_path).context("Failed to open latency file")?;
         let reader = BufReader::new(file);
-        
+
         for (i, line) in reader.lines().enumerate() {
             let line = line.context("Failed to read line from latency file")?;
-            let latency_ns: u64 = line.parse()
+            let latency_ns: u64 = line
+                .parse()
                 .with_context(|| format!("Failed to parse latency from line: {}", line))?;
-            
+
             let latency = std::time::Duration::from_nanos(latency_ns);
-            
+
             // Record in metrics collector
             metrics_collector.record_message(self.config.message_size, Some(latency))?;
-            
+
             // Stream latency if enabled
             if let Some(ref mut manager) = results_manager {
                 let record = crate::results::MessageLatencyRecord::new(
@@ -1052,10 +1065,10 @@ impl BlockingBenchmarkRunner {
         }
 
         debug!("Successfully read and recorded server-measured latencies");
-        
+
         // Clean up temporary latency file
         let _ = std::fs::remove_file(&latency_file_path);
-        
+
         Ok(())
     }
 
@@ -1143,7 +1156,7 @@ impl BlockingBenchmarkRunner {
                         }
                         if client_transport.receive_blocking().is_ok() {
                             let latency = send_time.elapsed();
-                            
+
                             // Stream latency if enabled
                             if let Some(ref mut manager) = results_manager {
                                 let record = crate::results::MessageLatencyRecord::new(
@@ -1155,9 +1168,10 @@ impl BlockingBenchmarkRunner {
                                 );
                                 let _ = manager.stream_latency_record(&record);
                             }
-                            
+
                             // Record in metrics collector
-                            metrics_collector.record_message(self.config.message_size, Some(latency))?;
+                            metrics_collector
+                                .record_message(self.config.message_size, Some(latency))?;
                         }
                         i += 1;
                     }
@@ -1183,7 +1197,7 @@ impl BlockingBenchmarkRunner {
                 }
 
                 client_transport.receive_blocking()?;
-                
+
                 let latency = send_time.elapsed();
 
                 // Only record latency for measured messages
@@ -1199,7 +1213,7 @@ impl BlockingBenchmarkRunner {
                         );
                         let _ = manager.stream_latency_record(&record);
                     }
-                    
+
                     // Record in metrics collector
                     metrics_collector.record_message(self.config.message_size, Some(latency))?;
                 }
@@ -1216,7 +1230,7 @@ impl BlockingBenchmarkRunner {
             // Give server a moment to process shutdown
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
-        
+
         client_transport.close_blocking()?;
         server_process
             .wait()
