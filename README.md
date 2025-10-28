@@ -87,6 +87,86 @@ Blocking mode uses only the Rust standard library (`std::net`, `std::thread`, `s
 | **High concurrency (>100 connections)** | Async | More efficient resource usage |
 | **Simple request-response** | Either | Similar performance characteristics |
 
+## Latency Measurement Methodology
+
+This benchmark suite uses **high-precision monotonic clocks** to measure true IPC latency, matching the methodology used in C-based benchmark programs. This ensures accurate, reproducible measurements that are immune to system clock adjustments.
+
+### Timing Architecture
+
+#### Clock Source
+
+- **Unix/Linux**: Uses `CLOCK_MONOTONIC` via the nix crate
+- **Windows**: Falls back to system time (less precise)
+- **Characteristics**: Monotonic clocks measure time from system boot and are unaffected by NTP adjustments, daylight saving time, or manual clock changes
+
+#### Timestamp Capture Points
+
+**For One-Way Latency Tests:**
+1. **Send Side**: Timestamp captured **immediately before serialization** in `send_blocking()`
+2. **Receive Side**: Timestamp captured **immediately after receiving** the message
+3. **Latency Calculation**: `receive_time - send_time` (both in nanoseconds)
+
+**For Round-Trip Latency Tests:**
+1. **Client Side**: Timestamp captured before `send_blocking()`
+2. **Server Side**: Receives request, sends response immediately
+3. **Client Side**: Timestamp captured after receiving response
+4. **Latency Calculation**: Total elapsed time from send to receive
+
+### What's Measured
+
+The latency measurements include:
+- ✅ **Pure IPC transit time** (message traveling through the IPC mechanism)
+- ✅ **Serialization overhead** (bincode encoding/decoding)
+- ✅ **Kernel context switches** (for mechanisms like Unix domain sockets)
+- ✅ **Queue/buffer operations** (for message queues and shared memory)
+
+The latency measurements exclude:
+- ❌ Message construction time (before timestamp capture)
+- ❌ Application processing logic
+- ❌ Memory allocation for payloads
+
+### Comparison with C Benchmarks
+
+This implementation matches the timing methodology of reference C benchmarks:
+
+**C Code Pattern:**
+```c
+// Capture timestamp right before send
+clock_gettime(CLOCK_MONOTONIC, &message.start_time);
+mq_send(mq, (const char *)&message, sizeof(message), 0);
+
+// On receive side
+clock_gettime(CLOCK_MONOTONIC, &end);
+latency = (end.tv_sec - message.start_time.tv_sec) * 1e3 + 
+          (end.tv_nsec - message.start_time.tv_nsec) / 1e6;
+```
+
+**Rust Equivalent:**
+```rust
+// Create message with monotonic timestamp right before serialization
+let mut message = message.clone();
+message.set_timestamp_now();  // Uses get_monotonic_time_ns()
+let serialized = bincode::serialize(&message)?;
+stream.write_all(&serialized)?;
+
+// On receive side
+let receive_time_ns = get_monotonic_time_ns();
+let latency_ns = receive_time_ns.saturating_sub(message.timestamp);
+```
+
+### Accuracy Considerations
+
+**Why This Matters:**
+- Previous implementations that captured timestamps during `Message::new()` included unnecessary overhead before IPC operations
+- Using monotonic clocks prevents anomalies from system time adjustments during long-running benchmarks
+- Capturing timestamps right before serialization ensures measurements reflect actual IPC performance
+
+**Expected Latency Ranges** (on modern hardware):
+- Unix Domain Sockets: 2-10 µs
+- TCP Localhost: 5-20 µs  
+- Shared Memory: 1-5 µs
+- POSIX Message Queues: 5-15 µs
+
 ### Performance Comparison Methodology
 
 To fairly compare async vs. blocking performance:
