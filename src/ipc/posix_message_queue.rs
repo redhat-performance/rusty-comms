@@ -539,7 +539,8 @@ impl IpcTransport for PosixMessageQueueTransport {
         let priority = self.config.as_ref().map_or(0, |c| c.pmq_priority);
 
         // Use non-blocking send with exponential backoff for queue-full conditions
-        let mut retry_delay_ms = 1;
+        // Start with microsecond delays for minimal latency impact
+        let mut retry_delay_us = 10;
         let max_retries = 100; // More retries since each one is much faster
 
         for attempt in 0..max_retries {
@@ -586,9 +587,9 @@ impl IpcTransport for PosixMessageQueueTransport {
                         return Err(anyhow!(IpcError::BackpressureTimeout));
                     }
                     // Justification: Short, exponentially increasing delay to wait for space to become available
-                    // in a full queue without busy-waiting.
-                    tokio::time::sleep(Duration::from_millis(retry_delay_ms)).await;
-                    retry_delay_ms = (retry_delay_ms * 2).min(10); // Cap at 10ms for faster throughput
+                    // in a full queue without busy-waiting. Using microseconds for minimal latency impact.
+                    tokio::time::sleep(Duration::from_micros(retry_delay_us)).await;
+                    retry_delay_us = (retry_delay_us * 2).min(100); // Cap at 100µs for faster throughput
                 }
                 Err(e) => {
                     return Err(anyhow!("Failed to send message: {}", e));
@@ -658,7 +659,8 @@ impl IpcTransport for PosixMessageQueueTransport {
         let max_msg_size = self.max_msg_size;
 
         // Use non-blocking receive with exponential backoff for empty queue conditions
-        let mut retry_delay_ms = 1;
+        // Start with microsecond delays for minimal latency impact
+        let mut retry_delay_us = 10;
         let max_retries = 100;
 
         for attempt in 0..max_retries {
@@ -693,9 +695,9 @@ impl IpcTransport for PosixMessageQueueTransport {
                         ));
                     }
                     // Justification: Short, exponentially increasing delay to wait for a message to arrive
-                    // in an empty queue without busy-waiting.
-                    tokio::time::sleep(Duration::from_millis(retry_delay_ms)).await;
-                    retry_delay_ms = (retry_delay_ms * 2).min(10); // Cap at 10ms
+                    // in an empty queue without busy-waiting. Using microseconds for minimal latency impact.
+                    tokio::time::sleep(Duration::from_micros(retry_delay_us)).await;
+                    retry_delay_us = (retry_delay_us * 2).min(100); // Cap at 100µs
                 }
                 Err(e) => {
                     return Err(anyhow!("Failed to receive message: {}", e));

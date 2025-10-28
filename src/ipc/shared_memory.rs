@@ -228,8 +228,9 @@ impl SharedMemoryConnection {
                 return Err(anyhow!("Timeout waiting for peer"));
             }
 
-            // Justification: Short poll delay to wait for the peer to become ready without busy-waiting.
-            sleep(Duration::from_millis(10)).await;
+            // Yield to allow the peer to signal readiness without adding latency.
+            // Use a small delay to avoid busy-waiting during initial handshake.
+            sleep(Duration::from_micros(100)).await;
         }
     }
 
