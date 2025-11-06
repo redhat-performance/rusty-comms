@@ -1178,9 +1178,116 @@ impl BlockingResultsManager {
         if let Some(path) = &self.log_file {
             println!("    Log File:             {}", path);
         }
-
         println!("-----------------------------------------------------------------");
+
+        if self.results.is_empty() {
+            println!("No benchmark results to display.");
+        } else {
+            for result in &self.results {
+                println!("Mechanism: {}", result.mechanism);
+                println!("  Message Size: {} bytes", result.test_config.message_size);
+                println!("  Buffer Size:  {} bytes", result.test_config.buffer_size);
+
+                match &result.status {
+                    crate::results::BenchmarkStatus::Success => {
+                        Self::print_summary_details(result, "  ");
+                    }
+                    crate::results::BenchmarkStatus::Failure(error_msg) => {
+                        println!("  Status: FAILED");
+                        println!("    Error: {}", error_msg);
+                    }
+                }
+                println!("-----------------------------------------------------------------");
+            }
+        }
+
+        std::io::Write::flush(&mut std::io::stdout())?;
         Ok(())
+    }
+
+    /// Helper function to format and print the details from LatencyMetrics.
+    ///
+    /// This function takes latency metrics and prints a formatted summary,
+    /// including mean, P95, P99, min, and max values. It's used to create
+    /// separate, clearly labeled sections for one-way and round-trip latencies.
+    fn print_latency_details(latency: &crate::metrics::LatencyMetrics, indent: &str, title: &str) {
+        let mut p95 = None;
+        let mut p99 = None;
+        for percentile in &latency.percentiles {
+            if (percentile.percentile - 95.0).abs() < 0.1 {
+                p95 = Some(percentile.value_ns);
+            }
+            if (percentile.percentile - 99.0).abs() < 0.1 {
+                p99 = Some(percentile.value_ns);
+            }
+        }
+
+        println!("{}{}:", indent, title);
+        println!(
+            "{}{:<8} Mean: {}, P95: {}, P99: {}",
+            indent,
+            "  ",
+            format_latency(latency.mean_ns as u64),
+            p95.map(format_latency).unwrap_or_else(|| "N/A".to_string()),
+            p99.map(format_latency).unwrap_or_else(|| "N/A".to_string())
+        );
+        println!(
+            "{}{:<8} Min:  {}, Max: {}",
+            indent,
+            "  ",
+            format_latency(latency.min_ns),
+            format_latency(latency.max_ns)
+        );
+    }
+
+    /// Helper function to format and print the details from a BenchmarkResults struct.
+    ///
+    /// This function now prints separate, clearly labeled sections for one-way and
+    /// round-trip latencies if they are present in the results. Throughput and
+    /// total data transfer are printed in their own sections.
+    fn print_summary_details(result: &BenchmarkResults, indent: &str) {
+        if let Some(one_way) = &result.one_way_results {
+            if let Some(latency) = &one_way.latency {
+                Self::print_latency_details(latency, indent, "One-Way Latency");
+            }
+        }
+
+        if let Some(round_trip) = &result.round_trip_results {
+            if let Some(latency) = &round_trip.latency {
+                Self::print_latency_details(latency, indent, "Round-Trip Latency");
+            }
+        }
+
+        let summary = &result.summary;
+
+        println!("{}Throughput:", indent);
+        // Note: The summary field is named _mbps, but the calculation in update_summary
+        // produces MB/s (Megabytes per second). The label reflects the calculation.
+        println!(
+            "{}{:<8} Average: {:.2} MB/s, Peak: {:.2} MB/s",
+            indent, "  ", summary.average_throughput_mbps, summary.peak_throughput_mbps
+        );
+
+        println!("{}Totals:", indent);
+        println!(
+            "{}{:<8} Messages: {}, Data: {:.2} MB",
+            indent,
+            "  ",
+            summary.total_messages_sent,
+            summary.total_bytes_transferred as f64 / (1024.0 * 1024.0)
+        );
+    }
+}
+
+/// Helper function to format latency values (in nanoseconds) into a
+/// human-readable string (us, ms).
+fn format_latency(ns: u64) -> String {
+    if ns >= 1_000_000 {
+        format!("{:.2} ms", ns as f64 / 1_000_000.0)
+    } else if ns >= 1_000 {
+        format!("{:.2} us", ns as f64 / 1_000.0)
+    } else {
+        format!("{} ns", ns)
     }
 }
 
