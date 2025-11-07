@@ -60,6 +60,7 @@ pub mod posix_message_queue;
 pub mod posix_message_queue_blocking;
 pub mod shared_memory;
 pub mod shared_memory_blocking;
+pub mod shared_memory_direct;
 pub mod tcp_socket;
 pub mod tcp_socket_blocking;
 #[cfg(unix)]
@@ -74,6 +75,7 @@ pub use posix_message_queue::PosixMessageQueueTransport;
 #[cfg(target_os = "linux")]
 pub use posix_message_queue_blocking::BlockingPosixMessageQueue;
 pub use shared_memory_blocking::BlockingSharedMemory;
+pub use shared_memory_direct::BlockingSharedMemoryDirect;
 pub use tcp_socket::TcpSocketTransport;
 pub use tcp_socket_blocking::BlockingTcpSocket;
 #[cfg(unix)]
@@ -1265,7 +1267,10 @@ impl BlockingTransportFactory {
                 Ok(Box::new(BlockingUnixDomainSocket::new()))
             }
             crate::cli::IpcMechanism::TcpSocket => Ok(Box::new(BlockingTcpSocket::new())),
-            crate::cli::IpcMechanism::SharedMemory => Ok(Box::new(BlockingSharedMemory::new())),
+            crate::cli::IpcMechanism::SharedMemory => {
+                // Use direct memory implementation for best performance (matches C)
+                Ok(Box::new(BlockingSharedMemoryDirect::new()))
+            }
             #[cfg(target_os = "linux")]
             crate::cli::IpcMechanism::PosixMessageQueue => {
                 Ok(Box::new(BlockingPosixMessageQueue::new()))
