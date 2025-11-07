@@ -35,3 +35,6 @@ echo "2. Server process (if visible) should be on core 4"
 echo "3. Client process should be on core 3"
 
 
+
+
+

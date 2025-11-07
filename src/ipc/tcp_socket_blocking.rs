@@ -193,28 +193,34 @@ impl BlockingTransport for BlockingTcpSocket {
                  Call start_server_blocking() or start_client_blocking() first.",
         )?;
 
-        // Create a mutable copy to update timestamp right before serialization.
-        // This matches C benchmark methodology where timestamp is captured
-        // immediately before the send syscall, measuring pure IPC transit time.
+        // METHODOLOGY CHANGE: Match C benchmark approach where timestamp is captured
+        // immediately before IPC syscall with minimal intervening work.
+        //
+        // Pre-serialize with dummy timestamp to get buffer structure, then update
+        // only the timestamp bytes immediately before send. This ensures any
+        // scheduling delays between timestamp capture and send are included in
+        // the measured latency (matching C programs).
         let mut message_with_timestamp = message.clone();
-        message_with_timestamp.set_timestamp_now();
-
-        // Serialize message using bincode (same as async version)
-        let serialized =
+        message_with_timestamp.timestamp = 0;  // Dummy timestamp for pre-serialization
+        let mut serialized =
             bincode::serialize(&message_with_timestamp).context("Failed to serialize message")?;
 
-        // Send length prefix (4 bytes, little-endian) to match async protocol
+        // Capture timestamp immediately before send and update bytes in buffer
+        message_with_timestamp.set_timestamp_now();
+        let timestamp_bytes = message_with_timestamp.timestamp.to_le_bytes();
+        let ts_offset = Message::timestamp_offset();
+        serialized[ts_offset].copy_from_slice(&timestamp_bytes);
+
+        // Send immediately - no intervening work
         let len_bytes = (serialized.len() as u32).to_le_bytes();
         stream
             .write_all(&len_bytes)
             .context("Failed to write message length")?;
 
-        // Send message data
         stream
             .write_all(&serialized)
             .context("Failed to write message data")?;
 
-        // Flush to ensure data is sent immediately and not buffered
         stream.flush().context("Failed to flush socket")?;
 
         trace!("Message ID {} sent successfully", message.id);

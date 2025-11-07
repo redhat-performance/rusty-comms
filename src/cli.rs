@@ -151,14 +151,14 @@ pub struct Args {
     #[arg(short = 'c', long, default_value_t = crate::defaults::CONCURRENCY, help_heading = CONCURRENCY)]
     pub concurrency: usize,
 
-    /// Pin the server process to a specific CPU core
+    /// Pin the server process to a specific CPU core - the message receiver process
     ///
     /// When provided, the server child process will attempt to set its CPU
     /// affinity to the given core index.
     #[arg(long, value_name = "CORE", help_heading = CONCURRENCY)]
     pub server_affinity: Option<usize>,
 
-    /// Pin the client workload (in the parent process) to a specific CPU core
+    /// Pin the client workload (in the parent process) to a specific CPU core - the message sender process
     ///
     /// When provided, client-side work will be executed in a dedicated thread
     /// bound to the given CPU core.

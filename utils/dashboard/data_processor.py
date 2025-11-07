@@ -177,12 +177,11 @@ class BenchmarkDataProcessor:
                 }
 
                 # Extract throughput data
-                one_way_throughput = result.get("one_way_results", {}).get(
-                    "throughput", {}
-                )
-                round_trip_throughput = result.get(
-                    "round_trip_results", {}
-                ).get("throughput", {})
+                one_way_results = result.get("one_way_results") or {}
+                one_way_throughput = one_way_results.get("throughput", {})
+                
+                round_trip_results = result.get("round_trip_results") or {}
+                round_trip_throughput = round_trip_results.get("throughput", {})
 
                 record = {
                     "mechanism": mechanism,

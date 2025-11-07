@@ -184,7 +184,7 @@ To fairly compare async vs. blocking performance:
 
 2. **Control for system variability:**
    - Run tests on an idle system
-   - Use CPU affinity (`--server-affinity`, `--client-affinity`)
+   - Use CPU affinity (`--server-affinity` for receiver, `--client-affinity` for sender)
    - Run multiple iterations and average results
    - Use warmup iterations (`--warmup-iterations 1000`)
 
@@ -375,14 +375,16 @@ cargo test --all-features
 
 ### CPU affinity controls
 
-You can pin the server and/or client workload to specific CPU cores to reduce jitter and improve reproducibility:
+You can pin the server (message receiver) and/or client (message sender) workload to specific CPU cores to reduce jitter and improve reproducibility:
 
 ```bash
-# Pin server to core 2 and client to core 5
+# Pin server (receiver) to core 2 and client (sender) to core 5
 ipc-benchmark --server-affinity 2 --client-affinity 5 -m uds --msg-count 20000
 ```
 
 Notes:
+- `--server-affinity`: Pins the message **receiver** process to the specified CPU core
+- `--client-affinity`: Pins the message **sender** process to the specified CPU core
 - Affinity is implemented via the `core_affinity` crate. The semantics are best-effort and depend on OS support.
 - On multi-core systems, pinning can reduce cross-core migration and improve latency consistency.
 

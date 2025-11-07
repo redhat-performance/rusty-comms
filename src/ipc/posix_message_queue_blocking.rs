@@ -272,14 +272,16 @@ impl BlockingTransport for BlockingPosixMessageQueue {
             )
         })?;
 
-        // Create a mutable copy to update timestamp right before serialization.
-        // This matches C benchmark methodology where timestamp is captured
-        // immediately before the send syscall, measuring pure IPC transit time.
+        // METHODOLOGY CHANGE: Match C benchmark approach where timestamp is captured
+        // immediately before IPC syscall with minimal intervening work.
+        //
+        // Pre-serialize with dummy timestamp to get buffer structure, then update
+        // only the timestamp bytes immediately before send. This ensures any
+        // scheduling delays between timestamp capture and send are included in
+        // the measured latency (matching C programs).
         let mut message_with_timestamp = message.clone();
-        message_with_timestamp.set_timestamp_now();
-
-        // Serialize message
-        let serialized =
+        message_with_timestamp.timestamp = 0;  // Dummy timestamp for pre-serialization
+        let mut serialized =
             bincode::serialize(&message_with_timestamp).context("Failed to serialize message")?;
 
         if serialized.len() > self.max_msg_size {
@@ -290,7 +292,13 @@ impl BlockingTransport for BlockingPosixMessageQueue {
             ));
         }
 
-        // Send message (blocks until space available or timeout)
+        // Capture timestamp immediately before send and update bytes in buffer
+        message_with_timestamp.set_timestamp_now();
+        let timestamp_bytes = message_with_timestamp.timestamp.to_le_bytes();
+        let ts_offset = Message::timestamp_offset();
+        serialized[ts_offset].copy_from_slice(&timestamp_bytes);
+
+        // Send immediately - no intervening work
         // Use a retry loop with timeouts since mq_send can fail with EAGAIN
         let start = std::time::Instant::now();
         let timeout = Duration::from_secs(5);

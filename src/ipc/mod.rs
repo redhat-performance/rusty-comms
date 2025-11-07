@@ -339,6 +339,35 @@ impl Message {
         self.timestamp = get_monotonic_time_ns();
     }
 
+    /// Get the byte offset of the timestamp field in bincode-serialized buffer
+    ///
+    /// Returns the offset range where the timestamp (u64) is located in
+    /// a bincode-serialized Message. This enables updating the timestamp
+    /// in-place after serialization, minimizing work between timestamp
+    /// capture and IPC syscall (matching C benchmark methodology).
+    ///
+    /// ## Bincode Serialization Layout
+    ///
+    /// ```text
+    /// Offset  Size  Field
+    /// 0       8     id (u64)
+    /// 8       8     timestamp (u64)  ← This is what we return
+    /// 16      N     payload (Vec<u8> with length prefix)
+    /// 16+N    1     message_type (enum as u8)
+    /// ```
+    ///
+    /// ## Returns
+    ///
+    /// Range (8..16) representing the timestamp location in serialized buffer
+    ///
+    /// ## Use Case
+    ///
+    /// Used in blocking transport send_blocking() methods to update timestamp
+    /// immediately before IPC syscall without re-serializing entire message.
+    pub fn timestamp_offset() -> std::ops::Range<usize> {
+        8..16
+    }
+
     /// Get the message size in bytes
     ///
     /// Calculates the approximate serialized size of the message,

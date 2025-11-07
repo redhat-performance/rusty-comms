@@ -44,8 +44,8 @@ This document provides detailed information about configuring the IPC Benchmark 
 | `--verbose` | `-v` | Boolean | `false` | Enable verbose output |
 | `--host` | String | `"127.0.0.1"` | Host address for TCP sockets |
 | `--port` | Number | `8080` | Port for TCP sockets |
-| `--server-affinity` | Number | - | Pin the server process to a CPU core (best effort) |
-| `--client-affinity` | Number | - | Pin the client workload to a CPU core (best effort) |
+| `--server-affinity` | Number | - | Pin the server process (message receiver) to a CPU core (best effort) |
+| `--client-affinity` | Number | - | Pin the client workload (message sender) to a CPU core (best effort) |
 
 ### Examples
 
