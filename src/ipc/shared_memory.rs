@@ -156,8 +156,8 @@ struct SharedMemoryConnection {
     role: ConnectionRole,
     _shmem: Arc<Mutex<Shmem>>,
     // Async notification primitives for efficient waiting (replaces sleep loops)
-    notify_data_ready: Arc<Notify>,   // Signals when data is available to read
-    notify_space_ready: Arc<Notify>,  // Signals when space is available to write
+    notify_data_ready: Arc<Notify>, // Signals when data is available to read
+    notify_space_ready: Arc<Notify>, // Signals when space is available to write
 }
 
 unsafe impl Send for SharedMemoryConnection {}

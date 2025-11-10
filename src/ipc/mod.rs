@@ -290,7 +290,7 @@ impl Message {
     pub fn new(id: u64, payload: Vec<u8>, message_type: MessageType) -> Self {
         Self {
             id,
-            timestamp: get_monotonic_time_ns(),  // Use monotonic clock for both async and blocking
+            timestamp: get_monotonic_time_ns(), // Use monotonic clock for both async and blocking
             payload,
             message_type,
         }
@@ -1268,8 +1268,9 @@ impl BlockingTransportFactory {
             }
             crate::cli::IpcMechanism::TcpSocket => Ok(Box::new(BlockingTcpSocket::new())),
             crate::cli::IpcMechanism::SharedMemory => {
-                // Use direct memory implementation for best performance (matches C)
-                Ok(Box::new(BlockingSharedMemoryDirect::new()))
+                // Use ring buffer implementation (reliable, tested)
+                // Direct memory implementation available but has timing issues with benchmark architecture
+                Ok(Box::new(BlockingSharedMemory::new()))
             }
             #[cfg(target_os = "linux")]
             crate::cli::IpcMechanism::PosixMessageQueue => {

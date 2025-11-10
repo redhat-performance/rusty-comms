@@ -767,13 +767,19 @@ impl BlockingBenchmarkRunner {
         }
 
         // --- Cleanup ---
-        // For PMQ, send a shutdown message to signal the server to exit
+        // For PMQ and SHM, send a shutdown message to signal the server to exit
+        // (These mechanisms don't have a connection to close like sockets)
         #[cfg(target_os = "linux")]
         if self.mechanism == IpcMechanism::PosixMessageQueue {
             debug!("Sending shutdown message to PMQ server (warmup)");
             let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
             let _ = client_transport.send_blocking(&shutdown);
-            // Give server a moment to process shutdown
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        if self.mechanism == IpcMechanism::SharedMemory {
+            debug!("Sending shutdown message to SHM server (warmup)");
+            let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+            let _ = client_transport.send_blocking(&shutdown);
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
@@ -1015,13 +1021,19 @@ impl BlockingBenchmarkRunner {
         }
 
         // --- Cleanup ---
-        // For PMQ, send a shutdown message to signal the server to exit
+        // For PMQ and SHM, send a shutdown message to signal the server to exit
+        // (These mechanisms don't have a connection to close like sockets)
         #[cfg(target_os = "linux")]
         if self.mechanism == IpcMechanism::PosixMessageQueue {
             debug!("Sending shutdown message to PMQ server");
             let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
             let _ = client_transport.send_blocking(&shutdown);
-            // Give server a moment to process shutdown
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        if self.mechanism == IpcMechanism::SharedMemory {
+            debug!("Sending shutdown message to SHM server");
+            let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+            let _ = client_transport.send_blocking(&shutdown);
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
@@ -1221,13 +1233,19 @@ impl BlockingBenchmarkRunner {
         }
 
         // --- Cleanup ---
-        // For PMQ, send a shutdown message to signal the server to exit
+        // For PMQ and SHM, send a shutdown message to signal the server to exit
+        // (These mechanisms don't have a connection to close like sockets)
         #[cfg(target_os = "linux")]
         if self.mechanism == IpcMechanism::PosixMessageQueue {
             debug!("Sending shutdown message to PMQ server (round-trip)");
             let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
             let _ = client_transport.send_blocking(&shutdown);
-            // Give server a moment to process shutdown
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        if self.mechanism == IpcMechanism::SharedMemory {
+            debug!("Sending shutdown message to SHM server (round-trip)");
+            let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+            let _ = client_transport.send_blocking(&shutdown);
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
 

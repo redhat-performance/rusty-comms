@@ -84,16 +84,16 @@ struct SharedMemoryRingBuffer {
 
     // Message count for coordination
     message_count: AtomicUsize,
-    
+
     // Process-shared synchronization primitives (matching C implementation)
     #[cfg(unix)]
     mutex: pthread_mutex_t,
     #[cfg(unix)]
-    data_ready: pthread_cond_t,  // Signals when data is available to read
+    data_ready: pthread_cond_t, // Signals when data is available to read
     #[cfg(unix)]
     space_ready: pthread_cond_t, // Signals when space is available to write
-    
-    // Data follows after this header
+
+                                 // Data follows after this header
 }
 
 impl SharedMemoryRingBuffer {
@@ -104,7 +104,7 @@ impl SharedMemoryRingBuffer {
         #[cfg(unix)]
         unsafe {
             use std::mem::MaybeUninit;
-            
+
             // Initialize mutex with PTHREAD_PROCESS_SHARED attribute
             let mut mutex_attr = MaybeUninit::uninit();
             libc::pthread_mutexattr_init(mutex_attr.as_mut_ptr());
@@ -112,27 +112,24 @@ impl SharedMemoryRingBuffer {
                 mutex_attr.as_mut_ptr(),
                 libc::PTHREAD_PROCESS_SHARED,
             );
-            
+
             let mut mutex = MaybeUninit::uninit();
             libc::pthread_mutex_init(mutex.as_mut_ptr(), mutex_attr.as_ptr());
             libc::pthread_mutexattr_destroy(mutex_attr.as_mut_ptr());
-            
+
             // Initialize condition variables with PTHREAD_PROCESS_SHARED attribute
             let mut cond_attr = MaybeUninit::uninit();
             libc::pthread_condattr_init(cond_attr.as_mut_ptr());
-            libc::pthread_condattr_setpshared(
-                cond_attr.as_mut_ptr(),
-                libc::PTHREAD_PROCESS_SHARED,
-            );
-            
+            libc::pthread_condattr_setpshared(cond_attr.as_mut_ptr(), libc::PTHREAD_PROCESS_SHARED);
+
             let mut data_ready = MaybeUninit::uninit();
             libc::pthread_cond_init(data_ready.as_mut_ptr(), cond_attr.as_ptr());
-            
+
             let mut space_ready = MaybeUninit::uninit();
             libc::pthread_cond_init(space_ready.as_mut_ptr(), cond_attr.as_ptr());
-            
+
             libc::pthread_condattr_destroy(cond_attr.as_mut_ptr());
-            
+
             Self {
                 capacity: AtomicUsize::new(capacity),
                 read_pos: AtomicUsize::new(0),
@@ -146,7 +143,7 @@ impl SharedMemoryRingBuffer {
                 space_ready: space_ready.assume_init(),
             }
         }
-        
+
         #[cfg(not(unix))]
         {
             Self {
@@ -192,6 +189,10 @@ impl SharedMemoryRingBuffer {
     }
 
     /// Write data to the ring buffer (non-blocking, returns error if no space)
+    ///
+    /// Note: This method is currently unused as we've switched to the direct
+    /// memory implementation, but kept for potential future use or testing.
+    #[allow(dead_code)]
     fn write_data(&self, data: &[u8]) -> Result<()> {
         let data_len = data.len();
         let required_space = data_len + 4; // 4 bytes for length prefix
@@ -227,6 +228,10 @@ impl SharedMemoryRingBuffer {
     }
 
     /// Read data from the ring buffer (non-blocking, returns error if no data)
+    ///
+    /// Note: This method is currently unused as we've switched to the direct
+    /// memory implementation, but kept for potential future use or testing.
+    #[allow(dead_code)]
     fn read_data(&self) -> Result<Vec<u8>> {
         if self.available_read_data() < 4 {
             return Err(anyhow!("No data available"));
@@ -267,7 +272,7 @@ impl SharedMemoryRingBuffer {
 
         Ok(data)
     }
-    
+
     /// Write data to the ring buffer (blocking with condition variable).
     ///
     /// This method matches the C implementation using pthread_cond_wait.
@@ -280,10 +285,10 @@ impl SharedMemoryRingBuffer {
     unsafe fn write_data_blocking(&self, data: &[u8]) -> Result<()> {
         let data_len = data.len();
         let required_space = data_len + 4; // 4 bytes for length prefix
-        
+
         // Lock mutex
         libc::pthread_mutex_lock(&self.mutex as *const _ as *mut _);
-        
+
         // Wait for space to become available
         while self.available_write_space() < required_space {
             // Check for shutdown while waiting
@@ -291,43 +296,43 @@ impl SharedMemoryRingBuffer {
                 libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
                 return Err(anyhow!("Connection closed"));
             }
-            
+
             // Wait on condition variable (releases mutex, reacquires on wake)
             libc::pthread_cond_wait(
                 &self.space_ready as *const _ as *mut _,
                 &self.mutex as *const _ as *mut _,
             );
         }
-        
+
         // Space is available, write the data
         let capacity = self.capacity.load(Ordering::Acquire);
         let write_pos = self.write_pos.load(Ordering::Acquire);
         let data_ptr = self.data_ptr();
-        
+
         // Write length prefix (little-endian)
         let len_bytes = (data_len as u32).to_le_bytes();
         for (i, &byte) in len_bytes.iter().enumerate() {
             *data_ptr.add((write_pos + i) % capacity) = byte;
         }
-        
+
         // Write data
         for (i, &byte) in data.iter().enumerate() {
             *data_ptr.add((write_pos + 4 + i) % capacity) = byte;
         }
-        
+
         self.write_pos
             .store((write_pos + required_space) % capacity, Ordering::Release);
         self.message_count.fetch_add(1, Ordering::Release);
-        
+
         // Signal reader that data is available
         libc::pthread_cond_signal(&self.data_ready as *const _ as *mut _);
-        
+
         // Unlock mutex
         libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
-        
+
         Ok(())
     }
-    
+
     /// Read data from the ring buffer (blocking with condition variable).
     ///
     /// This method matches the C implementation using pthread_cond_wait.
@@ -340,7 +345,7 @@ impl SharedMemoryRingBuffer {
     unsafe fn read_data_blocking(&self) -> Result<Vec<u8>> {
         // Lock mutex
         libc::pthread_mutex_lock(&self.mutex as *const _ as *mut _);
-        
+
         // Wait for data to become available
         while self.available_read_data() < 4 {
             // Check for shutdown while waiting
@@ -348,47 +353,51 @@ impl SharedMemoryRingBuffer {
                 libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
                 return Err(anyhow!("Connection closed"));
             }
-            
+
             // Wait on condition variable (releases mutex, reacquires on wake)
             libc::pthread_cond_wait(
                 &self.data_ready as *const _ as *mut _,
                 &self.mutex as *const _ as *mut _,
             );
         }
-        
+
         // Data is available, read it
         let capacity = self.capacity.load(Ordering::Acquire);
         let read_pos = self.read_pos.load(Ordering::Acquire);
         let data_ptr = self.data_ptr();
-        
+
         // Read length prefix
         let mut len_bytes = [0u8; 4];
         for (i, byte) in len_bytes.iter_mut().enumerate() {
             *byte = *data_ptr.add((read_pos + i) % capacity);
         }
         let data_len = u32::from_le_bytes(len_bytes) as usize;
-        
+
         // Validate data length
         if data_len > capacity {
             libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
-            return Err(anyhow!("Invalid data length: {} exceeds capacity {}", data_len, capacity));
+            return Err(anyhow!(
+                "Invalid data length: {} exceeds capacity {}",
+                data_len,
+                capacity
+            ));
         }
-        
+
         // Read data
         let mut data = vec![0u8; data_len];
         for (i, byte) in data.iter_mut().enumerate() {
             *byte = *data_ptr.add((read_pos + 4 + i) % capacity);
         }
-        
+
         self.read_pos
             .store((read_pos + data_len + 4) % capacity, Ordering::Release);
-        
+
         // Signal writer that space is available
         libc::pthread_cond_signal(&self.space_ready as *const _ as *mut _);
-        
+
         // Unlock mutex
         libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
-        
+
         Ok(data)
     }
 }
@@ -628,7 +637,7 @@ impl BlockingTransport for BlockingSharedMemory {
         // scheduling delays between timestamp capture and send are included in
         // the measured latency (matching C programs).
         let mut message_with_timestamp = message.clone();
-        message_with_timestamp.timestamp = 0;  // Dummy timestamp for pre-serialization
+        message_with_timestamp.timestamp = 0; // Dummy timestamp for pre-serialization
         let mut serialized =
             bincode::serialize(&message_with_timestamp).context("Failed to serialize message")?;
 
@@ -648,7 +657,7 @@ impl BlockingTransport for BlockingSharedMemory {
             trace!("Message ID {} sent successfully", message.id);
             Ok(())
         }
-        
+
         #[cfg(not(unix))]
         {
             // Fallback to busy-wait for non-Unix platforms
@@ -663,7 +672,9 @@ impl BlockingTransport for BlockingSharedMemory {
                     }
                     Err(_) => {
                         if start.elapsed() > timeout {
-                            return Err(anyhow!("Timeout: ring buffer full, possible backpressure"));
+                            return Err(anyhow!(
+                                "Timeout: ring buffer full, possible backpressure"
+                            ));
                         }
                         thread::yield_now();
                         thread::sleep(Duration::from_micros(100));
@@ -688,10 +699,8 @@ impl BlockingTransport for BlockingSharedMemory {
 
         // Use condition variable-based blocking read (matches C implementation)
         #[cfg(unix)]
-        let data = unsafe {
-            (*ring_buffer).read_data_blocking()?
-        };
-        
+        let data = unsafe { (*ring_buffer).read_data_blocking()? };
+
         #[cfg(not(unix))]
         let data = loop {
             match unsafe { (*ring_buffer).read_data() } {
@@ -721,14 +730,14 @@ impl BlockingTransport for BlockingSharedMemory {
         if let Some(ring_buffer) = self.ring_buffer {
             unsafe {
                 (*ring_buffer).shutdown.store(true, Ordering::Release);
-                
+
                 // Signal all waiters to wake up and check shutdown flag
                 #[cfg(unix)]
                 {
                     libc::pthread_cond_broadcast(&(*ring_buffer).data_ready as *const _ as *mut _);
                     libc::pthread_cond_broadcast(&(*ring_buffer).space_ready as *const _ as *mut _);
                 }
-                
+
                 // Only destroy synchronization primitives if we're the server
                 // (server created the shared memory)
                 #[cfg(unix)]

@@ -196,7 +196,7 @@ impl BlockingTransport for BlockingUnixDomainSocket {
         // scheduling delays between timestamp capture and send are included in
         // the measured latency (matching C programs).
         let mut message_with_timestamp = message.clone();
-        message_with_timestamp.timestamp = 0;  // Dummy timestamp for pre-serialization
+        message_with_timestamp.timestamp = 0; // Dummy timestamp for pre-serialization
         let mut serialized =
             bincode::serialize(&message_with_timestamp).context("Failed to serialize message")?;
 

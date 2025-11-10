@@ -48,9 +48,10 @@ use tracing::{debug, trace};
 
 /// Maximum payload size in bytes.
 ///
-/// This is set to 100 bytes to match common C benchmark implementations.
-/// Messages with payloads larger than this will be truncated.
-const MAX_PAYLOAD_SIZE: usize = 100;
+/// Set to 8KB to match typical IPC benchmark message sizes.
+/// This is large enough for most tests while keeping shared memory
+/// segments small for reliable cross-process initialization.
+const MAX_PAYLOAD_SIZE: usize = 8192; // 8 KB
 
 /// Raw message structure stored directly in shared memory.
 ///
@@ -85,7 +86,7 @@ const MAX_PAYLOAD_SIZE: usize = 100;
 ///
 /// ```rust,no_run
 /// use ipc_benchmark::ipc::*;
-/// 
+///
 /// # fn example() -> anyhow::Result<()> {
 /// // This struct is typically not used directly.
 /// // Use BlockingSharedMemoryDirect instead.
@@ -99,12 +100,11 @@ struct RawSharedMessage {
     /// Initialized with `PTHREAD_PROCESS_SHARED` to work across processes.
     mutex: libc::pthread_mutex_t,
 
-    /// Condition variable signaling data availability.
+    /// Condition variable for signaling (matches C implementation).
     ///
-    /// Initialized with `PTHREAD_PROCESS_SHARED` to work across processes.
-    /// Receiver waits on this when `ready == 0`.
-    /// Sender signals this when `ready = 1`.
-    data_ready: libc::pthread_cond_t,
+    /// Both sender and receiver wait/signal on this SAME condition variable.
+    /// This is the ping-pong pattern used in the C benchmark.
+    cond: libc::pthread_cond_t,
 
     /// Message identifier (sequential counter).
     id: u64,
@@ -115,10 +115,17 @@ struct RawSharedMessage {
     /// memory, matching C benchmark methodology for accurate latency measurement.
     timestamp: u64,
 
-    /// Fixed-size payload data.
+    /// Actual number of valid bytes in the payload.
     ///
-    /// Maximum 100 bytes. If the source payload is smaller, remaining bytes
-    /// are zeroed. If larger, it's truncated to 100 bytes.
+    /// Only the first `payload_len` bytes of `payload` contain valid data.
+    /// This allows variable-length messages up to MAX_PAYLOAD_SIZE.
+    payload_len: usize,
+
+    /// Fixed-size payload buffer.
+    ///
+    /// Maximum 1MB. Only the first `payload_len` bytes are valid.
+    /// If the source payload is smaller, only those bytes are copied.
+    /// If larger, it's truncated to MAX_PAYLOAD_SIZE.
     payload: [u8; MAX_PAYLOAD_SIZE],
 
     /// Message type (converted from MessageType enum).
@@ -166,65 +173,34 @@ impl RawSharedMessage {
     /// # }
     /// ```
     unsafe fn init(&mut self) -> Result<()> {
-        // Initialize mutex attributes with PTHREAD_PROCESS_SHARED
-        let mut mutex_attr = std::mem::zeroed::<libc::pthread_mutexattr_t>();
-        let ret = libc::pthread_mutexattr_init(&mut mutex_attr);
-        if ret != 0 {
-            return Err(anyhow!("Failed to initialize mutex attributes: {}", ret));
-        }
+        use std::mem::MaybeUninit;
 
-        let ret = libc::pthread_mutexattr_setpshared(&mut mutex_attr, libc::PTHREAD_PROCESS_SHARED);
-        if ret != 0 {
-            libc::pthread_mutexattr_destroy(&mut mutex_attr);
-            return Err(anyhow!(
-                "Failed to set mutex PROCESS_SHARED attribute: {}",
-                ret
-            ));
-        }
+        // Initialize mutex attributes with PTHREAD_PROCESS_SHARED
+        let mut mutex_attr = MaybeUninit::uninit();
+        libc::pthread_mutexattr_init(mutex_attr.as_mut_ptr());
+        libc::pthread_mutexattr_setpshared(mutex_attr.as_mut_ptr(), libc::PTHREAD_PROCESS_SHARED);
 
         // Initialize the mutex
-        let ret = libc::pthread_mutex_init(&mut self.mutex, &mutex_attr);
-        libc::pthread_mutexattr_destroy(&mut mutex_attr);
-        if ret != 0 {
-            return Err(anyhow!("Failed to initialize mutex: {}", ret));
-        }
+        let mut mutex = MaybeUninit::uninit();
+        libc::pthread_mutex_init(mutex.as_mut_ptr(), mutex_attr.as_ptr());
+        libc::pthread_mutexattr_destroy(mutex_attr.as_mut_ptr());
+        self.mutex = mutex.assume_init();
 
-        // Initialize condition variable attributes with PTHREAD_PROCESS_SHARED
-        let mut cond_attr = std::mem::zeroed::<libc::pthread_condattr_t>();
-        let ret = libc::pthread_condattr_init(&mut cond_attr);
-        if ret != 0 {
-            libc::pthread_mutex_destroy(&mut self.mutex);
-            return Err(anyhow!(
-                "Failed to initialize condition variable attributes: {}",
-                ret
-            ));
-        }
+        // Initialize condition variable with PTHREAD_PROCESS_SHARED
+        let mut cond_attr = MaybeUninit::uninit();
+        libc::pthread_condattr_init(cond_attr.as_mut_ptr());
+        libc::pthread_condattr_setpshared(cond_attr.as_mut_ptr(), libc::PTHREAD_PROCESS_SHARED);
 
-        let ret = libc::pthread_condattr_setpshared(&mut cond_attr, libc::PTHREAD_PROCESS_SHARED);
-        if ret != 0 {
-            libc::pthread_condattr_destroy(&mut cond_attr);
-            libc::pthread_mutex_destroy(&mut self.mutex);
-            return Err(anyhow!(
-                "Failed to set condition variable PROCESS_SHARED attribute: {}",
-                ret
-            ));
-        }
+        let mut cond = MaybeUninit::uninit();
+        libc::pthread_cond_init(cond.as_mut_ptr(), cond_attr.as_ptr());
+        libc::pthread_condattr_destroy(cond_attr.as_mut_ptr());
+        self.cond = cond.assume_init();
 
-        // Initialize the condition variable
-        let ret = libc::pthread_cond_init(&mut self.data_ready, &cond_attr);
-        libc::pthread_condattr_destroy(&mut cond_attr);
-        if ret != 0 {
-            libc::pthread_mutex_destroy(&mut self.mutex);
-            return Err(anyhow!(
-                "Failed to initialize condition variable: {}",
-                ret
-            ));
-        }
-
-        // Initialize coordination flag
+        // Initialize coordination flag and payload length
         self.ready = 0;
+        self.payload_len = 0;
 
-        debug!("RawSharedMessage initialized successfully");
+        debug!("RawSharedMessage initialized successfully (mutex + cond var)");
         Ok(())
     }
 
@@ -240,9 +216,9 @@ impl RawSharedMessage {
     /// - Assumes no other threads are using these primitives
     /// - Should only be called once during cleanup
     unsafe fn destroy(&mut self) {
-        libc::pthread_cond_destroy(&mut self.data_ready);
+        libc::pthread_cond_destroy(&mut self.cond);
         libc::pthread_mutex_destroy(&mut self.mutex);
-        debug!("RawSharedMessage destroyed");
+        debug!("RawSharedMessage destroyed (mutex + cond var)");
     }
 }
 
@@ -359,16 +335,17 @@ impl BlockingSharedMemoryDirect {
 }
 
 impl BlockingTransport for BlockingSharedMemoryDirect {
-    fn start_server_blocking(&mut self, _config: &TransportConfig) -> Result<()> {
+    fn start_server_blocking(&mut self, config: &TransportConfig) -> Result<()> {
         debug!(
-            "Starting direct memory SHM server (size: {} bytes)",
-            RawSharedMessage::SIZE
+            "Starting direct memory SHM server (size: {} bytes, name: {})",
+            RawSharedMessage::SIZE,
+            config.shared_memory_name
         );
 
-        // Create shared memory with a known name for client discovery
+        // Create shared memory with unique name from config
         let shmem = ShmemConf::new()
             .size(RawSharedMessage::SIZE)
-            .os_id("ipc_benchmark_direct_shm")
+            .os_id(&config.shared_memory_name)
             .create()
             .context("Failed to create shared memory for direct access")?;
 
@@ -377,8 +354,12 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
         // Initialize the structure
         unsafe {
             let ptr = shmem.as_ptr() as *mut RawSharedMessage;
-            (*ptr).init().context("Failed to initialize RawSharedMessage")?;
+            (*ptr)
+                .init()
+                .context("Failed to initialize RawSharedMessage")?;
         }
+
+        debug!("RawSharedMessage initialized successfully");
 
         self.shmem = Some(SendableShmem(shmem));
         self.is_server = true;
@@ -387,15 +368,41 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
         Ok(())
     }
 
-    fn start_client_blocking(&mut self, _config: &TransportConfig) -> Result<()> {
-        debug!("Starting direct memory SHM client");
+    fn start_client_blocking(&mut self, config: &TransportConfig) -> Result<()> {
+        debug!(
+            "Starting direct memory SHM client (name: {})",
+            config.shared_memory_name
+        );
 
-        // Open existing shared memory using the same OS ID as server
-        let shmem = ShmemConf::new()
-            .size(RawSharedMessage::SIZE)
-            .os_id("ipc_benchmark_direct_shm")
-            .open()
-            .context("Failed to open existing shared memory. Is the server running?")?;
+        // Open existing shared memory with retry loop (matches ring buffer pattern)
+        // The server needs time to create the segment before client can open it
+        let start = std::time::Instant::now();
+        let timeout = std::time::Duration::from_secs(30);
+        let shmem = loop {
+            match ShmemConf::new()
+                .size(RawSharedMessage::SIZE)
+                .os_id(&config.shared_memory_name)
+                .open()
+            {
+                Ok(shm) => {
+                    debug!("Successfully opened shared memory segment");
+                    break shm;
+                }
+                Err(e) => {
+                    if start.elapsed() > timeout {
+                        return Err(anyhow!(
+                            "Timeout opening shared memory '{}' after {:?}. \
+                             Is the server running? Error: {}",
+                            config.shared_memory_name,
+                            timeout,
+                            e
+                        ));
+                    }
+                    // Wait a bit and retry
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            }
+        };
 
         self.shmem = Some(SendableShmem(shmem));
         self.is_server = false;
@@ -416,15 +423,6 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 return Err(anyhow!("Failed to lock mutex: {}", ret));
             }
 
-            // Wait while previous message hasn't been consumed
-            while (*ptr).ready == 1 {
-                let ret = libc::pthread_cond_wait(&mut (*ptr).data_ready, &mut (*ptr).mutex);
-                if ret != 0 {
-                    libc::pthread_mutex_unlock(&mut (*ptr).mutex);
-                    return Err(anyhow!("Failed to wait on condition variable: {}", ret));
-                }
-            }
-
             // CRITICAL: Capture timestamp immediately before write (matches C methodology)
             let timestamp_ns = crate::ipc::get_monotonic_time_ns();
 
@@ -433,30 +431,77 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
             (*ptr).timestamp = timestamp_ns;
             (*ptr).message_type = message.message_type as u32;
 
-            // Copy payload (fixed size, like C's strcpy/memcpy)
+            // Copy only the actual payload bytes (variable length)
             let len = message.payload.len().min(MAX_PAYLOAD_SIZE);
+            (*ptr).payload_len = len;
             std::ptr::copy_nonoverlapping(
                 message.payload.as_ptr(),
                 (*ptr).payload.as_mut_ptr(),
                 len,
             );
-            // Zero remaining bytes if payload < MAX_PAYLOAD_SIZE
-            if len < MAX_PAYLOAD_SIZE {
-                std::ptr::write_bytes(
-                    (*ptr).payload.as_mut_ptr().add(len),
-                    0,
-                    MAX_PAYLOAD_SIZE - len,
-                );
-            }
 
-            // Set ready flag (like C's ready = 1)
+            // Set ready flag and signal (matches C sender pattern)
             (*ptr).ready = 1;
-
-            // Signal receiver that data is ready
-            let ret = libc::pthread_cond_signal(&mut (*ptr).data_ready);
+            let ret = libc::pthread_cond_signal(&mut (*ptr).cond);
             if ret != 0 {
                 libc::pthread_mutex_unlock(&mut (*ptr).mutex);
                 return Err(anyhow!("Failed to signal condition variable: {}", ret));
+            }
+
+            // Wait while receiver hasn't consumed the message (C pattern)
+            // Use timed wait to avoid deadlock if receiver isn't ready yet
+            let timeout = std::time::Duration::from_secs(5);
+            let deadline = std::time::SystemTime::now() + timeout;
+
+            while (*ptr).ready == 1 {
+                // Convert deadline to timespec
+                let now = std::time::SystemTime::now();
+                let remaining = deadline
+                    .duration_since(now)
+                    .unwrap_or(std::time::Duration::ZERO);
+
+                if remaining.is_zero() {
+                    libc::pthread_mutex_unlock(&mut (*ptr).mutex);
+                    return Err(anyhow!(
+                        "Timeout waiting for receiver to consume message. \
+                         Is the server process receiving messages?"
+                    ));
+                }
+
+                let timespec = libc::timespec {
+                    tv_sec: remaining.as_secs() as libc::time_t,
+                    tv_nsec: remaining.subsec_nanos() as libc::c_long,
+                };
+
+                let mut abs_timeout = libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                };
+                libc::clock_gettime(libc::CLOCK_REALTIME, &mut abs_timeout);
+                abs_timeout.tv_sec += timespec.tv_sec;
+                abs_timeout.tv_nsec += timespec.tv_nsec;
+                if abs_timeout.tv_nsec >= 1_000_000_000 {
+                    abs_timeout.tv_sec += 1;
+                    abs_timeout.tv_nsec -= 1_000_000_000;
+                }
+
+                let ret =
+                    libc::pthread_cond_timedwait(&mut (*ptr).cond, &mut (*ptr).mutex, &abs_timeout);
+
+                if ret == libc::ETIMEDOUT {
+                    // Timeout occurred, but check the flag again in case it was just set
+                    if (*ptr).ready == 1 {
+                        libc::pthread_mutex_unlock(&mut (*ptr).mutex);
+                        return Err(anyhow!(
+                            "Timeout waiting for receiver to consume message. \
+                             Is the server process receiving messages?"
+                        ));
+                    }
+                    break;
+                } else if ret != 0 {
+                    libc::pthread_mutex_unlock(&mut (*ptr).mutex);
+                    return Err(anyhow!("Failed to wait on condition variable: {}", ret));
+                }
             }
 
             // Unlock mutex
@@ -482,9 +527,9 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 return Err(anyhow!("Failed to lock mutex: {}", ret));
             }
 
-            // Wait for data to be ready
+            // Wait for data to be ready (matches C receiver pattern)
             while (*ptr).ready == 0 {
-                let ret = libc::pthread_cond_wait(&mut (*ptr).data_ready, &mut (*ptr).mutex);
+                let ret = libc::pthread_cond_wait(&mut (*ptr).cond, &mut (*ptr).mutex);
                 if ret != 0 {
                     libc::pthread_mutex_unlock(&mut (*ptr).mutex);
                     return Err(anyhow!("Failed to wait on condition variable: {}", ret));
@@ -495,20 +540,19 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
             let id = (*ptr).id;
             let timestamp = (*ptr).timestamp;
             let message_type = (*ptr).message_type;
+            let payload_len = (*ptr).payload_len;
 
-            // Copy payload
-            let mut payload = vec![0u8; MAX_PAYLOAD_SIZE];
+            // Copy only the valid payload bytes (variable length)
+            let mut payload = vec![0u8; payload_len];
             std::ptr::copy_nonoverlapping(
                 (*ptr).payload.as_ptr(),
                 payload.as_mut_ptr(),
-                MAX_PAYLOAD_SIZE,
+                payload_len,
             );
 
-            // Clear ready flag (like C's ready = 0)
+            // Clear ready flag and signal (matches C receiver pattern)
             (*ptr).ready = 0;
-
-            // Signal sender that space is available
-            let ret = libc::pthread_cond_signal(&mut (*ptr).data_ready);
+            let ret = libc::pthread_cond_signal(&mut (*ptr).cond);
             if ret != 0 {
                 libc::pthread_mutex_unlock(&mut (*ptr).mutex);
                 return Err(anyhow!("Failed to signal condition variable: {}", ret));
@@ -580,12 +624,16 @@ mod tests {
 
     #[test]
     fn test_raw_message_size() {
-        // Verify the struct size is reasonable
-        // Actual size may vary based on platform and alignment
+        // Verify the struct size is reasonable (with 1MB payload buffer)
+        // Without pthread_cond, size is reduced
         let size = RawSharedMessage::SIZE;
+        // Size should be close to 1MB (payload) + ~100 bytes overhead (mutex + metadata)
+        let expected_min = MAX_PAYLOAD_SIZE;
+        let expected_max = MAX_PAYLOAD_SIZE + 1024; // Allow for mutex, metadata, alignment
         assert!(
-            size >= 200 && size <= 300,
-            "RawSharedMessage size should be between 200-300 bytes, got {}",
+            size >= expected_min && size <= expected_max,
+            "RawSharedMessage size should be around {}MB + overhead, got {} bytes",
+            MAX_PAYLOAD_SIZE / 1024 / 1024,
             size
         );
     }
@@ -619,17 +667,25 @@ mod tests {
     fn test_send_and_receive() {
         use std::thread;
         use std::time::Duration;
+        use uuid::Uuid;
+
+        // Create unique shared memory name for this test
+        let shm_name = format!("test_shm_{}", Uuid::new_v4());
 
         // Start server in background thread
-        let server_handle = thread::spawn(|| {
+        let shm_name_clone = shm_name.clone();
+        let server_handle = thread::spawn(move || {
             let mut server = BlockingSharedMemoryDirect::new();
-            let config = TransportConfig::default();
+            let config = TransportConfig {
+                shared_memory_name: shm_name_clone,
+                ..Default::default()
+            };
             server.start_server_blocking(&config).unwrap();
 
             // Receive message
             let msg = server.receive_blocking().unwrap();
             assert_eq!(msg.id, 42);
-            assert_eq!(msg.payload.len(), MAX_PAYLOAD_SIZE);
+            assert_eq!(msg.payload.len(), 100); // We sent 100 bytes
             assert_eq!(&msg.payload[0..10], &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
 
             server.close_blocking().unwrap();
@@ -640,7 +696,10 @@ mod tests {
 
         // Client sends message
         let mut client = BlockingSharedMemoryDirect::new();
-        let config = TransportConfig::default();
+        let config = TransportConfig {
+            shared_memory_name: shm_name,
+            ..Default::default()
+        };
         client.start_client_blocking(&config).unwrap();
 
         let mut payload = vec![0u8; 100];
@@ -654,4 +713,3 @@ mod tests {
         server_handle.join().unwrap();
     }
 }
-

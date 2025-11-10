@@ -125,6 +125,21 @@ tail nissan_uds_load_output.txt | grep "Maximum time"
 
 Both should now show similar max latencies (~15-20ms).
 
+## Additional Changes
+
+### Direct Memory Shared Memory Implementation
+
+A new direct memory shared memory implementation (`shared_memory_direct.rs`) was developed to match C-style IPC with:
+- No serialization overhead (direct `memcpy`)
+- Simple mutex + condition variable synchronization
+- Fixed-size `#[repr(C)]` layout
+
+**Status**: Implemented and tested, but **not used by default** due to architectural mismatch with benchmark framework. The implementation uses a strict ping-pong synchronization pattern that requires both sender and receiver to be synchronized, which doesn't work well with the spawn-connect-send pattern used by the benchmark runner.
+
+**Default**: The ring buffer implementation (`shared_memory_blocking.rs`) remains the default for SharedMemory mechanism due to its reliability and compatibility with the benchmark architecture.
+
+**Future**: The direct memory implementation could be made available via a CLI flag or configuration option for users who want C-style performance characteristics.
+
 ## Conclusion
 
 This change proves that both C and Rust have identical IPC performance when measured using the same methodology. The previous difference was due to measurement approach, not implementation efficiency.
@@ -152,4 +167,5 @@ Offset  Size  Field
 - **Con**: Two serializations per message (one dummy, one final)
 
 However, the trade-off is worth it for accurate methodology matching.
+
 
