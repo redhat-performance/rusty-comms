@@ -941,16 +941,17 @@ impl BlockingBenchmarkRunner {
             .to_string_lossy()
             .to_string();
 
+
         // --- Server Process Spawning ---
         let (mut server_process, mut pipe_reader) = self
             .spawn_server_process_with_latency_file(transport_config, Some(&latency_file_path))?;
+
 
         // Wait for the server to signal that it's ready
         let mut buf = [0; 1];
         pipe_reader
             .read_exact(&mut buf)
             .context("Failed to read server ready signal from pipe")?;
-        debug!("Client received server ready signal for one-way test");
 
         // --- Client Logic ---
         // Apply client affinity if specified
@@ -963,7 +964,6 @@ impl BlockingBenchmarkRunner {
                             client_core_id
                         );
                     } else {
-                        debug!("Client thread pinned to core {}", client_core_id);
                     }
                 }
             }
@@ -983,6 +983,7 @@ impl BlockingBenchmarkRunner {
 
         let payload = vec![0u8; self.config.message_size];
         let start_time = Instant::now();
+
 
         // Client just sends messages - server measures and records latencies
         if let Some(duration) = self.config.duration {
@@ -1032,13 +1033,11 @@ impl BlockingBenchmarkRunner {
         // (These mechanisms don't have a connection to close like sockets)
         #[cfg(target_os = "linux")]
         if self.mechanism == IpcMechanism::PosixMessageQueue {
-            debug!("Sending shutdown message to PMQ server");
             let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
             let _ = client_transport.send_blocking(&shutdown);
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         if self.mechanism == IpcMechanism::SharedMemory {
-            debug!("Sending shutdown message to SHM server");
             let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
             let _ = client_transport.send_blocking(&shutdown);
             std::thread::sleep(std::time::Duration::from_millis(50));

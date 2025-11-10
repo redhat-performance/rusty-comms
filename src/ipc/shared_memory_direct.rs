@@ -599,7 +599,8 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
             // Read message data directly from shared memory (no deserialization!)
             let id = (*ptr).id;
             let timestamp = (*ptr).timestamp;
-            let message_type = (*ptr).message_type;
+            let message_type_u32 = (*ptr).message_type;
+            let message_type = <MessageType as From<u32>>::from(message_type_u32);
             let payload_len = (*ptr).payload_len;
 
             // Copy only the valid payload bytes (variable length)
@@ -629,7 +630,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 id,
                 timestamp,
                 payload,
-                message_type: MessageType::from(message_type),
+                message_type,
             }
         };
 

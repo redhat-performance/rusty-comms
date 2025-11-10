@@ -262,6 +262,36 @@ pub enum MessageType {
     Shutdown,
 }
 
+impl From<u32> for MessageType {
+    /// Convert u32 discriminant back to MessageType enum.
+    ///
+    /// This is used by direct memory shared memory implementation to
+    /// deserialize message types from raw memory without serde overhead.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The u32 discriminant value
+    ///
+    /// # Returns
+    ///
+    /// The corresponding MessageType variant, defaulting to OneWay for unknown values
+    fn from(value: u32) -> Self {
+        match value {
+            0 => MessageType::OneWay,
+            1 => MessageType::Request,
+            2 => MessageType::Response,
+            3 => MessageType::Ping,
+            4 => MessageType::Pong,
+            5 => MessageType::Shutdown,
+            _ => {
+                // Default to OneWay for unknown values (shouldn't happen in practice)
+                tracing::warn!("Unknown MessageType discriminant: {}, defaulting to OneWay", value);
+                MessageType::OneWay
+            }
+        }
+    }
+}
+
 impl Message {
     /// Create a new message with the given payload
     ///
