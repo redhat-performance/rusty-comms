@@ -649,7 +649,7 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
         IpcMechanism::All => {}
     }
 
-    let mut transport = BlockingTransportFactory::create(&mechanism)?;
+    let mut transport = BlockingTransportFactory::create(&mechanism, args.shm_direct)?;
     transport
         .start_server_blocking(&transport_config)
         .context("Server failed to start transport")?;

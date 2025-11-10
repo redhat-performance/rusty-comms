@@ -134,11 +134,22 @@ A new direct memory shared memory implementation (`shared_memory_direct.rs`) was
 - Simple mutex + condition variable synchronization
 - Fixed-size `#[repr(C)]` layout
 
-**Status**: Implemented and tested, but **not used by default** due to architectural mismatch with benchmark framework. The implementation uses a strict ping-pong synchronization pattern that requires both sender and receiver to be synchronized, which doesn't work well with the spawn-connect-send pattern used by the benchmark runner.
+**Status**: Implemented with --shm-direct CLI flag, unit tests passing, but **not recommended for production use** yet. The implementation lacks the client-ready handshake that the ring buffer has, causing hangs in full benchmark runs. 
 
-**Default**: The ring buffer implementation (`shared_memory_blocking.rs`) remains the default for SharedMemory mechanism due to its reliability and compatibility with the benchmark architecture.
+**What Works**:
+- Unit tests pass (test_send_and_receive)
+- Direct memory access with no serialization
+- pthread mutex/condition variable synchronization
+- Factory integration with CLI flag
 
-**Future**: The direct memory implementation could be made available via a CLI flag or configuration option for users who want C-style performance characteristics.
+**What Needs Work**:
+- Client-ready handshake (similar to ring buffer's wait_for_peer_ready)
+- Full benchmark integration tests hang after ~10 seconds
+- Server signals ready before client confirms connection
+
+**Default**: The ring buffer implementation (`shared_memory_blocking.rs`) remains the default for SharedMemory mechanism due to its reliability and full benchmark compatibility.
+
+**To Use**: Add `--shm-direct` flag when running with `--blocking -m shm`, but expect timeouts in full benchmarks. Works for unit testing and small message counts.
 
 ## Conclusion
 

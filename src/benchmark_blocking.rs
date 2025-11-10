@@ -428,6 +428,11 @@ impl BlockingBenchmarkRunner {
         // IMPORTANT: Add --blocking flag so the server runs in blocking mode
         cmd.arg("--blocking");
 
+        // Add --shm-direct flag if enabled (for direct memory shared memory)
+        if self.args.shm_direct {
+            cmd.arg("--shm-direct");
+        }
+
         // Add mechanism-specific arguments
         // Use possible_value name (e.g., "tcp") not Display name (e.g., "TCP Socket")
         cmd.arg("-m")
@@ -740,7 +745,8 @@ impl BlockingBenchmarkRunner {
     /// - `Ok(())`: Warmup completed successfully
     /// - `Err(anyhow::Error)`: Warmup failed
     fn run_warmup(&self, transport_config: &TransportConfig) -> Result<()> {
-        let mut client_transport = BlockingTransportFactory::create(&self.mechanism)?;
+        let mut client_transport =
+            BlockingTransportFactory::create(&self.mechanism, self.args.shm_direct)?;
 
         // --- Server Process Spawning ---
         let (mut server_process, mut pipe_reader) = self.spawn_server_process(transport_config)?;
@@ -926,7 +932,8 @@ impl BlockingBenchmarkRunner {
         metrics_collector: &mut MetricsCollector,
         mut results_manager: Option<&mut crate::results_blocking::BlockingResultsManager>,
     ) -> Result<()> {
-        let mut client_transport = BlockingTransportFactory::create(&self.mechanism)?;
+        let mut client_transport =
+            BlockingTransportFactory::create(&self.mechanism, self.args.shm_direct)?;
 
         // Create a temporary file for server to write latencies
         let latency_file_path = std::env::temp_dir()
@@ -1111,7 +1118,8 @@ impl BlockingBenchmarkRunner {
         metrics_collector: &mut MetricsCollector,
         mut results_manager: Option<&mut crate::results_blocking::BlockingResultsManager>,
     ) -> Result<()> {
-        let mut client_transport = BlockingTransportFactory::create(&self.mechanism)?;
+        let mut client_transport =
+            BlockingTransportFactory::create(&self.mechanism, self.args.shm_direct)?;
 
         // --- Server Process Spawning ---
         let (mut server_process, mut pipe_reader) = self.spawn_server_process(transport_config)?;

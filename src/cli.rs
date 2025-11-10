@@ -319,6 +319,39 @@ pub struct Args {
     #[arg(long, default_value_t = false, help_heading = ADVANCED)]
     pub blocking: bool,
 
+    /// [EXPERIMENTAL] Use direct memory implementation for shared memory (blocking mode only).
+    ///
+    /// When this flag is set in blocking mode with SharedMemory mechanism,
+    /// uses a high-performance C-style direct memory implementation instead
+    /// of the ring buffer. This provides:
+    /// - No serialization overhead (direct memcpy)
+    /// - Simple mutex + condition variable synchronization
+    /// - Fixed-size #[repr(C)] layout matching C benchmarks
+    /// - Expected ~3× faster max latency in unit tests
+    ///
+    /// **KNOWN LIMITATIONS:**
+    /// - Lacks client-ready handshake (causes hangs in full benchmarks)
+    /// - Unit tests pass, but integration tests may timeout
+    /// - Requires additional synchronization work for production use
+    /// - Use ring buffer (default) for reliability
+    ///
+    /// Default: false (uses ring buffer implementation)
+    ///
+    /// **Status:** Experimental - Implementation complete but needs client/server
+    /// handshake improvements for benchmark compatibility.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Use direct memory SHM (high performance)
+    /// ipc-benchmark -m shm --blocking --shm-direct
+    ///
+    /// # Use ring buffer SHM (default, reliable)
+    /// ipc-benchmark -m shm --blocking
+    /// ```
+    #[arg(long, default_value_t = false, help_heading = ADVANCED)]
+    pub shm_direct: bool,
+
     /// (Internal) Run the process in server-only mode.
     ///
     /// This is a hidden flag used by the benchmark runner to spawn a child

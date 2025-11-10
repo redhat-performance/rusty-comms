@@ -423,6 +423,42 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 return Err(anyhow!("Failed to lock mutex: {}", ret));
             }
 
+            // Backpressure: Wait if previous message hasn't been consumed yet
+            // This prevents overwriting unread data
+            if (*ptr).ready == 1 {
+                trace!("Waiting for receiver to consume previous message (backpressure)");
+
+                // Use timed wait (5 seconds) to avoid infinite blocking
+                let mut timespec = libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                };
+                libc::clock_gettime(libc::CLOCK_REALTIME, &mut timespec);
+                timespec.tv_sec += 5; // 5 second timeout
+
+                while (*ptr).ready == 1 {
+                    let ret = libc::pthread_cond_timedwait(
+                        &mut (*ptr).cond,
+                        &mut (*ptr).mutex,
+                        &timespec,
+                    );
+
+                    if ret == libc::ETIMEDOUT {
+                        libc::pthread_mutex_unlock(&mut (*ptr).mutex);
+                        return Err(anyhow!(
+                            "Timeout waiting for receiver to consume previous message. \
+                             Is the server process receiving?"
+                        ));
+                    } else if ret != 0 {
+                        // 0 = woken by signal, check ready again
+                        libc::pthread_mutex_unlock(&mut (*ptr).mutex);
+                        return Err(anyhow!("pthread_cond_timedwait failed: {}", ret));
+                    }
+
+                    // Loop back to check ready flag again
+                }
+            }
+
             // CRITICAL: Capture timestamp immediately before write (matches C methodology)
             let timestamp_ns = crate::ipc::get_monotonic_time_ns();
 
@@ -440,7 +476,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 len,
             );
 
-            // Set ready flag and signal (matches C sender pattern)
+            // Set ready flag and signal (fire-and-forget for one-way messaging)
             (*ptr).ready = 1;
             let ret = libc::pthread_cond_signal(&mut (*ptr).cond);
             if ret != 0 {
@@ -448,61 +484,11 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 return Err(anyhow!("Failed to signal condition variable: {}", ret));
             }
 
-            // Wait while receiver hasn't consumed the message (C pattern)
-            // Use timed wait to avoid deadlock if receiver isn't ready yet
-            let timeout = std::time::Duration::from_secs(5);
-            let deadline = std::time::SystemTime::now() + timeout;
-
-            while (*ptr).ready == 1 {
-                // Convert deadline to timespec
-                let now = std::time::SystemTime::now();
-                let remaining = deadline
-                    .duration_since(now)
-                    .unwrap_or(std::time::Duration::ZERO);
-
-                if remaining.is_zero() {
-                    libc::pthread_mutex_unlock(&mut (*ptr).mutex);
-                    return Err(anyhow!(
-                        "Timeout waiting for receiver to consume message. \
-                         Is the server process receiving messages?"
-                    ));
-                }
-
-                let timespec = libc::timespec {
-                    tv_sec: remaining.as_secs() as libc::time_t,
-                    tv_nsec: remaining.subsec_nanos() as libc::c_long,
-                };
-
-                let mut abs_timeout = libc::timespec {
-                    tv_sec: 0,
-                    tv_nsec: 0,
-                };
-                libc::clock_gettime(libc::CLOCK_REALTIME, &mut abs_timeout);
-                abs_timeout.tv_sec += timespec.tv_sec;
-                abs_timeout.tv_nsec += timespec.tv_nsec;
-                if abs_timeout.tv_nsec >= 1_000_000_000 {
-                    abs_timeout.tv_sec += 1;
-                    abs_timeout.tv_nsec -= 1_000_000_000;
-                }
-
-                let ret =
-                    libc::pthread_cond_timedwait(&mut (*ptr).cond, &mut (*ptr).mutex, &abs_timeout);
-
-                if ret == libc::ETIMEDOUT {
-                    // Timeout occurred, but check the flag again in case it was just set
-                    if (*ptr).ready == 1 {
-                        libc::pthread_mutex_unlock(&mut (*ptr).mutex);
-                        return Err(anyhow!(
-                            "Timeout waiting for receiver to consume message. \
-                             Is the server process receiving messages?"
-                        ));
-                    }
-                    break;
-                } else if ret != 0 {
-                    libc::pthread_mutex_unlock(&mut (*ptr).mutex);
-                    return Err(anyhow!("Failed to wait on condition variable: {}", ret));
-                }
-            }
+            // Note: We don't wait for acknowledgment here (unlike strict ping-pong C pattern).
+            // This makes the implementation more forgiving for benchmark architecture where
+            // the receiver may not be waiting yet when the first message is sent.
+            // The receiver will block until ready==1 when it enters receive_blocking().
+            // For backpressure control, we could check ready==1 at the START of next send.
 
             // Unlock mutex
             let ret = libc::pthread_mutex_unlock(&mut (*ptr).mutex);
