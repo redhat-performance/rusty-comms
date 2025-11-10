@@ -140,6 +140,15 @@ struct RawSharedMessage {
     ///
     /// This mimics C's simple flag-based protocol.
     ready: i32,
+
+    /// Client ready flag.
+    ///
+    /// - `0`: Client not connected yet (server should wait)
+    /// - `1`: Client connected and ready (server can proceed)
+    ///
+    /// This provides the handshake that prevents the server from entering
+    /// receive loop before the client has opened the shared memory segment.
+    client_ready: i32,
 }
 
 impl RawSharedMessage {
@@ -196,8 +205,9 @@ impl RawSharedMessage {
         libc::pthread_condattr_destroy(cond_attr.as_mut_ptr());
         self.cond = cond.assume_init();
 
-        // Initialize coordination flag and payload length
+        // Initialize coordination flags and payload length
         self.ready = 0;
+        self.client_ready = 0;
         self.payload_len = 0;
 
         debug!("RawSharedMessage initialized successfully (mutex + cond var)");
@@ -332,6 +342,48 @@ impl BlockingSharedMemoryDirect {
             .0
             .as_ptr() as *mut RawSharedMessage
     }
+
+    /// Wait for the client to signal that it's ready.
+    ///
+    /// This method blocks until the client sets the client_ready flag to 1,
+    /// indicating that it has successfully opened the shared memory segment
+    /// and is ready to communicate.
+    ///
+    /// # Arguments
+    ///
+    /// * `timeout` - Maximum time to wait for client connection
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - Client connected successfully
+    /// * `Err(anyhow::Error)` - Timeout or error waiting for client
+    fn wait_for_client_ready(&self, timeout: std::time::Duration) -> Result<()> {
+        let start = std::time::Instant::now();
+        
+        unsafe {
+            let ptr = self.get_raw_message_ptr();
+            
+            // Poll client_ready flag with short sleeps
+            loop {
+                // Check if client is ready (no mutex needed for reading this flag)
+                if (*ptr).client_ready == 1 {
+                    return Ok(());
+                }
+                
+                // Check timeout
+                if start.elapsed() > timeout {
+                    return Err(anyhow!(
+                        "Timeout waiting for client to connect after {:?}. \
+                         Is the client process running?",
+                        timeout
+                    ));
+                }
+                
+                // Sleep briefly before checking again
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
 }
 
 impl BlockingTransport for BlockingSharedMemoryDirect {
@@ -363,6 +415,10 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
 
         self.shmem = Some(SendableShmem(shmem));
         self.is_server = true;
+
+        // Note: We don't wait for client here because we need to signal ready to parent first
+        // The parent waits for our stdout signal before starting the client
+        // The wait for client_ready will happen in the first send/receive call
 
         debug!("Direct memory SHM server started successfully");
         Ok(())
@@ -407,6 +463,12 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
         self.shmem = Some(SendableShmem(shmem));
         self.is_server = false;
 
+        // Signal to server that client is ready
+        unsafe {
+            let ptr = self.get_raw_message_ptr();
+            (*ptr).client_ready = 1;
+        }
+        
         debug!("Direct memory SHM client started successfully");
         Ok(())
     }
@@ -503,6 +565,18 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
 
     fn receive_blocking(&mut self) -> Result<Message> {
         trace!("Waiting to receive message via direct memory SHM");
+
+        // If we're the server, wait for client to be ready on first receive
+        if self.is_server {
+            unsafe {
+                let ptr = self.get_raw_message_ptr();
+                if (*ptr).client_ready == 0 {
+                    debug!("Waiting for client to connect to shared memory");
+                    self.wait_for_client_ready(std::time::Duration::from_secs(30))?;
+                    debug!("Client connected to shared memory");
+                }
+            }
+        }
 
         let message = unsafe {
             let ptr = self.get_raw_message_ptr();
@@ -633,20 +707,49 @@ mod tests {
 
     #[test]
     fn test_server_initialization() {
-        let mut server = BlockingSharedMemoryDirect::new();
-        let config = TransportConfig::default();
+        use std::thread;
+        use std::time::Duration;
+        use uuid::Uuid;
 
-        let result = server.start_server_blocking(&config);
-        assert!(
-            result.is_ok(),
-            "Server initialization should succeed: {:?}",
-            result
-        );
-        assert!(server.shmem.is_some());
-        assert!(server.is_server);
+        let shm_name = format!("test_shm_init_{}", Uuid::new_v4());
+        let shm_name_clone = shm_name.clone();
 
-        // Cleanup
-        server.close_blocking().unwrap();
+        // Start server in background thread
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingSharedMemoryDirect::new();
+            let config = TransportConfig {
+                shared_memory_name: shm_name_clone,
+                ..Default::default()
+            };
+
+            let result = server.start_server_blocking(&config);
+            assert!(
+                result.is_ok(),
+                "Server initialization should succeed: {:?}",
+                result
+            );
+            assert!(server.shmem.is_some());
+            assert!(server.is_server);
+
+            // Keep server alive briefly then cleanup
+            thread::sleep(Duration::from_millis(100));
+            server.close_blocking().unwrap();
+        });
+
+        // Give server time to start
+        thread::sleep(Duration::from_millis(50));
+
+        // Connect client to unblock server
+        let mut client = BlockingSharedMemoryDirect::new();
+        let config = TransportConfig {
+            shared_memory_name: shm_name,
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+        client.close_blocking().unwrap();
+
+        // Wait for server to finish
+        server_handle.join().unwrap();
     }
 
     #[test]
