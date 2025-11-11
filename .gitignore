@@ -27,6 +27,7 @@ target
 *.test*
 *.swp*
 *.swo*
+*.gz
 
 # Python
 venv/
