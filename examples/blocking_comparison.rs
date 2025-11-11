@@ -265,6 +265,7 @@ fn create_args(
     Args {
         mechanisms: vec![IpcMechanism::TcpSocket],
         blocking,
+        shm_direct: false,
         message_size,
         msg_count,
         one_way: true,

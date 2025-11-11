@@ -1557,6 +1557,7 @@ impl BenchmarkResults {
         concurrency: usize,
         msg_count: Option<usize>,
         duration: Option<Duration>,
+        warmup_iterations: usize,
     ) -> Self {
         let test_config = TestConfiguration {
             message_size,
@@ -1566,7 +1567,7 @@ impl BenchmarkResults {
             duration,
             one_way_enabled: false,
             round_trip_enabled: false,
-            warmup_iterations: 0,
+            warmup_iterations,
             percentiles: vec![50.0, 95.0, 99.0, 99.9],
         };
 
@@ -1886,6 +1887,7 @@ mod tests {
             1,
             Some(1000),
             None,
+            0,
         );
 
         assert_eq!(results.mechanism, IpcMechanism::UnixDomainSocket);

@@ -486,6 +486,7 @@ impl BenchmarkRunner {
             self.config.concurrency,
             self.config.msg_count,
             self.config.duration,
+            self.config.warmup_iterations,
         );
 
         // Run warmup if configured
@@ -1062,12 +1063,14 @@ port={}",
                 }
             } else {
                 let msg_count = client_config.msg_count.unwrap_or_default();
-                let iterations = if client_config.include_first_message {
-                    msg_count
-                } else {
-                    msg_count + 1
-                };
-                for i in 0..iterations {
+                
+                // Send canary message if first message should not be included
+                if !client_config.include_first_message {
+                    let canary = Message::new(u64::MAX, payload.clone(), MessageType::OneWay);
+                    let _ = client_transport.send(&canary).await;
+                }
+                
+                for i in 0..msg_count {
                     let message = Message::new(i as u64, payload.clone(), MessageType::OneWay);
                     let _ = client_transport.send(&message).await?;
                     if let Some(delay) = client_config.send_delay {

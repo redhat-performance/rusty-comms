@@ -63,6 +63,7 @@ fn main() -> Result<()> {
 
         // Enable blocking mode - this is the key flag!
         blocking: true,
+        shm_direct: false,
 
         // Message configuration
         message_size: 1024, // 1 KB messages

@@ -1309,6 +1309,7 @@ mod tests {
             1,          // concurrency
             Some(1000), // msg_count
             None,       // duration
+            0,          // warmup_iterations
         )
     }
 

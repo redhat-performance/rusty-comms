@@ -290,6 +290,7 @@ async fn run_async_mode(args: Args) -> Result<()> {
                         config.concurrency,
                         config.msg_count,
                         config.duration,
+                        config.warmup_iterations,
                     );
                     failed_result.set_failure(error_msg);
                     results_manager.add_results(failed_result).await?;
@@ -516,6 +517,7 @@ fn run_blocking_mode(args: Args) -> Result<()> {
                         config.concurrency,
                         config.msg_count,
                         config.duration,
+                        config.warmup_iterations,
                     );
                     failed_result.set_failure(error_msg);
                     results_manager.add_results(failed_result)?;
@@ -681,9 +683,12 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
                 let latency_ns = receive_time_ns.saturating_sub(message.timestamp);
 
                 // Write latency to file if enabled (one latency per line in nanoseconds)
+                // Skip canary messages (ID == u64::MAX) which are used for warmup
                 if let Some(ref mut file) = latency_file {
-                    use std::io::Write;
-                    writeln!(file, "{}", latency_ns).ok();
+                    if message.id != u64::MAX {
+                        use std::io::Write;
+                        writeln!(file, "{}", latency_ns).ok();
+                    }
                 }
 
                 // Check for shutdown message (used by PMQ and other queue-based transports)
@@ -879,9 +884,12 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
                 let latency_ns = receive_time_ns.saturating_sub(msg.timestamp);
 
                 // Write latency to file if enabled (one latency per line in nanoseconds)
+                // Skip canary messages (ID == u64::MAX) which are used for warmup
                 if let Some(ref mut file) = latency_file {
-                    use tokio::io::AsyncWriteExt;
-                    let _ = file.write_all(format!("{}\n", latency_ns).as_bytes()).await;
+                    if msg.id != u64::MAX {
+                        use tokio::io::AsyncWriteExt;
+                        let _ = file.write_all(format!("{}\n", latency_ns).as_bytes()).await;
+                    }
                 }
 
                 // Message received

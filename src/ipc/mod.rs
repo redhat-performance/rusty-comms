@@ -285,7 +285,10 @@ impl From<u32> for MessageType {
             5 => MessageType::Shutdown,
             _ => {
                 // Default to OneWay for unknown values (shouldn't happen in practice)
-                tracing::warn!("Unknown MessageType discriminant: {}, defaulting to OneWay", value);
+                tracing::warn!(
+                    "Unknown MessageType discriminant: {}, defaulting to OneWay",
+                    value
+                );
                 MessageType::OneWay
             }
         }

@@ -359,17 +359,17 @@ impl BlockingSharedMemoryDirect {
     /// * `Err(anyhow::Error)` - Timeout or error waiting for client
     fn wait_for_client_ready(&self, timeout: std::time::Duration) -> Result<()> {
         let start = std::time::Instant::now();
-        
+
         unsafe {
             let ptr = self.get_raw_message_ptr();
-            
+
             // Poll client_ready flag with short sleeps
             loop {
                 // Check if client is ready (no mutex needed for reading this flag)
                 if (*ptr).client_ready == 1 {
                     return Ok(());
                 }
-                
+
                 // Check timeout
                 if start.elapsed() > timeout {
                     return Err(anyhow!(
@@ -378,7 +378,7 @@ impl BlockingSharedMemoryDirect {
                         timeout
                     ));
                 }
-                
+
                 // Sleep briefly before checking again
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
@@ -468,7 +468,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
             let ptr = self.get_raw_message_ptr();
             (*ptr).client_ready = 1;
         }
-        
+
         debug!("Direct memory SHM client started successfully");
         Ok(())
     }
@@ -660,22 +660,6 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
 impl Default for BlockingSharedMemoryDirect {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl MessageType {
-    /// Convert u32 to MessageType.
-    ///
-    /// Used when reading the message_type field from shared memory.
-    fn from(value: u32) -> Self {
-        match value {
-            0 => MessageType::OneWay,
-            1 => MessageType::Request,
-            2 => MessageType::Response,
-            3 => MessageType::Ping,
-            4 => MessageType::Shutdown,
-            _ => MessageType::OneWay, // Default fallback
-        }
     }
 }
 

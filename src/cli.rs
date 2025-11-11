@@ -340,7 +340,7 @@ pub struct Args {
     /// - **Direct memory (--shm-direct)**: Best latency, minimal overhead
     /// - **Ring buffer (default)**: More flexible, variable-size messages
     ///
-    /// Both implementations are production-ready. Use direct memory for 
+    /// Both implementations are production-ready. Use direct memory for
     /// maximum performance with fixed-size messages, or ring buffer for
     /// more flexibility.
     ///

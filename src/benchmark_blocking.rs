@@ -679,6 +679,7 @@ impl BlockingBenchmarkRunner {
             self.config.concurrency,
             self.config.msg_count,
             self.config.duration,
+            self.config.warmup_iterations,
         );
 
         // Run warmup if configured
@@ -941,11 +942,9 @@ impl BlockingBenchmarkRunner {
             .to_string_lossy()
             .to_string();
 
-
         // --- Server Process Spawning ---
         let (mut server_process, mut pipe_reader) = self
             .spawn_server_process_with_latency_file(transport_config, Some(&latency_file_path))?;
-
 
         // Wait for the server to signal that it's ready
         let mut buf = [0; 1];
@@ -957,14 +956,13 @@ impl BlockingBenchmarkRunner {
         // Apply client affinity if specified
         if let Some(client_core_id) = self.config.client_affinity {
             if let Some(ref core_ids) = self.available_cores {
-                if client_core_id < core_ids.len() {
-                    if !core_affinity::set_for_current(core_ids[client_core_id]) {
-                        warn!(
-                            "Failed to set client thread affinity to core {}",
-                            client_core_id
-                        );
-                    } else {
-                    }
+                if client_core_id < core_ids.len()
+                    && !core_affinity::set_for_current(core_ids[client_core_id])
+                {
+                    warn!(
+                        "Failed to set client thread affinity to core {}",
+                        client_core_id
+                    );
                 }
             }
         }
@@ -983,7 +981,6 @@ impl BlockingBenchmarkRunner {
 
         let payload = vec![0u8; self.config.message_size];
         let start_time = Instant::now();
-
 
         // Client just sends messages - server measures and records latencies
         if let Some(duration) = self.config.duration {
@@ -1012,13 +1009,14 @@ impl BlockingBenchmarkRunner {
         } else {
             // Message-count based test
             let msg_count = self.config.msg_count.unwrap_or_default();
-            let iterations = if self.config.include_first_message {
-                msg_count
-            } else {
-                msg_count + 1
-            };
-
-            for i in 0..iterations {
+            
+            // Send canary message if first message should not be included
+            if !self.config.include_first_message {
+                let canary = Message::new(u64::MAX, payload.clone(), MessageType::OneWay);
+                let _ = client_transport.send_blocking(&canary);
+            }
+            
+            for i in 0..msg_count {
                 let message = Message::new(i as u64, payload.clone(), MessageType::OneWay);
                 client_transport.send_blocking(&message)?;
 
@@ -1200,13 +1198,16 @@ impl BlockingBenchmarkRunner {
         } else {
             // Message-count based test
             let msg_count = self.config.msg_count.unwrap_or_default();
-            let iterations = if self.config.include_first_message {
-                msg_count
-            } else {
-                msg_count + 1
-            };
+            
+            // Send canary message if first message should not be included
+            if !self.config.include_first_message {
+                let canary = Message::new(u64::MAX, payload.clone(), MessageType::Request);
+                if client_transport.send_blocking(&canary).is_ok() {
+                    let _ = client_transport.receive_blocking();
+                }
+            }
 
-            for i in 0..iterations {
+            for i in 0..msg_count {
                 let send_time = Instant::now();
                 let message = Message::new(i as u64, payload.clone(), MessageType::Request);
                 client_transport.send_blocking(&message)?;
@@ -1219,8 +1220,8 @@ impl BlockingBenchmarkRunner {
 
                 let latency = send_time.elapsed();
 
-                // Only record latency for measured messages
-                if i > 0 || self.config.include_first_message {
+                // Record latency for all measured messages
+                if true {
                     // Stream latency if enabled
                     if let Some(ref mut manager) = results_manager {
                         let record = crate::results::MessageLatencyRecord::new(
