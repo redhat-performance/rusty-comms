@@ -77,6 +77,22 @@ fn main() -> Result<()> {
     // Parse CLI arguments to determine execution mode
     let args = Args::parse();
 
+    // Validate flag combinations
+    if args.shm_direct && !args.blocking {
+        return Err(anyhow::anyhow!(
+            "Error: --shm-direct flag requires --blocking mode.\n\
+             \n\
+             The direct memory shared memory implementation is only available in blocking mode.\n\
+             \n\
+             Usage:\n\
+             \n\
+             Correct:   ipc-benchmark -m shm --blocking --shm-direct -i 10000\n\
+             Incorrect: ipc-benchmark -m shm --shm-direct -i 10000\n\
+             \n\
+             For async mode, use the default ring buffer implementation (omit --shm-direct)."
+        ));
+    }
+
     // Branch to appropriate execution path based on mode
     if args.blocking {
         // Blocking mode: use std library with blocking I/O
