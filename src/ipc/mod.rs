@@ -1055,8 +1055,8 @@ impl TransportFactory {
 /// use ipc_benchmark::cli::IpcMechanism;
 ///
 /// # fn example() -> anyhow::Result<()> {
-/// // Create a blocking transport
-/// let mut transport = BlockingTransportFactory::create(&IpcMechanism::TcpSocket)?;
+/// // Create a blocking transport (use false for ring buffer mode)
+/// let mut transport = BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false)?;
 ///
 /// // Configure transport
 /// let config = TransportConfig::default();
@@ -1227,12 +1227,12 @@ pub trait BlockingTransport: Send {
 /// use ipc_benchmark::cli::IpcMechanism;
 ///
 /// # fn example() -> anyhow::Result<()> {
-/// // Create a Unix Domain Socket transport
+/// // Create a Unix Domain Socket transport (ring buffer mode)
 /// # #[cfg(unix)]
-/// let transport = BlockingTransportFactory::create(&IpcMechanism::UnixDomainSocket)?;
+/// let transport = BlockingTransportFactory::create(&IpcMechanism::UnixDomainSocket, false)?;
 ///
-/// // Create a TCP transport
-/// let transport = BlockingTransportFactory::create(&IpcMechanism::TcpSocket)?;
+/// // Create a TCP transport (not applicable for direct memory)
+/// let transport = BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false)?;
 ///
 /// // The returned Box<dyn BlockingTransport> can be used polymorphically
 /// # Ok(())

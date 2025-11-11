@@ -350,6 +350,8 @@ impl BenchmarkConfig {
 /// #     socket_path: None,
 /// #     shared_memory_name: None,
 /// #     message_queue_name: None,
+/// #     internal_latency_file: None,
+/// #     shm_direct: false,
 /// # };
 /// let config = BenchmarkConfig::from_args(&args)?;
 /// #[cfg(unix)]
