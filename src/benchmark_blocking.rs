@@ -1009,13 +1009,13 @@ impl BlockingBenchmarkRunner {
         } else {
             // Message-count based test
             let msg_count = self.config.msg_count.unwrap_or_default();
-            
+
             // Send canary message if first message should not be included
             if !self.config.include_first_message {
                 let canary = Message::new(u64::MAX, payload.clone(), MessageType::OneWay);
                 let _ = client_transport.send_blocking(&canary);
             }
-            
+
             for i in 0..msg_count {
                 let message = Message::new(i as u64, payload.clone(), MessageType::OneWay);
                 client_transport.send_blocking(&message)?;
@@ -1198,7 +1198,7 @@ impl BlockingBenchmarkRunner {
         } else {
             // Message-count based test
             let msg_count = self.config.msg_count.unwrap_or_default();
-            
+
             // Send canary message if first message should not be included
             if !self.config.include_first_message {
                 let canary = Message::new(u64::MAX, payload.clone(), MessageType::Request);
