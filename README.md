@@ -544,6 +544,30 @@ The primary checks are:
 - **Linting**: `cargo clippy --all-targets --all-features -- -D warnings`
 - **Testing**: `cargo test --verbose --all-features`
 
+### Repo-managed pre-commit hooks
+
+This repository maintains its pre-commit checks in `.githooks/pre-commit` so everyone runs the same gates locally.
+
+Enable them once per clone:
+
+```bash
+# Option A: one-liner
+git config core.hooksPath .githooks && chmod +x .githooks/pre-commit
+
+# Option B: helper script
+bash scripts/install-git-hooks.sh
+```
+
+What runs on commit:
+
+- `cargo check`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `cargo fmt -- --check`
+- `cargo test`
+- `scripts/msrv-check.sh` — builds/tests with Rust 1.70 in a container when `podman` or `docker` is available; otherwise it is skipped.
+
+You can run these manually anytime to reproduce the exact gate.
+
 ### Testing
 
 ```bash
