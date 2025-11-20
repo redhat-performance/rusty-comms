@@ -509,6 +509,13 @@ impl BlockingBenchmarkRunner {
         const DURATION_MODE_BUFFER_SIZE: usize = 1_073_741_824; // 1 GB
         const PMQ_SAFE_DEFAULT_BUFFER_SIZE: usize = 8192;
 
+        // Validate port for TCP-based mechanisms
+        if matches!(self.mechanism, IpcMechanism::TcpSocket) && self.config.port == 0 {
+            return Err(anyhow::anyhow!(
+                "Invalid port number: 0. Port must be between 1 and 65535 for TCP connections."
+            ));
+        }
+
         let unique_id = Uuid::new_v4();
         let unique_port = self.config.port + (unique_id.as_u128() as u16 % 1000);
 
@@ -1350,6 +1357,7 @@ mod tests {
             ..Default::default()
         };
         args.host = "127.0.0.1".to_string(); // Explicitly set host
+        args.port = 8080; // Explicitly set port (Default::default() gives 0, not clap default)
 
         let config = BenchmarkConfig::from_args(&args).unwrap();
         let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args.clone());
@@ -1364,13 +1372,14 @@ mod tests {
 
     #[test]
     fn test_spawn_server_includes_blocking_flag() {
-        let args = Args {
+        let mut args = Args {
             mechanisms: vec![IpcMechanism::TcpSocket],
             message_size: 1024,
             msg_count: 10,
             blocking: true,
             ..Default::default()
         };
+        args.port = 8080; // Explicitly set port (Default::default() gives 0, not clap default)
 
         let config = BenchmarkConfig::from_args(&args).unwrap();
         let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args.clone());

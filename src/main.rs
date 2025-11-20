@@ -614,7 +614,7 @@ fn run_blocking_benchmark_for_mechanism(
 /// * `Ok(())` - Server completed successfully
 /// * `Err(anyhow::Error)` - Server setup or execution failed
 fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
-    use ipc_benchmark::ipc::{BlockingTransportFactory, MessageType};
+    use ipc_benchmark::ipc::BlockingTransportFactory;
 
     info!("Running in server-only mode (blocking)");
 
@@ -702,7 +702,6 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
                 // Skip canary messages (ID == u64::MAX) which are used for warmup
                 if let Some(ref mut file) = latency_file {
                     if message.id != u64::MAX {
-                        use std::io::Write;
                         writeln!(file, "{}", latency_ns).ok();
                     }
                 }
