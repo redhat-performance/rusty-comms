@@ -49,6 +49,7 @@ rayon = "=1.7.0"
 rayon-core = "=1.12.1"
 thiserror = "2.0.16"
 tokio-macros = "=2.5.0"  # tokio-macros 2.6.0+ requires Rust 1.71+
+mio = "=1.0.4"  # mio 1.1.0+ requires Rust 1.71+
 core_affinity = "0.8.3"
 os_pipe = "1.1.5"
 
