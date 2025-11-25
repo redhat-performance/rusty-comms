@@ -42,7 +42,7 @@
 
 use crate::ipc::{BlockingTransport, Message, MessageType, TransportConfig};
 use anyhow::{anyhow, Context, Result};
-use nix::libc;
+use libc;
 use shared_memory::{Shmem, ShmemConf};
 use tracing::{debug, trace};
 

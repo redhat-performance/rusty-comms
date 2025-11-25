@@ -603,12 +603,21 @@ impl BlockingBenchmarkRunner {
         };
 
         Ok(TransportConfig {
-            socket_path: if self.mechanism == IpcMechanism::UnixDomainSocket {
-                args.socket_path
-                    .clone()
-                    .unwrap_or_else(|| format!("/tmp/ipc_benchmark_{}.sock", unique_id))
-            } else {
-                String::new()
+            socket_path: {
+                #[cfg(unix)]
+                {
+                    if self.mechanism == IpcMechanism::UnixDomainSocket {
+                        args.socket_path
+                            .clone()
+                            .unwrap_or_else(|| format!("/tmp/ipc_benchmark_{}.sock", unique_id))
+                    } else {
+                        String::new()
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    String::new()
+                }
             },
             host: self.config.host.clone(),
             port: unique_port,
