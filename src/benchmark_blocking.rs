@@ -619,12 +619,21 @@ impl BlockingBenchmarkRunner {
             } else {
                 String::new()
             },
-            message_queue_name: if self.mechanism == IpcMechanism::PosixMessageQueue {
-                args.message_queue_name
-                    .clone()
-                    .unwrap_or_else(|| format!("/ipc_benchmark_{}", unique_id))
-            } else {
-                String::new()
+            message_queue_name: {
+                #[cfg(target_os = "linux")]
+                {
+                    if self.mechanism == IpcMechanism::PosixMessageQueue {
+                        args.message_queue_name
+                            .clone()
+                            .unwrap_or_else(|| format!("/ipc_benchmark_{}", unique_id))
+                    } else {
+                        String::new()
+                    }
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    String::new()
+                }
             },
             buffer_size,
             max_connections: 1,
