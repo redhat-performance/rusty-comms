@@ -60,6 +60,7 @@ pub mod posix_message_queue;
 pub mod posix_message_queue_blocking;
 pub mod shared_memory;
 pub mod shared_memory_blocking;
+#[cfg(unix)]
 pub mod shared_memory_direct;
 pub mod tcp_socket;
 pub mod tcp_socket_blocking;
@@ -75,6 +76,7 @@ pub use posix_message_queue::PosixMessageQueueTransport;
 #[cfg(target_os = "linux")]
 pub use posix_message_queue_blocking::BlockingPosixMessageQueue;
 pub use shared_memory_blocking::BlockingSharedMemory;
+#[cfg(unix)]
 pub use shared_memory_direct::BlockingSharedMemoryDirect;
 pub use tcp_socket::TcpSocketTransport;
 pub use tcp_socket_blocking::BlockingTcpSocket;
@@ -1309,7 +1311,17 @@ impl BlockingTransportFactory {
             crate::cli::IpcMechanism::SharedMemory => {
                 if use_direct_memory {
                     // Direct memory implementation (high performance, C-style)
-                    Ok(Box::new(BlockingSharedMemoryDirect::new()))
+                    #[cfg(unix)]
+                    {
+                        Ok(Box::new(BlockingSharedMemoryDirect::new()))
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        anyhow::bail!(
+                            "Direct memory shared memory (--shm-direct) is only available on Unix platforms. \
+                             Use the default ring buffer implementation (omit --shm-direct) on Windows."
+                        )
+                    }
                 } else {
                     // Ring buffer implementation (reliable, default)
                     Ok(Box::new(BlockingSharedMemory::new()))
@@ -1397,8 +1409,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_factory_creates_shm_direct_transport() {
-        // Direct memory implementation
+        // Direct memory implementation (Unix-only)
         let result =
             BlockingTransportFactory::create(&crate::cli::IpcMechanism::SharedMemory, true);
         assert!(
