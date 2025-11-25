@@ -949,14 +949,14 @@ mod tests {
     #[test]
     fn test_blocking_flag_default_false() {
         // Verify blocking defaults to false (async mode)
-        let args = Args::parse_from(["ipc-benchmark", "-m", "uds"]);
+        let args = Args::parse_from(["ipc-benchmark", "-m", "tcp"]);
         assert!(!args.blocking, "Blocking should default to false");
     }
 
     #[test]
     fn test_blocking_flag_can_be_set() {
         // Verify blocking flag can be enabled
-        let args = Args::parse_from(["ipc-benchmark", "-m", "uds", "--blocking"]);
+        let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "--blocking"]);
         assert!(args.blocking, "Blocking flag should be set");
     }
 
@@ -966,7 +966,7 @@ mod tests {
         let args = Args::parse_from([
             "ipc-benchmark",
             "-m",
-            "uds",
+            "tcp",
             "--blocking",
             "-s",
             "1024",
