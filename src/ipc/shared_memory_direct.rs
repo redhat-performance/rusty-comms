@@ -691,6 +691,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "macos"))] // macOS has 31-char limit on shm names
     fn test_server_initialization() {
         use std::thread;
         use std::time::Duration;
@@ -738,6 +739,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "macos"))] // macOS has 31-char limit on shm names
     fn test_send_and_receive() {
         use std::thread;
         use std::time::Duration;
