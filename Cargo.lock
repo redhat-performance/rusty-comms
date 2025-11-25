@@ -584,6 +584,7 @@ dependencies = [
  "crossbeam",
  "half",
  "hdrhistogram",
+ "libc",
  "lock_api",
  "mio",
  "nix 0.29.0",
