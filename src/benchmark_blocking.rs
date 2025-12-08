@@ -482,6 +482,12 @@ impl BlockingBenchmarkRunner {
             cmd.arg("--internal-latency-file").arg(path);
         }
 
+        // Forward verbose flags to the server for debugging
+        let verbose_count = self.args.verbose;
+        for _ in 0..verbose_count {
+            cmd.arg("-v");
+        }
+
         debug!("Spawning blocking server process with command: {:?}", cmd);
 
         let child = cmd

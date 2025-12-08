@@ -11,7 +11,6 @@ use ipc_benchmark::{cli::Args, BenchmarkConfig, BlockingBenchmarkRunner, IpcMech
 /// Verify PMQ round-trip works end-to-end in blocking mode with a spawned
 /// server process.
 #[test]
-#[ignore] // TODO: Investigate hang in CI (runs >60s)
 fn pmq_round_trip_blocking_smoke() -> Result<()> {
     let args = Args {
         mechanisms: vec![IpcMechanism::PosixMessageQueue],

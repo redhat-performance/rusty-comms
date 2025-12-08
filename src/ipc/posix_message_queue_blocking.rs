@@ -15,10 +15,18 @@
 //! - `mq_send()` blocks if queue is full (with timeout)
 //! - `mq_receive()` blocks until message available (with timeout)
 //!
-//! # Queue Protocol
+//! # Two-Queue Architecture
 //!
-//! Messages are bincode serialized and sent atomically through POSIX message
-//! queues. The kernel preserves message boundaries.
+//! This implementation uses **two separate queues** for bidirectional communication
+//! to avoid race conditions in round-trip scenarios:
+//!
+//! ```text
+//! Client → [Request Queue]  → Server
+//! Client ← [Response Queue] ← Server
+//! ```
+//!
+//! This ensures reliable round-trip communication where the server cannot
+//! accidentally receive its own responses.
 //!
 //! # System Configuration
 //!
@@ -39,10 +47,10 @@
 //! let mut config = TransportConfig::default();
 //! config.message_queue_name = "/test_pmq".to_string();
 //!
-//! // Server: create message queue
+//! // Server: create message queues (creates /test_pmq_req and /test_pmq_resp)
 //! server.start_server_blocking(&config)?;
 //!
-//! // In another process: client opens queue
+//! // In another process: client opens queues
 //! // let mut client = BlockingPosixMessageQueue::new();
 //! // client.start_client_blocking(&config)?;
 //! # Ok(())
@@ -62,11 +70,17 @@ use tracing::{debug, trace, warn};
 /// This struct implements the `BlockingTransport` trait using POSIX message
 /// queues with blocking I/O operations.
 ///
+/// # Two-Queue Design
+///
+/// Uses separate queues for each direction to prevent race conditions:
+/// - **Request Queue** (`{name}_req`): Client sends, Server receives
+/// - **Response Queue** (`{name}_resp`): Server sends, Client receives
+///
 /// # Lifecycle
 ///
 /// 1. Create with `new()`
-/// 2. Initialize as server with `start_server_blocking()` (creates queue) OR
-///    client with `start_client_blocking()` (opens existing queue)
+/// 2. Initialize as server with `start_server_blocking()` (creates both queues) OR
+///    client with `start_client_blocking()` (opens both queues)
 /// 3. Send/receive messages with `send_blocking()` / `receive_blocking()`
 /// 4. Clean up with `close_blocking()`
 ///
@@ -75,11 +89,14 @@ use tracing::{debug, trace, warn};
 /// Only queue creators (servers) unlink queues during cleanup to prevent
 /// premature resource deallocation.
 pub struct BlockingPosixMessageQueue {
-    /// POSIX message queue name (with "/" prefix)
-    queue_name: String,
+    /// Base POSIX message queue name (with "/" prefix)
+    queue_name_base: String,
 
-    /// Message queue file descriptor for I/O operations
-    mq_fd: Option<MqdT>,
+    /// Message queue file descriptor for sending
+    send_fd: Option<MqdT>,
+
+    /// Message queue file descriptor for receiving
+    recv_fd: Option<MqdT>,
 
     /// Maximum size of individual messages in bytes
     max_msg_size: usize,
@@ -87,7 +104,7 @@ pub struct BlockingPosixMessageQueue {
     /// Maximum number of messages that can be queued
     max_msg_count: usize,
 
-    /// Whether this instance created the queue (server)
+    /// Whether this instance created the queues (server)
     is_creator: bool,
 
     /// Message priority for sends (0-31, higher = higher priority)
@@ -116,8 +133,9 @@ impl BlockingPosixMessageQueue {
     /// ```
     pub fn new() -> Self {
         Self {
-            queue_name: String::new(),
-            mq_fd: None,
+            queue_name_base: String::new(),
+            send_fd: None,
+            recv_fd: None,
             max_msg_size: 8192,
             max_msg_count: 10,
             is_creator: false,
@@ -125,58 +143,67 @@ impl BlockingPosixMessageQueue {
         }
     }
 
+    /// Get the request queue name (client→server)
+    fn request_queue_name(&self) -> String {
+        format!("{}_req", self.queue_name_base)
+    }
+
+    /// Get the response queue name (server→client)
+    fn response_queue_name(&self) -> String {
+        format!("{}_resp", self.queue_name_base)
+    }
+
     /// Clean up message queue resources.
     ///
-    /// Closes the queue file descriptor and unlinks the queue if this
-    /// instance created it (server). This method is idempotent.
+    /// Closes both queue file descriptors and unlinks the queues if this
+    /// instance created them (server). This method is idempotent.
     ///
     /// # Resource Ownership
     ///
     /// Only queue creators (servers) unlink queues to prevent race
     /// conditions and premature resource destruction.
-    fn cleanup_queue(&mut self) {
-        debug!("Cleaning up POSIX message queue");
+    fn cleanup_queues(&mut self) {
+        debug!("Cleaning up POSIX message queues");
 
-        if let Some(fd) = self.mq_fd.take() {
-            debug!("Closing message queue with fd: {:?}", fd);
+        // Close send queue
+        if let Some(fd) = self.send_fd.take() {
+            debug!("Closing send queue with fd: {:?}", fd);
             if let Err(e) = mq_close(fd) {
-                warn!("Failed to close message queue: {}", e);
+                warn!("Failed to close send queue: {}", e);
             } else {
-                debug!("Closed message queue");
+                debug!("Closed send queue");
             }
         }
 
-        // Only unlink the queue if this instance created it (server)
-        if self.is_creator && !self.queue_name.is_empty() {
-            match mq_unlink(self.queue_name.as_str()) {
-                Ok(_) => debug!("Unlinked message queue: {}", self.queue_name),
-                Err(e) => warn!("Failed to unlink message queue: {}", e),
+        // Close receive queue
+        if let Some(fd) = self.recv_fd.take() {
+            debug!("Closing receive queue with fd: {:?}", fd);
+            if let Err(e) = mq_close(fd) {
+                warn!("Failed to close receive queue: {}", e);
+            } else {
+                debug!("Closed receive queue");
+            }
+        }
+
+        // Only unlink the queues if this instance created them (server)
+        if self.is_creator && !self.queue_name_base.is_empty() {
+            let req_name = self.request_queue_name();
+            let resp_name = self.response_queue_name();
+
+            match mq_unlink(req_name.as_str()) {
+                Ok(_) => debug!("Unlinked request queue: {}", req_name),
+                Err(e) => warn!("Failed to unlink request queue: {}", e),
+            }
+
+            match mq_unlink(resp_name.as_str()) {
+                Ok(_) => debug!("Unlinked response queue: {}", resp_name),
+                Err(e) => warn!("Failed to unlink response queue: {}", e),
             }
         }
     }
-}
 
-impl BlockingTransport for BlockingPosixMessageQueue {
-    fn start_server_blocking(&mut self, config: &TransportConfig) -> Result<()> {
-        debug!(
-            "Starting blocking POSIX message queue server: {}",
-            config.message_queue_name
-        );
-
-        // Ensure queue name starts with "/"
-        let queue_name = if config.message_queue_name.starts_with('/') {
-            config.message_queue_name.clone()
-        } else {
-            format!("/{}", config.message_queue_name)
-        };
-
-        self.queue_name = queue_name.clone();
-        self.priority = config.pmq_priority;
-
-        // Try to clean up any existing queue (from previous runs)
-        // Best-effort cleanup - ignore errors
-        let _ = mq_unlink(queue_name.as_str());
-
+    /// Create a single message queue with the given name
+    fn create_queue(&self, queue_name: &str) -> Result<MqdT> {
         // Set queue attributes
         let attrs = MqAttr::new(
             0,                         // flags (not used for create)
@@ -190,46 +217,25 @@ impl BlockingTransport for BlockingPosixMessageQueue {
         let flags = MQ_OFlag::O_CREAT | MQ_OFlag::O_EXCL | MQ_OFlag::O_RDWR;
         let mode = Mode::S_IRUSR | Mode::S_IWUSR; // 0600 permissions
 
-        let fd = mq_open(queue_name.as_str(), flags, mode, Some(&attrs)).with_context(|| {
+        mq_open(queue_name, flags, mode, Some(&attrs)).with_context(|| {
             format!(
                 "Failed to create POSIX message queue: {}. \
                  Queue may already exist or system limits may be reached. \
                  Check /proc/sys/fs/mqueue/ for limits.",
                 queue_name
             )
-        })?;
-
-        self.mq_fd = Some(fd);
-        self.is_creator = true;
-
-        debug!("POSIX message queue server created: {}", queue_name);
-        Ok(())
+        })
     }
 
-    fn start_client_blocking(&mut self, config: &TransportConfig) -> Result<()> {
-        debug!(
-            "Starting blocking POSIX message queue client, connecting to: {}",
-            config.message_queue_name
-        );
-
-        // Ensure queue name starts with "/"
-        let queue_name = if config.message_queue_name.starts_with('/') {
-            config.message_queue_name.clone()
-        } else {
-            format!("/{}", config.message_queue_name)
-        };
-
-        self.queue_name = queue_name.clone();
-        self.priority = config.pmq_priority;
-
-        // Open existing message queue (retry with timeout)
+    /// Open an existing message queue with retry logic
+    fn open_queue(&self, queue_name: &str) -> Result<MqdT> {
         let start = std::time::Instant::now();
         let timeout = Duration::from_secs(30);
         let flags = MQ_OFlag::O_RDWR; // Read-write, no create
 
-        let fd = loop {
-            match mq_open(queue_name.as_str(), flags, Mode::empty(), None) {
-                Ok(fd) => break fd,
+        loop {
+            match mq_open(queue_name, flags, Mode::empty(), None) {
+                Ok(fd) => return Ok(fd),
                 Err(Errno::ENOENT) => {
                     // Queue doesn't exist yet
                     if start.elapsed() > timeout {
@@ -250,12 +256,89 @@ impl BlockingTransport for BlockingPosixMessageQueue {
                     ));
                 }
             }
+        }
+    }
+}
+
+impl BlockingTransport for BlockingPosixMessageQueue {
+    fn start_server_blocking(&mut self, config: &TransportConfig) -> Result<()> {
+        debug!(
+            "Starting blocking POSIX message queue server: {}",
+            config.message_queue_name
+        );
+
+        // Ensure queue name starts with "/"
+        let base_name = if config.message_queue_name.starts_with('/') {
+            config.message_queue_name.clone()
+        } else {
+            format!("/{}", config.message_queue_name)
         };
 
-        self.mq_fd = Some(fd);
+        self.queue_name_base = base_name;
+        self.priority = config.pmq_priority;
+
+        let req_name = self.request_queue_name();
+        let resp_name = self.response_queue_name();
+
+        // Try to clean up any existing queues (from previous runs)
+        // Best-effort cleanup - ignore errors
+        let _ = mq_unlink(req_name.as_str());
+        let _ = mq_unlink(resp_name.as_str());
+
+        // Create both queues
+        // Server receives from request queue, sends to response queue
+        let recv_fd = self.create_queue(&req_name)?;
+        debug!("Created request queue: {}", req_name);
+
+        let send_fd = self.create_queue(&resp_name)?;
+        debug!("Created response queue: {}", resp_name);
+
+        self.recv_fd = Some(recv_fd);
+        self.send_fd = Some(send_fd);
+        self.is_creator = true;
+
+        debug!(
+            "POSIX message queue server created with queues: {}, {}",
+            req_name, resp_name
+        );
+        Ok(())
+    }
+
+    fn start_client_blocking(&mut self, config: &TransportConfig) -> Result<()> {
+        debug!(
+            "Starting blocking POSIX message queue client, connecting to: {}",
+            config.message_queue_name
+        );
+
+        // Ensure queue name starts with "/"
+        let base_name = if config.message_queue_name.starts_with('/') {
+            config.message_queue_name.clone()
+        } else {
+            format!("/{}", config.message_queue_name)
+        };
+
+        self.queue_name_base = base_name;
+        self.priority = config.pmq_priority;
+
+        let req_name = self.request_queue_name();
+        let resp_name = self.response_queue_name();
+
+        // Open both queues
+        // Client sends to request queue, receives from response queue
+        let send_fd = self.open_queue(&req_name)?;
+        debug!("Opened request queue for sending: {}", req_name);
+
+        let recv_fd = self.open_queue(&resp_name)?;
+        debug!("Opened response queue for receiving: {}", resp_name);
+
+        self.send_fd = Some(send_fd);
+        self.recv_fd = Some(recv_fd);
         self.is_creator = false;
 
-        debug!("Client connected to POSIX message queue: {}", queue_name);
+        debug!(
+            "Client connected to POSIX message queues: {}, {}",
+            req_name, resp_name
+        );
         Ok(())
     }
 
@@ -265,7 +348,7 @@ impl BlockingTransport for BlockingPosixMessageQueue {
             message.id
         );
 
-        let fd = self.mq_fd.as_ref().ok_or_else(|| {
+        let fd = self.send_fd.as_ref().ok_or_else(|| {
             anyhow!(
                 "Cannot send: message queue not initialized. \
                  Call start_server_blocking() or start_client_blocking() first."
@@ -330,7 +413,7 @@ impl BlockingTransport for BlockingPosixMessageQueue {
     fn receive_blocking(&mut self) -> Result<Message> {
         trace!("Waiting to receive message via blocking POSIX message queue");
 
-        let fd = self.mq_fd.as_ref().ok_or_else(|| {
+        let fd = self.recv_fd.as_ref().ok_or_else(|| {
             anyhow!(
                 "Cannot receive: message queue not initialized. \
                  Call start_server_blocking() or start_client_blocking() first."
@@ -371,7 +454,7 @@ impl BlockingTransport for BlockingPosixMessageQueue {
 
     fn close_blocking(&mut self) -> Result<()> {
         debug!("Closing blocking POSIX message queue transport");
-        self.cleanup_queue();
+        self.cleanup_queues();
         debug!("Blocking POSIX message queue transport closed");
         Ok(())
     }
@@ -403,8 +486,9 @@ mod tests {
     #[test]
     fn test_new_creates_empty_transport() {
         let transport = BlockingPosixMessageQueue::new();
-        assert!(transport.queue_name.is_empty());
-        assert!(transport.mq_fd.is_none());
+        assert!(transport.queue_name_base.is_empty());
+        assert!(transport.send_fd.is_none());
+        assert!(transport.recv_fd.is_none());
         assert!(!transport.is_creator);
         assert_eq!(transport.max_msg_size, 8192);
         assert_eq!(transport.max_msg_count, 10);
@@ -421,7 +505,9 @@ mod tests {
         };
 
         let result = server.start_server_blocking(&config);
-        assert!(result.is_ok(), "Server should create queue successfully");
+        assert!(result.is_ok(), "Server should create queues successfully");
+        assert!(server.send_fd.is_some());
+        assert!(server.recv_fd.is_some());
 
         // Cleanup
         server.close_blocking().unwrap();
@@ -533,6 +619,52 @@ mod tests {
     }
 
     #[test]
+    fn test_multiple_round_trips() {
+        // Test that multiple rapid round-trips work without race conditions
+        let queue_name = make_unique_queue_name("multi_rt");
+
+        let server_queue = queue_name.clone();
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingPosixMessageQueue::new();
+            let config = TransportConfig {
+                message_queue_name: server_queue,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            // Handle 100 round-trips
+            for _ in 0..100 {
+                let request = server.receive_blocking().unwrap();
+                let response = Message::new(request.id, Vec::new(), MessageType::Response);
+                server.send_blocking(&response).unwrap();
+            }
+
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(200));
+
+        let mut client = BlockingPosixMessageQueue::new();
+        let config = TransportConfig {
+            message_queue_name: queue_name,
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        // Perform 100 round-trips
+        for i in 0..100u64 {
+            let request = Message::new(i, vec![1, 2, 3], MessageType::Request);
+            client.send_blocking(&request).unwrap();
+            let response = client.receive_blocking().unwrap();
+            assert_eq!(response.id, i);
+            assert_eq!(response.message_type, MessageType::Response);
+        }
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
+
+    #[test]
     fn test_close_cleanup() {
         let queue_name = make_unique_queue_name("close");
 
@@ -547,6 +679,7 @@ mod tests {
         server.close_blocking().unwrap();
 
         // Verify fields are None after close
-        assert!(server.mq_fd.is_none());
+        assert!(server.send_fd.is_none());
+        assert!(server.recv_fd.is_none());
     }
 }
