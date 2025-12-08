@@ -53,6 +53,8 @@ use crate::ipc::{BlockingTransport, Message, TransportConfig};
 use anyhow::{Context, Result};
 use std::io::{Read, Write};
 #[cfg(unix)]
+use std::os::unix::io::AsRawFd;
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 use tracing::{debug, trace};
 
@@ -120,6 +122,9 @@ impl BlockingUnixDomainSocket {
                 .accept()
                 .context("Failed to accept connection on Unix domain socket")?;
 
+            // Optimize socket buffer sizes for lower latency
+            Self::configure_socket_buffers(&stream);
+
             debug!("UDS server accepted connection from: {:?}", addr);
             self.stream = Some(stream);
             Ok(())
@@ -127,6 +132,39 @@ impl BlockingUnixDomainSocket {
             // Not a server or already connected - this is fine
             Ok(())
         }
+    }
+
+    /// Configure socket buffer sizes for optimal latency.
+    /// Smaller buffers can reduce latency by avoiding batching delays.
+    #[cfg(unix)]
+    fn configure_socket_buffers(stream: &UnixStream) {
+        use libc::{setsockopt, socklen_t, SOL_SOCKET, SO_RCVBUF, SO_SNDBUF};
+        use std::mem::size_of;
+
+        let fd = stream.as_raw_fd();
+        // Use smaller buffers (64KB) to reduce batching delay
+        // Default is often 128KB+ which can add latency
+        let buf_size: libc::c_int = 65536;
+
+        unsafe {
+            // Set send buffer size
+            let _ = setsockopt(
+                fd,
+                SOL_SOCKET,
+                SO_SNDBUF,
+                &buf_size as *const _ as *const libc::c_void,
+                size_of::<libc::c_int>() as socklen_t,
+            );
+            // Set receive buffer size
+            let _ = setsockopt(
+                fd,
+                SOL_SOCKET,
+                SO_RCVBUF,
+                &buf_size as *const _ as *const libc::c_void,
+                size_of::<libc::c_int>() as socklen_t,
+            );
+        }
+        trace!("Configured UDS socket buffers to {} bytes", buf_size);
     }
 }
 
@@ -172,6 +210,9 @@ impl BlockingTransport for BlockingUnixDomainSocket {
             )
         })?;
 
+        // Optimize socket buffer sizes for lower latency
+        Self::configure_socket_buffers(&stream);
+
         debug!("UDS client connected successfully");
 
         self.stream = Some(stream);
@@ -207,17 +248,42 @@ impl BlockingTransport for BlockingUnixDomainSocket {
         let ts_offset = Message::timestamp_offset();
         serialized[ts_offset].copy_from_slice(&timestamp_bytes);
 
-        // Send immediately - no intervening work
+        // Use writev for scatter-gather I/O: single syscall, no extra allocation
         let len_bytes = (serialized.len() as u32).to_le_bytes();
-        stream
-            .write_all(&len_bytes)
-            .context("Failed to write message length")?;
+        let fd = stream.as_raw_fd();
 
-        stream
-            .write_all(&serialized)
-            .context("Failed to write message data")?;
+        let iov = [
+            libc::iovec {
+                iov_base: len_bytes.as_ptr() as *mut libc::c_void,
+                iov_len: 4,
+            },
+            libc::iovec {
+                iov_base: serialized.as_ptr() as *mut libc::c_void,
+                iov_len: serialized.len(),
+            },
+        ];
 
-        stream.flush().context("Failed to flush socket")?;
+        let total_len = 4 + serialized.len();
+        let mut written = 0usize;
+
+        // writev may not write everything in one call, so loop until complete
+        while written < total_len {
+            let result = unsafe { libc::writev(fd, iov.as_ptr(), 2) };
+            if result < 0 {
+                return Err(std::io::Error::last_os_error())
+                    .context("Failed to write message via writev");
+            }
+            written += result as usize;
+            if written < total_len {
+                // Partial write - fall back to regular write for remainder
+                // This is rare for small messages on UDS
+                let remaining = &serialized[written.saturating_sub(4)..];
+                stream
+                    .write_all(remaining)
+                    .context("Failed to write remaining data")?;
+                break;
+            }
+        }
 
         trace!("Message ID {} sent successfully", message.id);
         Ok(())
