@@ -49,6 +49,7 @@
 
 use crate::ipc::{BlockingTransport, Message, TransportConfig};
 use anyhow::{Context, Result};
+use socket2::{Domain, Socket, Type};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use tracing::{debug, trace};
@@ -137,15 +138,35 @@ impl BlockingTransport for BlockingTcpSocket {
         let addr = format!("{}:{}", config.host, config.port);
         debug!("Starting blocking TCP server at: {}", addr);
 
-        // Create and bind the listener socket
-        let listener = TcpListener::bind(&addr).with_context(|| {
+        // Create socket with SO_REUSEADDR to allow immediate port reuse
+        // This prevents "Address already in use" errors when tests run quickly
+        let socket = Socket::new(Domain::IPV4, Type::STREAM, None)
+            .context("Failed to create TCP socket")?;
+
+        // Enable SO_REUSEADDR to allow immediate port reuse after socket close
+        socket
+            .set_reuse_address(true)
+            .context("Failed to set SO_REUSEADDR on socket")?;
+
+        // Parse and bind to the address
+        let socket_addr: std::net::SocketAddr = addr
+            .parse()
+            .with_context(|| format!("Failed to parse address: {}", addr))?;
+        socket.bind(&socket_addr.into()).with_context(|| {
             format!(
                 "Failed to bind TCP socket to {}. \
-                     Check if port {} is available and not in use.",
+                 Check if port {} is available and not in use.",
                 addr, config.port
             )
         })?;
 
+        // Listen for connections
+        socket
+            .listen(128)
+            .context("Failed to listen on TCP socket")?;
+
+        // Convert socket2::Socket to std::net::TcpListener
+        let listener: TcpListener = socket.into();
         debug!("TCP server bound and listening on: {}", addr);
 
         // Store the listener but DON'T accept yet
