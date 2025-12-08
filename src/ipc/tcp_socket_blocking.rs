@@ -140,8 +140,8 @@ impl BlockingTransport for BlockingTcpSocket {
 
         // Create socket with SO_REUSEADDR to allow immediate port reuse
         // This prevents "Address already in use" errors when tests run quickly
-        let socket = Socket::new(Domain::IPV4, Type::STREAM, None)
-            .context("Failed to create TCP socket")?;
+        let socket =
+            Socket::new(Domain::IPV4, Type::STREAM, None).context("Failed to create TCP socket")?;
 
         // Enable SO_REUSEADDR to allow immediate port reuse after socket close
         socket
