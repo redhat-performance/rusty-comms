@@ -463,19 +463,20 @@ impl Drop for UnixDomainSocketTransport {
 mod tests {
     use super::*;
     use crate::ipc::MessageType;
+    use crate::utils::get_temp_socket_path;
     use tokio::sync::oneshot;
     use tokio::time::{sleep, Duration};
 
     #[tokio::test]
     async fn test_unix_domain_socket_communication() {
-        let socket_path = "/tmp/test_uds.sock";
+        let socket_path = get_temp_socket_path("test_uds.sock");
         let config = TransportConfig {
-            socket_path: socket_path.to_string(),
+            socket_path: socket_path.clone(),
             ..Default::default()
         };
 
         // Clean up any existing socket
-        let _ = std::fs::remove_file(socket_path);
+        let _ = std::fs::remove_file(&socket_path);
 
         let mut server = UnixDomainSocketTransport::new();
         let mut client = UnixDomainSocketTransport::new();
@@ -521,14 +522,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_uds_backpressure() {
-        let socket_path = "/tmp/test_uds_backpressure.sock";
+        let socket_path = get_temp_socket_path("test_uds_backpressure.sock");
         let config = TransportConfig {
-            socket_path: socket_path.to_string(),
+            socket_path: socket_path.clone(),
             ..Default::default()
         };
 
         // Clean up any existing socket
-        let _ = std::fs::remove_file(socket_path);
+        let _ = std::fs::remove_file(&socket_path);
 
         let mut server = UnixDomainSocketTransport::new();
         let mut client = UnixDomainSocketTransport::new();
@@ -536,6 +537,7 @@ mod tests {
 
         // Start server in background, but it won't receive anything, causing the buffer to fill up.
         let server_config = config.clone();
+        let socket_path_clone = socket_path.clone();
         let server_handle = tokio::spawn(async move {
             server.start_server(&server_config).await.unwrap();
             // Accept a connection but do nothing with it.
@@ -547,7 +549,7 @@ mod tests {
 
         // Wait for the socket file to be created by the server before the client connects.
         for _ in 0..10 {
-            if std::path::Path::new(socket_path).exists() {
+            if std::path::Path::new(&socket_path_clone).exists() {
                 break;
             }
             sleep(Duration::from_millis(10)).await;
@@ -593,14 +595,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_unix_domain_socket_multi_client() {
-        let socket_path = "/tmp/test_uds_multi.sock";
+        let socket_path = get_temp_socket_path("test_uds_multi.sock");
         let config = TransportConfig {
-            socket_path: socket_path.to_string(),
+            socket_path: socket_path.clone(),
             ..Default::default()
         };
 
         // Clean up any existing socket
-        let _ = std::fs::remove_file(socket_path);
+        let _ = std::fs::remove_file(&socket_path);
 
         let mut server = UnixDomainSocketTransport::new();
 
@@ -609,7 +611,7 @@ mod tests {
 
         // Wait for the socket file to be created by the server before clients connect.
         for _ in 0..10 {
-            if std::path::Path::new(socket_path).exists() {
+            if std::path::Path::new(&socket_path).exists() {
                 break;
             }
             sleep(Duration::from_millis(10)).await;

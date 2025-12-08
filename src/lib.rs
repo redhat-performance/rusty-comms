@@ -156,6 +156,9 @@ pub mod results_blocking;
 
 pub mod utils;
 
+// Re-export commonly used utilities for convenient access
+pub use utils::{get_temp_dir, get_temp_socket_path};
+
 // Re-export key types for convenient library usage
 // These are the primary types that library users will interact with
 

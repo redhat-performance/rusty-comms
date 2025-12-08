@@ -319,41 +319,49 @@ pub struct Args {
     #[arg(long, default_value_t = false, help_heading = ADVANCED)]
     pub blocking: bool,
 
-    /// Use high-performance direct memory implementation for shared memory (blocking mode only).
+    /// Use high-performance direct memory shared memory (auto-enables --blocking).
     ///
-    /// When this flag is set in blocking mode with SharedMemory mechanism,
-    /// uses a C-style direct memory implementation instead of the ring buffer.
+    /// This flag selects the direct memory implementation instead of the default
+    /// ring buffer. It automatically enables blocking mode since direct memory
+    /// SHM requires blocking I/O.
     ///
-    /// ## Performance Benefits
-    /// - **No serialization overhead** - Direct memcpy with #[repr(C)] layout
-    /// - **Lower latency** - ~3× faster average (7 μs vs 20 μs)
-    /// - **Better tail latency** - 450× better maximum (22 μs vs 10 ms)
-    /// - **pthread synchronization** - Mutex + condition variable (matching C)
+    /// ## Shared Memory Implementations
     ///
-    /// ## Implementation
-    /// - Fixed-size memory layout matching C benchmarks exactly
-    /// - Direct memory access with no serialization/deserialization
-    /// - Proper client-ready handshake and backpressure control
-    /// - Full benchmark compatibility - all tests pass
+    /// | Implementation | Flag | Latency | Platform | Message Size |
+    /// |----------------|------|---------|----------|--------------|
+    /// | Ring buffer | (default) | ~20 μs | All | Variable |
+    /// | Direct memory | --shm-direct | ~7 μs | Unix only | Fixed (8KB) |
     ///
-    /// ## When to Use
-    /// - **Direct memory (--shm-direct)**: Best latency, minimal overhead
-    /// - **Ring buffer (default)**: More flexible, variable-size messages
+    /// ## When to Use Each
     ///
-    /// Both implementations are production-ready. Use direct memory for
-    /// maximum performance with fixed-size messages, or ring buffer for
-    /// more flexibility.
+    /// **Use `--shm-direct` (direct memory) when:**
+    /// - Maximum performance is critical (3× faster average latency)
+    /// - Fixed message sizes are acceptable
+    /// - Running on Unix/Linux (not Windows)
     ///
-    /// Default: false (uses ring buffer implementation)
+    /// **Use default (ring buffer) when:**
+    /// - Cross-platform support needed (Windows, macOS, Linux)
+    /// - Variable message sizes required
+    /// - Flexibility is more important than raw speed
+    ///
+    /// ## Performance Benefits of Direct Memory
+    /// - **No serialization** - Direct memcpy with #[repr(C)] layout
+    /// - **3× faster average** - 7 μs vs 20 μs mean latency
+    /// - **450× better tail latency** - 22 μs vs 10 ms maximum
+    ///
+    /// Default: false (uses cross-platform ring buffer implementation)
     ///
     /// # Examples
     ///
     /// ```bash
-    /// # High-performance direct memory (recommended for benchmarking)
-    /// ipc-benchmark -m shm --blocking --shm-direct -i 10000
+    /// # High-performance direct memory (auto-enables blocking)
+    /// ipc-benchmark -m shm --shm-direct -i 10000
     ///
-    /// # Ring buffer (default, more flexible)
+    /// # Ring buffer with blocking mode
     /// ipc-benchmark -m shm --blocking -i 10000
+    ///
+    /// # Ring buffer with async mode (default)
+    /// ipc-benchmark -m shm -i 10000
     /// ```
     #[arg(long, default_value_t = false, help_heading = ADVANCED)]
     pub shm_direct: bool,
@@ -384,7 +392,7 @@ pub struct Args {
     /// Used internally when spawning the server process to communicate
     /// server-side latency measurements back to the client. The server calculates
     /// true IPC latency by comparing receive time to the timestamp embedded in
-    /// each message, matching the methodology used by the C benchmarks.
+    /// each message.
     #[arg(long, hide = true)]
     pub internal_latency_file: Option<String>,
 }

@@ -53,6 +53,8 @@ use thiserror::Error;
 use time::OffsetDateTime;
 use tokio::sync::mpsc;
 
+use crate::utils::get_temp_socket_path;
+
 // Public module exports for specific transport implementations
 #[cfg(target_os = "linux")]
 pub mod posix_message_queue;
@@ -88,8 +90,7 @@ pub use unix_domain_socket_blocking::BlockingUnixDomainSocket;
 /// Get current monotonic time in nanoseconds.
 ///
 /// This function provides access to a monotonic clock (CLOCK_MONOTONIC on Linux)
-/// which is not affected by NTP adjustments or system time changes. This matches
-/// the behavior of the C benchmark programs which use clock_gettime(CLOCK_MONOTONIC).
+/// which is not affected by NTP adjustments or system time changes.
 ///
 /// Monotonic clocks measure time from an arbitrary starting point (typically system
 /// boot) and only move forward, making them ideal for measuring intervals and
@@ -318,10 +319,9 @@ impl Message {
     ///
     /// ## Note for Blocking Mode
     ///
-    /// For accurate IPC latency measurement in blocking mode (matching C
-    /// benchmark methodology), use `new_for_blocking()` instead which
-    /// captures the timestamp using a monotonic clock right before
-    /// serialization.
+    /// For accurate IPC latency measurement in blocking mode, use
+    /// `new_for_blocking()` instead which captures the timestamp using
+    /// a monotonic clock right before serialization.
     pub fn new(id: u64, payload: Vec<u8>, message_type: MessageType) -> Self {
         Self {
             id,
@@ -334,9 +334,8 @@ impl Message {
     /// Create a new message for blocking mode with monotonic timestamp
     ///
     /// This method creates a message and captures the timestamp using a
-    /// monotonic clock (CLOCK_MONOTONIC on Linux), matching the methodology
-    /// used in C benchmark programs. The monotonic clock is not affected by
-    /// NTP adjustments or system time changes.
+    /// monotonic clock (CLOCK_MONOTONIC on Linux). The monotonic clock is
+    /// not affected by NTP adjustments or system time changes.
     ///
     /// ## Parameters
     /// - `id`: Unique identifier for the message
@@ -381,7 +380,7 @@ impl Message {
     /// Returns the offset range where the timestamp (u64) is located in
     /// a bincode-serialized Message. This enables updating the timestamp
     /// in-place after serialization, minimizing work between timestamp
-    /// capture and IPC syscall (matching C benchmark methodology).
+    /// capture and IPC syscall.
     ///
     /// ## Bincode Serialization Layout
     ///
@@ -572,7 +571,7 @@ impl Default for TransportConfig {
     /// - Buffer size: 8KB (good balance of memory usage and performance)
     /// - Host: localhost (127.0.0.1) for local testing
     /// - Port: 8080 (commonly available port above privileged range)
-    /// - Socket path: /tmp/ipc_benchmark.sock (writable temporary location)
+    /// - Socket path: System temp directory + ipc_benchmark.sock (cross-platform)
     /// - Shared memory: ipc_benchmark_shm (descriptive unique name)
     /// - Max connections: 16 (reasonable concurrency for most systems)
     /// - Queue depth: 10 (typical system default for message queues)
@@ -582,7 +581,7 @@ impl Default for TransportConfig {
             buffer_size: 8192,
             host: "127.0.0.1".to_string(),
             port: 8080,
-            socket_path: "/tmp/ipc_benchmark.sock".to_string(),
+            socket_path: get_temp_socket_path("ipc_benchmark.sock"),
             shared_memory_name: "ipc_benchmark_shm".to_string(),
             max_connections: 16, // Default to support up to 16 concurrent connections
             message_queue_depth: 10, // Default POSIX Message Queue depth
@@ -1310,7 +1309,7 @@ impl BlockingTransportFactory {
             crate::cli::IpcMechanism::TcpSocket => Ok(Box::new(BlockingTcpSocket::new())),
             crate::cli::IpcMechanism::SharedMemory => {
                 if use_direct_memory {
-                    // Direct memory implementation (high performance, C-style)
+                    // Direct memory implementation (high performance)
                     #[cfg(unix)]
                     {
                         Ok(Box::new(BlockingSharedMemoryDirect::new()))
@@ -1434,10 +1433,10 @@ mod tests {
 
     // ===== Existing Tests =====
 
-    /// Test message size comparison with C program
+    /// Test message size analysis
     #[test]
-    fn test_message_size_comparison_with_c() {
-        // Test with 100 bytes payload like C program
+    fn test_message_size_analysis() {
+        // Test with 100 bytes payload (typical benchmark size)
         let payload = vec![0u8; 100];
         let msg = Message::new(1, payload, MessageType::OneWay);
 
@@ -1446,8 +1445,6 @@ mod tests {
         println!("\n=== Message Size Analysis ===");
         println!("Payload size: 100 bytes");
         println!("Bincode serialized size: {} bytes", serialized.len());
-        println!("  C program struct size: 116 bytes (100 + 16 for timespec)");
-        println!("  Difference: {} bytes", serialized.len() as i32 - 116);
     }
 
     /// Test message creation and basic functionality
@@ -1485,7 +1482,12 @@ mod tests {
         assert_eq!(config.buffer_size, 8192);
         assert_eq!(config.host, "127.0.0.1");
         assert_eq!(config.port, 8080);
-        assert_eq!(config.socket_path, "/tmp/ipc_benchmark.sock");
+        // Socket path should be in system temp directory
+        assert!(
+            config.socket_path.ends_with("ipc_benchmark.sock"),
+            "socket_path should end with 'ipc_benchmark.sock', got: {}",
+            config.socket_path
+        );
         assert_eq!(config.shared_memory_name, "ipc_benchmark_shm");
         assert_eq!(config.max_connections, 16);
         assert_eq!(config.message_queue_depth, 10);

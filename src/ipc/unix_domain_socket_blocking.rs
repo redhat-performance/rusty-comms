@@ -32,11 +32,12 @@
 //! use ipc_benchmark::ipc::{
 //!     BlockingUnixDomainSocket, BlockingTransport, TransportConfig
 //! };
+//! use ipc_benchmark::get_temp_socket_path;
 //!
 //! # fn example() -> anyhow::Result<()> {
 //! let mut server = BlockingUnixDomainSocket::new();
 //! let mut config = TransportConfig::default();
-//! config.socket_path = "/tmp/test.sock".to_string();
+//! config.socket_path = get_temp_socket_path("test.sock");
 //!
 //! // Server: bind and wait for connection
 //! server.start_server_blocking(&config)?;
@@ -188,13 +189,13 @@ impl BlockingTransport for BlockingUnixDomainSocket {
                  Call start_server_blocking() or start_client_blocking() first.",
         )?;
 
-        // METHODOLOGY CHANGE: Match C benchmark approach where timestamp is captured
-        // immediately before IPC syscall with minimal intervening work.
+        // Capture timestamp immediately before IPC syscall with minimal
+        // intervening work for accurate latency measurement.
         //
         // Pre-serialize with dummy timestamp to get buffer structure, then update
         // only the timestamp bytes immediately before send. This ensures any
         // scheduling delays between timestamp capture and send are included in
-        // the measured latency (matching C programs).
+        // the measured latency.
         let mut message_with_timestamp = message.clone();
         message_with_timestamp.timestamp = 0; // Dummy timestamp for pre-serialization
         let mut serialized =
@@ -282,6 +283,7 @@ impl Default for BlockingUnixDomainSocket {
 mod tests {
     use super::*;
     use crate::ipc::MessageType;
+    use crate::utils::get_temp_socket_path;
     use std::thread;
     use std::time::Duration;
 
@@ -294,15 +296,16 @@ mod tests {
 
     #[test]
     fn test_server_binds_successfully() {
-        let socket_path = "/tmp/test_uds_blocking_server.sock";
-        let _ = std::fs::remove_file(socket_path);
+        let socket_path = get_temp_socket_path("test_uds_blocking_server.sock");
+        let _ = std::fs::remove_file(&socket_path);
 
         // Server now only binds in start_server_blocking(), doesn't accept yet
         // Accept happens on first send/receive via ensure_connection()
+        let server_socket_path = socket_path.clone();
         let handle = thread::spawn(move || {
             let mut server = BlockingUnixDomainSocket::new();
             let config = TransportConfig {
-                socket_path: socket_path.to_string(),
+                socket_path: server_socket_path,
                 ..Default::default()
             };
             server.start_server_blocking(&config).unwrap();
@@ -318,7 +321,7 @@ mod tests {
         // Connect from client
         let mut client = BlockingUnixDomainSocket::new();
         let client_config = TransportConfig {
-            socket_path: socket_path.to_string(),
+            socket_path: socket_path.clone(),
             ..Default::default()
         };
         client.start_client_blocking(&client_config).unwrap();
@@ -330,17 +333,17 @@ mod tests {
 
         // Server should complete
         handle.join().unwrap();
-        let _ = std::fs::remove_file(socket_path);
+        let _ = std::fs::remove_file(&socket_path);
     }
 
     #[test]
     fn test_client_fails_if_server_not_running() {
-        let socket_path = "/tmp/test_uds_blocking_no_server.sock";
-        let _ = std::fs::remove_file(socket_path);
+        let socket_path = get_temp_socket_path("test_uds_blocking_no_server.sock");
+        let _ = std::fs::remove_file(&socket_path);
 
         let mut client = BlockingUnixDomainSocket::new();
         let config = TransportConfig {
-            socket_path: socket_path.to_string(),
+            socket_path,
             ..Default::default()
         };
 
@@ -351,11 +354,11 @@ mod tests {
 
     #[test]
     fn test_send_and_receive_message() {
-        let socket_path = "/tmp/test_uds_blocking_send_recv.sock";
-        let _ = std::fs::remove_file(socket_path);
+        let socket_path = get_temp_socket_path("test_uds_blocking_send_recv.sock");
+        let _ = std::fs::remove_file(&socket_path);
 
         // Start server in thread
-        let server_path = socket_path.to_string();
+        let server_path = socket_path.clone();
         let server_handle = thread::spawn(move || {
             let mut server = BlockingUnixDomainSocket::new();
             let config = TransportConfig {
@@ -379,7 +382,7 @@ mod tests {
         // Connect client and send
         let mut client = BlockingUnixDomainSocket::new();
         let config = TransportConfig {
-            socket_path: socket_path.to_string(),
+            socket_path: socket_path.clone(),
             ..Default::default()
         };
         client.start_client_blocking(&config).unwrap();
@@ -392,16 +395,16 @@ mod tests {
         server_handle.join().unwrap();
 
         // Cleanup
-        let _ = std::fs::remove_file(socket_path);
+        let _ = std::fs::remove_file(&socket_path);
     }
 
     #[test]
     fn test_round_trip_communication() {
-        let socket_path = "/tmp/test_uds_blocking_round_trip.sock";
-        let _ = std::fs::remove_file(socket_path);
+        let socket_path = get_temp_socket_path("test_uds_blocking_round_trip.sock");
+        let _ = std::fs::remove_file(&socket_path);
 
         // Start server
-        let server_path = socket_path.to_string();
+        let server_path = socket_path.clone();
         let server_handle = thread::spawn(move || {
             let mut server = BlockingUnixDomainSocket::new();
             let config = TransportConfig {
@@ -426,7 +429,7 @@ mod tests {
         // Client
         let mut client = BlockingUnixDomainSocket::new();
         let config = TransportConfig {
-            socket_path: socket_path.to_string(),
+            socket_path: socket_path.clone(),
             ..Default::default()
         };
         client.start_client_blocking(&config).unwrap();
@@ -443,18 +446,18 @@ mod tests {
         client.close_blocking().unwrap();
         server_handle.join().unwrap();
 
-        let _ = std::fs::remove_file(socket_path);
+        let _ = std::fs::remove_file(&socket_path);
     }
 
     #[test]
     fn test_close_cleanup() {
-        let socket_path = "/tmp/test_uds_blocking_close.sock";
-        let _ = std::fs::remove_file(socket_path);
+        let socket_path = get_temp_socket_path("test_uds_blocking_close.sock");
+        let _ = std::fs::remove_file(&socket_path);
 
         // Test that close() properly cleans up resources
         let mut server = BlockingUnixDomainSocket::new();
         let config = TransportConfig {
-            socket_path: socket_path.to_string(),
+            socket_path: socket_path.clone(),
             ..Default::default()
         };
         server.start_server_blocking(&config).unwrap();
@@ -472,6 +475,6 @@ mod tests {
         assert!(client.listener.is_none());
         assert!(client.stream.is_none());
 
-        let _ = std::fs::remove_file(socket_path);
+        let _ = std::fs::remove_file(&socket_path);
     }
 }

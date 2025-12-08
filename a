@@ -1,0 +1,662 @@
+       Fresh unicode-ident v1.0.19
+       Fresh proc-macro2 v1.0.101
+       Fresh libc v0.2.176
+       Fresh cfg-if v1.0.3
+       Fresh autocfg v1.5.0
+       Fresh once_cell v1.21.3
+       Fresh regex-syntax v0.8.6
+       Fresh utf8parse v0.2.2
+       Fresh log v0.4.28
+       Fresh itoa v1.0.15
+       Fresh memchr v2.7.6
+       Fresh smallvec v1.15.1
+       Fresh anstyle v1.0.13
+       Fresh quote v1.0.41
+       Fresh regex-automata v0.4.11
+       Fresh tracing-core v0.1.34
+       Fresh anstyle-parse v0.2.7
+       Fresh getrandom v0.2.16
+       Fresh lazy_static v1.5.0
+       Fresh either v1.15.0
+       Fresh anstyle-query v1.1.4
+       Fresh pin-project-lite v0.2.16
+       Fresh colorchoice v1.0.4
+       Fresh syn v2.0.106
+       Fresh crossbeam-utils v0.8.21
+       Fresh serde_core v1.0.228
+       Fresh zerocopy v0.8.27
+       Fresh is_terminal_polyfill v1.70.1
+       Fresh rand_core v0.6.4
+       Fresh half v2.2.1
+       Fresh clap_lex v0.6.0
+       Fresh cfg_aliases v0.2.1
+       Fresh scopeguard v1.2.0
+       Fresh strsim v0.10.0
+       Fresh powerfmt v0.2.0
+       Fresh heck v0.4.1
+       Fresh serde_derive v1.0.228
+       Fresh crossbeam-epoch v0.9.18
+       Fresh num-traits v0.2.19
+       Fresh anstream v0.6.21
+       Fresh ppv-lite86 v0.2.21
+       Fresh tracing-attributes v0.1.30
+       Fresh crossbeam-channel v0.5.15
+       Fresh adler2 v2.0.1
+       Fresh ryu v1.0.20
+       Fresh bitflags v2.9.4
+       Fresh simd-adler32 v0.3.7
+       Fresh memoffset v0.6.5
+       Fresh getrandom v0.3.3
+       Fresh deranged v0.3.11
+       Fresh crc32fast v1.5.0
+       Fresh clap_derive v4.4.7
+       Fresh lock_api v0.4.13
+       Fresh parking_lot_core v0.9.11
+       Fresh thiserror-impl v1.0.69
+       Fresh tracing-log v0.2.0
+       Fresh serde v1.0.228
+       Fresh crossbeam-deque v0.8.6
+       Fresh miniz_oxide v0.8.9
+       Fresh tracing v0.1.41
+       Fresh clap_builder v4.4.18
+       Fresh rand_chacha v0.3.1
+       Fresh serde_json v1.0.145
+       Fresh matchers v0.2.0
+       Fresh sharded-slab v0.1.7
+       Fresh thread_local v1.1.9
+       Fresh nu-ansi-term v0.50.1
+       Fresh time-core v0.1.2
+       Fresh minimal-lexical v0.2.1
+       Fresh bitflags v1.3.2
+       Fresh num-conv v0.1.0
+       Fresh thiserror v1.0.69
+       Fresh parking_lot v0.12.3
+       Fresh crossbeam-queue v0.3.12
+       Fresh thiserror-impl v2.0.17
+       Fresh rayon-core v1.12.1
+       Fresh flate2 v1.1.4
+       Fresh rand v0.8.5
+       Fresh nix v0.23.2
+       Fresh tracing-subscriber v0.3.20
+       Fresh clap v4.4.18
+       Fresh nom v7.1.3
+       Fresh time v0.3.35
+       Fresh tokio-macros v2.5.0
+       Fresh num_cpus v1.17.0
+       Fresh mio v1.0.4
+       Fresh signal-hook-registry v1.4.6
+       Fresh socket2 v0.6.0
+       Fresh bytes v1.10.1
+       Fresh iana-time-zone v0.1.64
+       Fresh ciborium-io v0.2.2
+       Fresh plotters-backend v0.3.7
+       Fresh base64 v0.21.7
+       Fresh byteorder v1.5.0
+       Fresh rayon v1.7.0
+       Fresh thiserror v2.0.17
+       Fresh plotters-svg v0.3.7
+       Fresh tracing-appender v0.2.3
+       Fresh core_affinity v0.8.3
+       Fresh anyhow v1.0.100
+       Fresh chrono v0.4.42
+       Fresh tokio v1.47.1
+       Fresh hdrhistogram v7.5.4
+       Fresh shared_memory v0.12.4
+       Fresh ciborium-ll v0.2.2
+       Fresh crossbeam v0.8.4
+       Fresh nix v0.29.0
+       Fresh bincode v1.3.3
+       Fresh uuid v1.18.1
+       Fresh async-trait v0.1.89
+       Fresh itertools v0.10.5
+       Fresh colored v2.2.0
+       Fresh socket2 v0.5.10
+       Fresh os_pipe v1.2.2
+       Fresh linux-raw-sys v0.11.0
+       Fresh cast v0.3.0
+       Fresh same-file v1.0.6
+       Fresh statistics v0.4.1
+       Fresh plotters v0.3.7
+       Fresh rustix v1.1.2
+       Fresh ciborium v0.2.2
+       Fresh tinytemplate v1.2.1
+       Fresh regex v1.11.3
+       Fresh is-terminal v0.4.16
+       Fresh fastrand v2.3.0
+       Fresh anes v0.1.6
+       Fresh oorandom v11.1.5
+       Fresh criterion-plot v0.5.0
+       Fresh walkdir v2.5.0
+       Fresh tempfile v3.23.0
+       Fresh criterion v0.5.1
+       Fresh ipc-benchmark v0.1.0 (/home/mcurrier/auto/work/rusty-comms)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.16s
+     Running `/home/mcurrier/auto/work/rusty-comms/target/debug/deps/ipc_benchmark-86717a27040259a2`
+
+running 107 tests
+test benchmark::tests::test_benchmark_config_creation ... ok
+test benchmark::tests::candidate_includes_current_exe_name_match_unix ... ok
+test benchmark::tests::candidate_includes_fallback_target_debug ... ok
+test benchmark::tests::test_benchmark_config_display_contains_expected_fields ... ok
+test benchmark::tests::candidate_includes_env_hints ... ok
+test benchmark::tests::test_benchmark_runner_creation ... ok
+test benchmark_blocking::tests::test_create_transport_config ... ok
+test benchmark::tests::test_transport_config_buffer_size_logic ... ok
+test benchmark_blocking::tests::test_new_creates_runner ... ok
+test benchmark_blocking::tests::test_get_msg_count ... ok
+test benchmark_blocking::tests::test_validate_core_availability ... ok
+test benchmark_blocking::tests::test_validate_core_availability_invalid_server_affinity ... ok
+test benchmark_blocking::tests::test_spawn_server_includes_blocking_flag ... ok
+test cli::tests::test_ipc_mechanism_expand_all ... ok
+test cli::tests::test_ipc_mechanism_display ... ok
+test cli::tests::test_parse_duration_micros ... ok
+test execution_mode::tests::test_default_is_async ... ok
+test execution_mode::tests::test_display ... ok
+test execution_mode::tests::test_from_blocking_flag_false_gives_async ... ok
+test cli::tests::parse_affinity_flags_absent ... ok
+test cli::tests::test_blocking_flag_default_false ... ok
+test cli::tests::parse_affinity_flags_present ... ok
+test cli::tests::test_blocking_flag_can_be_set ... ok
+test cli::tests::test_parse_duration ... ok
+test execution_mode::tests::test_debug_format ... ok
+test execution_mode::tests::test_from_blocking_flag_true_gives_blocking ... ok
+test execution_mode::tests::test_is_async ... ok
+test cli::tests::test_benchmark_configuration_from_args_mapping ... ok
+test execution_mode::tests::test_is_blocking ... ok
+test cli::tests::test_pmq_priority_arg ... ok
+test ipc::posix_message_queue_blocking::tests::test_new_creates_empty_transport ... ok
+test ipc::posix_message_queue_blocking::tests::test_server_creates_queue_successfully ... ok
+test ipc::posix_message_queue_blocking::tests::test_close_cleanup ... ok
+test ipc::shared_memory_blocking::tests::test_round_trip_communication ... ignored
+test cli::tests::test_blocking_flag_works_with_other_args ... ok
+test ipc::shared_memory_blocking::tests::test_new_creates_empty_transport ... ok
+test ipc::shared_memory_direct::tests::test_new_creates_empty_transport ... ok
+test ipc::shared_memory_direct::tests::test_raw_message_size ... ok
+test ipc::posix_message_queue::tests::test_pmq_priority_is_applied ... ok
+test ipc::shared_memory_blocking::tests::test_close_cleanup ... ok
+test benchmark::tests::test_run_uses_combined_streaming_when_enabled ... ok
+test benchmark::tests::test_run_invokes_warmup_when_configured ... ok
+test ipc::tcp_socket_blocking::tests::test_client_fails_if_server_not_running ... ok
+test ipc::tcp_socket_blocking::tests::test_close_cleanup ... ok
+test ipc::tcp_socket_blocking::tests::test_new_creates_empty_transport ... ok
+test benchmark::tests::test_spawn_server_tcp_with_affinity ... ok
+test benchmark::tests::test_spawn_server_shared_memory ... ok
+test benchmark::tests::test_round_trip_duration_mode_canary_and_loop ... ok
+test ipc::tests::test_blocking_transport_trait_exists ... ok
+test ipc::tests::test_factory_creates_pmq_transport ... ok
+test ipc::tests::test_factory_creates_shm_direct_transport ... ok
+test ipc::tests::test_factory_creates_shm_transport ... ok
+test ipc::tests::test_factory_creates_tcp_transport ... ok
+test ipc::tests::test_factory_creates_uds_transport ... ok
+test ipc::tests::test_factory_rejects_all_mechanism ... ok
+test ipc::tests::test_message_creation ... ok
+test ipc::tests::test_message_serialization ... ok
+test ipc::tests::test_message_size_comparison_with_c ... ok
+test ipc::tests::test_transport_config_default ... ok
+test benchmark::tests::test_one_way_duration_mode_canary_and_loop ... ok
+test ipc::unix_domain_socket::tests::test_unix_domain_socket_communication ... ok
+test ipc::unix_domain_socket::tests::test_unix_domain_socket_multi_client ... ok
+test ipc::unix_domain_socket_blocking::tests::test_client_fails_if_server_not_running ... ok
+test ipc::unix_domain_socket_blocking::tests::test_close_cleanup ... ok
+test ipc::unix_domain_socket_blocking::tests::test_new_creates_empty_transport ... ok
+test ipc::shared_memory_direct::tests::test_send_and_receive ... ok
+test ipc::shared_memory_direct::tests::test_server_initialization ... ok
+test ipc::tcp_socket::tests::test_tcp_multi_client ... ok
+test metrics::tests::test_format_latency ... ok
+test metrics::tests::test_format_throughput ... ok
+test metrics::tests::test_latency_collector ... ok
+test metrics::tests::test_throughput_calculator ... ok
+test results::tests::test_benchmark_results_creation ... ok
+test ipc::tcp_socket::tests::test_tcp_socket_communication ... ok
+test results::tests::test_results_manager_creation ... ok
+test results::tests::test_flush_pending_records_ordering ... ok
+test benchmark::tests::test_send_delay_is_applied ... ok
+test results::tests::test_system_info_default ... ok
+test results_blocking::tests::test_add_results_and_finalize ... ok
+test results_blocking::tests::test_enable_combined_streaming ... ok
+test results::tests::test_streaming_csv_well_formed ... ok
+test results_blocking::tests::test_enable_csv_streaming ... ok
+test results_blocking::tests::test_enable_per_message_streaming ... ok
+test results_blocking::tests::test_enable_streaming ... ok
+test results_blocking::tests::test_print_summary ... ok
+test results_blocking::tests::test_new_manager ... ok
+test results::tests::test_streaming_json_well_formed ... ok
+test utils::tests::test_spawn_with_affinity_smoke ... ok
+test ipc::tcp_socket_blocking::tests::test_round_trip_communication ... ok
+test ipc::tcp_socket_blocking::tests::test_send_and_receive_message ... ok
+test ipc::tcp_socket_blocking::tests::test_server_binds_successfully ... ok
+test ipc::unix_domain_socket_blocking::tests::test_round_trip_communication ... ok
+test ipc::posix_message_queue_blocking::tests::test_round_trip_communication ... ok
+test ipc::posix_message_queue_blocking::tests::test_send_and_receive_message ... ok
+test ipc::shared_memory_blocking::tests::test_server_creates_segment_successfully ... ok
+test ipc::shared_memory_blocking::tests::test_send_and_receive_message ... ok
+test ipc::posix_message_queue::tests::test_pmq_communication ... ok
+test ipc::unix_domain_socket_blocking::tests::test_send_and_receive_message ... ok
+test ipc::unix_domain_socket_blocking::tests::test_server_binds_successfully ... ok
+test ipc::shared_memory::tests::test_shared_memory_communication ... ok
+test ipc::posix_message_queue::tests::test_pmq_backpressure ... ok
+test benchmark::tests::test_multithread_and_shm_fallback ... ok
+test ipc::unix_domain_socket::tests::test_uds_backpressure ... ok
+test ipc::shared_memory::tests::test_shared_memory_backpressure ... ok
+test ipc::tcp_socket::tests::test_tcp_socket_backpressure ... ok
+test ipc::posix_message_queue_blocking::tests::test_client_fails_if_server_not_running ... ok
+test ipc::shared_memory_blocking::tests::test_client_fails_if_server_not_running ... ok
+
+test result: ok. 106 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 30.05s
+
+     Running `/home/mcurrier/auto/work/rusty-comms/target/debug/deps/ipc_benchmark-bd42b5e52fbfaf66`
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running `/home/mcurrier/auto/work/rusty-comms/target/debug/deps/integration_blocking_advanced-569887eeed40e1f1`
+
+running 6 tests
+test blocking_error_handling ... ok
+[2m2025-11-24T22:55:29.167057Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:29.167058Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:29.167122Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:29.167155Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Starting blocking TCP server at: 127.0.0.1:23096
+[2m2025-11-24T22:55:29.167146Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:29.167187Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Starting blocking TCP server at: 127.0.0.1:22522
+[2m2025-11-24T22:55:29.167218Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server: Available cores: 22 total, requesting core 1
+[2m2025-11-24T22:55:29.167222Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Starting blocking TCP server at: 127.0.0.1:22614
+[2m2025-11-24T22:55:29.167234Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server: Attempting to set affinity to core CoreId { id: 1 }
+[2m2025-11-24T22:55:29.167262Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m TCP server bound and listening on: 127.0.0.1:22522
+[2m2025-11-24T22:55:29.167276Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m TCP server bound and listening on: 127.0.0.1:23096
+[2m2025-11-24T22:55:29.167302Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m TCP server bound and listening on: 127.0.0.1:22614
+[2m2025-11-24T22:55:29.167314Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Accepting connection on TCP server
+[2m2025-11-24T22:55:29.167323Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Accepting connection on TCP server
+[2m2025-11-24T22:55:29.167337Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Accepting connection on TCP server
+[2m2025-11-24T22:55:29.167349Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server: Successfully set affinity to core 1
+[2m2025-11-24T22:55:29.167365Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Successfully set server affinity to CPU core 1
+[2m2025-11-24T22:55:29.167414Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Starting blocking TCP server at: 127.0.0.1:22803
+[2m2025-11-24T22:55:29.167447Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m TCP server accepted connection from: 127.0.0.1:55366
+[2m2025-11-24T22:55:29.167449Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m TCP server accepted connection from: 127.0.0.1:55210
+[2m2025-11-24T22:55:29.167450Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m TCP server accepted connection from: 127.0.0.1:35670
+[2m2025-11-24T22:55:29.167477Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m TCP server bound and listening on: 127.0.0.1:22803
+[2m2025-11-24T22:55:29.167523Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Accepting connection on TCP server
+[2m2025-11-24T22:55:29.167522Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:29.167639Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m TCP server accepted connection from: 127.0.0.1:56342
+[2m2025-11-24T22:55:29.167639Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Starting blocking TCP server at: 127.0.0.1:22277
+[2m2025-11-24T22:55:29.167657Z[0m [34mDEBUG[0m [2mipc_benchmark[0m[2m:[0m Server receive error (client likely disconnected): Failed to read message length. Connection may be closed or peer disconnected.
+[2m2025-11-24T22:55:29.167693Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Closing blocking TCP transport
+[2m2025-11-24T22:55:29.167717Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m TCP server bound and listening on: 127.0.0.1:22277
+[2m2025-11-24T22:55:29.167751Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Blocking TCP transport closed
+[2m2025-11-24T22:55:29.167761Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Accepting connection on TCP server
+[2m2025-11-24T22:55:29.167774Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server exiting cleanly.
+[2m2025-11-24T22:55:29.167835Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m TCP server accepted connection from: 127.0.0.1:60422
+[2m2025-11-24T22:55:29.167994Z[0m [34mDEBUG[0m [2mipc_benchmark[0m[2m:[0m Server receive error (client likely disconnected): Failed to read message length. Connection may be closed or peer disconnected.
+[2m2025-11-24T22:55:29.168018Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Closing blocking TCP transport
+[2m2025-11-24T22:55:29.168054Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Blocking TCP transport closed
+[2m2025-11-24T22:55:29.168066Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server exiting cleanly.
+[2m2025-11-24T22:55:29.168216Z[0m [34mDEBUG[0m [2mipc_benchmark[0m[2m:[0m Server receive error (client likely disconnected): Failed to read message length. Connection may be closed or peer disconnected.
+[2m2025-11-24T22:55:29.168242Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Closing blocking TCP transport
+[2m2025-11-24T22:55:29.168286Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Blocking TCP transport closed
+[2m2025-11-24T22:55:29.168301Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server exiting cleanly.
+test blocking_result_structure ... ok
+test blocking_with_cpu_affinity ... ok
+[2m2025-11-24T22:55:29.171896Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:29.171961Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Starting blocking TCP server at: 127.0.0.1:22277
+[2m2025-11-24T22:55:29.171992Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m TCP server bound and listening on: 127.0.0.1:22277
+[2m2025-11-24T22:55:29.172006Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Accepting connection on TCP server
+[2m2025-11-24T22:55:29.172044Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m TCP server accepted connection from: 127.0.0.1:60428
+[2m2025-11-24T22:55:29.172693Z[0m [34mDEBUG[0m [2mipc_benchmark[0m[2m:[0m Server receive error (client likely disconnected): Failed to read message length. Connection may be closed or peer disconnected.
+[2m2025-11-24T22:55:29.172713Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Closing blocking TCP transport
+[2m2025-11-24T22:55:29.172737Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Blocking TCP transport closed
+[2m2025-11-24T22:55:29.172743Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server exiting cleanly.
+test blocking_both_test_types ... ok
+[2m2025-11-24T22:55:29.248443Z[0m [34mDEBUG[0m [2mipc_benchmark[0m[2m:[0m Server receive error (client likely disconnected): Failed to read message length. Connection may be closed or peer disconnected.
+[2m2025-11-24T22:55:29.248499Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Closing blocking TCP transport
+[2m2025-11-24T22:55:29.248541Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Blocking TCP transport closed
+[2m2025-11-24T22:55:29.248547Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server exiting cleanly.
+test blocking_with_send_delay ... ok
+[2m2025-11-24T22:55:30.258275Z[0m [34mDEBUG[0m [2mipc_benchmark[0m[2m:[0m Server receive error (client likely disconnected): Failed to read message length. Connection may be closed or peer disconnected.
+[2m2025-11-24T22:55:30.258389Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Closing blocking TCP transport
+[2m2025-11-24T22:55:30.258505Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Blocking TCP transport closed
+[2m2025-11-24T22:55:30.258520Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server exiting cleanly.
+test blocking_duration_based ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.13s
+
+     Running `/home/mcurrier/auto/work/rusty-comms/target/debug/deps/integration_blocking_pmq-54c510151d8d070d`
+
+running 5 tests
+[2m2025-11-24T22:55:30.295345Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:30.295426Z[0m [34mDEBUG[0m [2mipc_benchmark::benchmark_blocking[0m[2m:[0m PMQ using conservative queue depth: 16 messages -> depth 10
+[2m2025-11-24T22:55:30.295443Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Starting blocking POSIX message queue server: /ipc_test_blocking_pmq_prio
+[2m2025-11-24T22:55:30.295476Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m POSIX message queue server created: /ipc_test_blocking_pmq_prio
+[2m2025-11-24T22:55:30.295561Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:30.295663Z[0m [34mDEBUG[0m [2mipc_benchmark::benchmark_blocking[0m[2m:[0m PMQ using conservative queue depth: 16 messages -> depth 10
+[2m2025-11-24T22:55:30.295692Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Starting blocking POSIX message queue server: /ipc_test_blocking_pmq_ow
+[2m2025-11-24T22:55:30.295742Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m POSIX message queue server created: /ipc_test_blocking_pmq_ow
+[2m2025-11-24T22:55:30.295766Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:30.295809Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:30.295865Z[0m [34mDEBUG[0m [2mipc_benchmark::benchmark_blocking[0m[2m:[0m PMQ using conservative queue depth: 8 messages -> depth 10
+[2m2025-11-24T22:55:30.295871Z[0m [34mDEBUG[0m [2mipc_benchmark[0m[2m:[0m Server received shutdown message, exiting cleanly
+[2m2025-11-24T22:55:30.295888Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Closing blocking POSIX message queue transport
+[2m2025-11-24T22:55:30.295894Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Cleaning up POSIX message queue
+[2m2025-11-24T22:55:30.295890Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Starting blocking POSIX message queue server: /ipc_test_blocking_pmq_size_0
+[2m2025-11-24T22:55:30.295899Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Closing message queue with fd: MqdT(3)
+[2m2025-11-24T22:55:30.295910Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Closed message queue
+[2m2025-11-24T22:55:30.295920Z[0m [34mDEBUG[0m [2mipc_benchmark::benchmark_blocking[0m[2m:[0m PMQ using conservative queue depth: 32 messages -> depth 10
+[2m2025-11-24T22:55:30.295927Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Unlinked message queue: /ipc_test_blocking_pmq_prio
+[2m2025-11-24T22:55:30.295928Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m POSIX message queue server created: /ipc_test_blocking_pmq_size_0
+[2m2025-11-24T22:55:30.295940Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Blocking POSIX message queue transport closed
+[2m2025-11-24T22:55:30.295946Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server exiting cleanly.
+[2m2025-11-24T22:55:30.295946Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Starting blocking POSIX message queue server: /ipc_test_blocking_pmq_rt
+[2m2025-11-24T22:55:30.295985Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m POSIX message queue server created: /ipc_test_blocking_pmq_rt
+[2m2025-11-24T22:55:30.296001Z[0m [34mDEBUG[0m [2mipc_benchmark[0m[2m:[0m Server received shutdown message, exiting cleanly
+[2m2025-11-24T22:55:30.296034Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Closing blocking POSIX message queue transport
+[2m2025-11-24T22:55:30.296047Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Cleaning up POSIX message queue
+[2m2025-11-24T22:55:30.296058Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Closing message queue with fd: MqdT(3)
+[2m2025-11-24T22:55:30.296071Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Closed message queue
+[2m2025-11-24T22:55:30.296087Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Unlinked message queue: /ipc_test_blocking_pmq_ow
+[2m2025-11-24T22:55:30.296099Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Blocking POSIX message queue transport closed
+[2m2025-11-24T22:55:30.296110Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server exiting cleanly.
+[2m2025-11-24T22:55:30.296124Z[0m [34mDEBUG[0m [2mipc_benchmark[0m[2m:[0m Server received shutdown message, exiting cleanly
+[2m2025-11-24T22:55:30.296143Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Closing blocking POSIX message queue transport
+[2m2025-11-24T22:55:30.296153Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Cleaning up POSIX message queue
+[2m2025-11-24T22:55:30.296162Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Closing message queue with fd: MqdT(3)
+[2m2025-11-24T22:55:30.296175Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Closed message queue
+[2m2025-11-24T22:55:30.296187Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Unlinked message queue: /ipc_test_blocking_pmq_size_0
+[2m2025-11-24T22:55:30.296198Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Blocking POSIX message queue transport closed
+[2m2025-11-24T22:55:30.296208Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server exiting cleanly.
+[2m2025-11-24T22:55:30.296335Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:30.296478Z[0m [34mDEBUG[0m [2mipc_benchmark::benchmark_blocking[0m[2m:[0m PMQ using conservative queue depth: 1 messages -> depth 10
+[2m2025-11-24T22:55:30.296520Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Starting blocking POSIX message queue server: /ipc_test_blocking_pmq_srv
+[2m2025-11-24T22:55:30.296574Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m POSIX message queue server created: /ipc_test_blocking_pmq_srv
+[2m2025-11-24T22:55:30.297116Z[0m [34mDEBUG[0m [2mipc_benchmark[0m[2m:[0m Server received shutdown message, exiting cleanly
+[2m2025-11-24T22:55:30.297142Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Closing blocking POSIX message queue transport
+[2m2025-11-24T22:55:30.297152Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Cleaning up POSIX message queue
+[2m2025-11-24T22:55:30.297162Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Closing message queue with fd: MqdT(3)
+[2m2025-11-24T22:55:30.297174Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Closed message queue
+[2m2025-11-24T22:55:30.297187Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Unlinked message queue: /ipc_test_blocking_pmq_rt
+[2m2025-11-24T22:55:30.297198Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Blocking POSIX message queue transport closed
+[2m2025-11-24T22:55:30.297216Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server exiting cleanly.
+test pmq_one_way_blocking_smoke ... ok
+test pmq_blocking_with_priority ... ok
+test pmq_round_trip_blocking_smoke ... ok
+[2m2025-11-24T22:55:30.350553Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:30.350632Z[0m [34mDEBUG[0m [2mipc_benchmark::benchmark_blocking[0m[2m:[0m PMQ using conservative queue depth: 8 messages -> depth 10
+[2m2025-11-24T22:55:30.350650Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Starting blocking POSIX message queue server: /ipc_test_blocking_pmq_size_1
+[2m2025-11-24T22:55:30.350678Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m POSIX message queue server created: /ipc_test_blocking_pmq_size_1
+[2m2025-11-24T22:55:30.350930Z[0m [34mDEBUG[0m [2mipc_benchmark[0m[2m:[0m Server received shutdown message, exiting cleanly
+[2m2025-11-24T22:55:30.350939Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Closing blocking POSIX message queue transport
+[2m2025-11-24T22:55:30.350944Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Cleaning up POSIX message queue
+[2m2025-11-24T22:55:30.350950Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Closing message queue with fd: MqdT(3)
+[2m2025-11-24T22:55:30.350956Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Closed message queue
+[2m2025-11-24T22:55:30.350962Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Unlinked message queue: /ipc_test_blocking_pmq_size_1
+[2m2025-11-24T22:55:30.350967Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Blocking POSIX message queue transport closed
+[2m2025-11-24T22:55:30.350972Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server exiting cleanly.
+test pmq_blocking_server_ready_smoke ... ok
+[2m2025-11-24T22:55:30.405718Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:30.405838Z[0m [34mDEBUG[0m [2mipc_benchmark::benchmark_blocking[0m[2m:[0m PMQ using conservative queue depth: 8 messages -> depth 10
+[2m2025-11-24T22:55:30.405867Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Starting blocking POSIX message queue server: /ipc_test_blocking_pmq_size_2
+[2m2025-11-24T22:55:30.405917Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m POSIX message queue server created: /ipc_test_blocking_pmq_size_2
+[2m2025-11-24T22:55:30.406481Z[0m [34mDEBUG[0m [2mipc_benchmark[0m[2m:[0m Server received shutdown message, exiting cleanly
+[2m2025-11-24T22:55:30.406501Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Closing blocking POSIX message queue transport
+[2m2025-11-24T22:55:30.406513Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Cleaning up POSIX message queue
+[2m2025-11-24T22:55:30.406523Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Closing message queue with fd: MqdT(3)
+[2m2025-11-24T22:55:30.406537Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Closed message queue
+[2m2025-11-24T22:55:30.406552Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Unlinked message queue: /ipc_test_blocking_pmq_size_2
+[2m2025-11-24T22:55:30.406566Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::posix_message_queue_blocking[0m[2m:[0m Blocking POSIX message queue transport closed
+[2m2025-11-24T22:55:30.406578Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server exiting cleanly.
+test pmq_blocking_various_sizes ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+     Running `/home/mcurrier/auto/work/rusty-comms/target/debug/deps/integration_blocking_shm-e199c90340981618`
+
+running 4 tests
+[2m2025-11-24T22:55:30.462224Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:30.462298Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Starting blocking shared memory server with segment: ipc_test_blocking_shm_ow
+[2m2025-11-24T22:55:30.462348Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Shared memory server created successfully
+[2m2025-11-24T22:55:30.462371Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Waiting for client to connect to shared memory
+[2m2025-11-24T22:55:30.462563Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Client connected to shared memory
+[2m2025-11-24T22:55:30.462789Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:30.462897Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:30.462904Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Starting blocking shared memory server with segment: ipc_test_blocking_shm_srv
+[2m2025-11-24T22:55:30.462956Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Starting blocking shared memory server with segment: ipc_test_blocking_shm_size_0
+[2m2025-11-24T22:55:30.462910Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:30.462998Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Shared memory server created successfully
+[2m2025-11-24T22:55:30.463004Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Shared memory server created successfully
+[2m2025-11-24T22:55:30.463025Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Waiting for client to connect to shared memory
+[2m2025-11-24T22:55:30.463028Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Waiting for client to connect to shared memory
+[2m2025-11-24T22:55:30.463063Z[0m [34mDEBUG[0m [2mipc_benchmark[0m[2m:[0m Server received shutdown message, exiting cleanly
+[2m2025-11-24T22:55:30.463080Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Closing blocking shared memory transport
+[2m2025-11-24T22:55:30.463105Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Blocking shared memory transport closed
+[2m2025-11-24T22:55:30.463115Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server exiting cleanly.
+[2m2025-11-24T22:55:30.463104Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Starting blocking shared memory server with segment: ipc_test_blocking_shm_first
+[2m2025-11-24T22:55:30.463185Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Shared memory server created successfully
+[2m2025-11-24T22:55:30.463197Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Client connected to shared memory
+[2m2025-11-24T22:55:30.463225Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Waiting for client to connect to shared memory
+[2m2025-11-24T22:55:30.463243Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Client connected to shared memory
+[2m2025-11-24T22:55:30.463274Z[0m [34mDEBUG[0m [2mipc_benchmark[0m[2m:[0m Server received shutdown message, exiting cleanly
+[2m2025-11-24T22:55:30.463280Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Closing blocking shared memory transport
+[2m2025-11-24T22:55:30.463296Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Blocking shared memory transport closed
+[2m2025-11-24T22:55:30.463307Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server exiting cleanly.
+[2m2025-11-24T22:55:30.463629Z[0m [34mDEBUG[0m [2mipc_benchmark[0m[2m:[0m Server received shutdown message, exiting cleanly
+[2m2025-11-24T22:55:30.463645Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Closing blocking shared memory transport
+[2m2025-11-24T22:55:30.463676Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Blocking shared memory transport closed
+[2m2025-11-24T22:55:30.463689Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server exiting cleanly.
+test shm_one_way_blocking_smoke ... ok
+test shm_blocking_with_first_message ... ok
+[2m2025-11-24T22:55:30.518576Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:30.518713Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Starting blocking shared memory server with segment: ipc_test_blocking_shm_size_1
+[2m2025-11-24T22:55:30.518810Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Shared memory server created successfully
+[2m2025-11-24T22:55:30.518865Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Waiting for client to connect to shared memory
+[2m2025-11-24T22:55:30.518888Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Client connected to shared memory
+[2m2025-11-24T22:55:30.519286Z[0m [34mDEBUG[0m [2mipc_benchmark[0m[2m:[0m Server received shutdown message, exiting cleanly
+[2m2025-11-24T22:55:30.519305Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Closing blocking shared memory transport
+[2m2025-11-24T22:55:30.519341Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Blocking shared memory transport closed
+[2m2025-11-24T22:55:30.519361Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server exiting cleanly.
+test shm_blocking_server_ready_smoke ... ok
+[2m2025-11-24T22:55:30.574681Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:30.574799Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Starting blocking shared memory server with segment: ipc_test_blocking_shm_size_2
+[2m2025-11-24T22:55:30.574881Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Shared memory server created successfully
+[2m2025-11-24T22:55:30.574919Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Waiting for client to connect to shared memory
+[2m2025-11-24T22:55:30.575111Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Client connected to shared memory
+[2m2025-11-24T22:55:30.575650Z[0m [34mDEBUG[0m [2mipc_benchmark[0m[2m:[0m Server received shutdown message, exiting cleanly
+[2m2025-11-24T22:55:30.575664Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Closing blocking shared memory transport
+[2m2025-11-24T22:55:30.575692Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::shared_memory_blocking[0m[2m:[0m Blocking shared memory transport closed
+[2m2025-11-24T22:55:30.575709Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server exiting cleanly.
+test shm_blocking_various_sizes ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+     Running `/home/mcurrier/auto/work/rusty-comms/target/debug/deps/integration_blocking_tcp-bc89266da57d9a9e`
+
+running 4 tests
+[2m2025-11-24T22:55:30.630789Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:30.630804Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:30.630873Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Starting blocking TCP server at: 127.0.0.1:21770
+[2m2025-11-24T22:55:30.630923Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Starting blocking TCP server at: 127.0.0.1:21762
+[2m2025-11-24T22:55:30.630979Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m TCP server bound and listening on: 127.0.0.1:21770
+[2m2025-11-24T22:55:30.631010Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Accepting connection on TCP server
+[2m2025-11-24T22:55:30.631026Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m TCP server bound and listening on: 127.0.0.1:21762
+[2m2025-11-24T22:55:30.631048Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Accepting connection on TCP server
+[2m2025-11-24T22:55:30.631111Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m TCP server accepted connection from: 127.0.0.1:56710
+[2m2025-11-24T22:55:30.631142Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m TCP server accepted connection from: 127.0.0.1:54314
+[2m2025-11-24T22:55:30.631222Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:30.631240Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:30.631330Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Starting blocking TCP server at: 127.0.0.1:21119
+[2m2025-11-24T22:55:30.631344Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Starting blocking TCP server at: 127.0.0.1:21567
+[2m2025-11-24T22:55:30.631366Z[0m [34mDEBUG[0m [2mipc_benchmark[0m[2m:[0m Server receive error (client likely disconnected): Failed to read message length. Connection may be closed or peer disconnected.
+[2m2025-11-24T22:55:30.631381Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Closing blocking TCP transport
+[2m2025-11-24T22:55:30.631400Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m TCP server bound and listening on: 127.0.0.1:21119
+[2m2025-11-24T22:55:30.631404Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Blocking TCP transport closed
+[2m2025-11-24T22:55:30.631413Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m TCP server bound and listening on: 127.0.0.1:21567
+[2m2025-11-24T22:55:30.631417Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server exiting cleanly.
+[2m2025-11-24T22:55:30.631418Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Accepting connection on TCP server
+[2m2025-11-24T22:55:30.631450Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Accepting connection on TCP server
+[2m2025-11-24T22:55:30.631535Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m TCP server accepted connection from: 127.0.0.1:43462
+[2m2025-11-24T22:55:30.631773Z[0m [34mDEBUG[0m [2mipc_benchmark[0m[2m:[0m Server receive error (client likely disconnected): Failed to read message length. Connection may be closed or peer disconnected.
+[2m2025-11-24T22:55:30.631798Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Closing blocking TCP transport
+[2m2025-11-24T22:55:30.631844Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Blocking TCP transport closed
+[2m2025-11-24T22:55:30.631861Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server exiting cleanly.
+test tcp_one_way_blocking_smoke ... ok
+[2m2025-11-24T22:55:30.633524Z[0m [34mDEBUG[0m [2mipc_benchmark[0m[2m:[0m Server receive error (client likely disconnected): Failed to read message length. Connection may be closed or peer disconnected.
+[2m2025-11-24T22:55:30.633562Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Closing blocking TCP transport
+[2m2025-11-24T22:55:30.633609Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Blocking TCP transport closed
+[2m2025-11-24T22:55:30.633632Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server exiting cleanly.
+test tcp_round_trip_blocking_smoke ... ok
+[2m2025-11-24T22:55:30.635031Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:30.635081Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Starting blocking TCP server at: 127.0.0.1:21490
+[2m2025-11-24T22:55:30.635121Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m TCP server bound and listening on: 127.0.0.1:21490
+[2m2025-11-24T22:55:30.635143Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Accepting connection on TCP server
+[2m2025-11-24T22:55:30.635189Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m TCP server accepted connection from: 127.0.0.1:53108
+[2m2025-11-24T22:55:30.635372Z[0m [34mDEBUG[0m [2mipc_benchmark[0m[2m:[0m Server receive error (client likely disconnected): Failed to read message length. Connection may be closed or peer disconnected.
+[2m2025-11-24T22:55:30.635384Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Closing blocking TCP transport
+[2m2025-11-24T22:55:30.635403Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Blocking TCP transport closed
+[2m2025-11-24T22:55:30.635410Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server exiting cleanly.
+[2m2025-11-24T22:55:30.637632Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:30.637691Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Starting blocking TCP server at: 127.0.0.1:21598
+[2m2025-11-24T22:55:30.637740Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m TCP server bound and listening on: 127.0.0.1:21598
+[2m2025-11-24T22:55:30.637764Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Accepting connection on TCP server
+[2m2025-11-24T22:55:30.637827Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m TCP server accepted connection from: 127.0.0.1:42872
+[2m2025-11-24T22:55:30.638344Z[0m [34mDEBUG[0m [2mipc_benchmark[0m[2m:[0m Server receive error (client likely disconnected): Failed to read message length. Connection may be closed or peer disconnected.
+[2m2025-11-24T22:55:30.638358Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Closing blocking TCP transport
+[2m2025-11-24T22:55:30.638379Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::tcp_socket_blocking[0m[2m:[0m Blocking TCP transport closed
+[2m2025-11-24T22:55:30.638386Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server exiting cleanly.
+test tcp_blocking_various_sizes ... ok
+test tcp_blocking_server_ready_smoke ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running `/home/mcurrier/auto/work/rusty-comms/target/debug/deps/integration_blocking_uds-a326b8ff5e9f5283`
+
+running 4 tests
+[2m2025-11-24T22:55:30.733956Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:30.733956Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:30.734054Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m Starting blocking UDS server at: /tmp/ipc_test_blocking_uds_rt.sock
+[2m2025-11-24T22:55:30.734055Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m Starting blocking UDS server at: /tmp/ipc_test_blocking_uds_size_0.sock
+[2m2025-11-24T22:55:30.734127Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m UDS server bound successfully
+[2m2025-11-24T22:55:30.734134Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m UDS server bound successfully
+[2m2025-11-24T22:55:30.734146Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m Accepting connection on UDS server
+[2m2025-11-24T22:55:30.734165Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m Accepting connection on UDS server
+[2m2025-11-24T22:55:30.734256Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m UDS server accepted connection from: (unnamed)
+[2m2025-11-24T22:55:30.734343Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m UDS server accepted connection from: (unnamed)
+[2m2025-11-24T22:55:30.734400Z[0m [34mDEBUG[0m [2mipc_benchmark[0m[2m:[0m Server receive error (client likely disconnected): Failed to read message length. Connection may be closed or peer disconnected.
+[2m2025-11-24T22:55:30.734424Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m Closing blocking UDS transport
+[2m2025-11-24T22:55:30.734443Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m Blocking UDS transport closed
+[2m2025-11-24T22:55:30.734456Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server exiting cleanly.
+[2m2025-11-24T22:55:30.734939Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:30.734957Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:30.735083Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m Starting blocking UDS server at: /tmp/ipc_test_blocking_uds_srv.sock
+[2m2025-11-24T22:55:30.735090Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m Starting blocking UDS server at: /tmp/ipc_test_blocking_uds_ow.sock
+[2m2025-11-24T22:55:30.735176Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m UDS server bound successfully
+[2m2025-11-24T22:55:30.735189Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m UDS server bound successfully
+[2m2025-11-24T22:55:30.735206Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m Accepting connection on UDS server
+[2m2025-11-24T22:55:30.735244Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m Accepting connection on UDS server
+[2m2025-11-24T22:55:30.735273Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m UDS server accepted connection from: (unnamed)
+[2m2025-11-24T22:55:30.735581Z[0m [34mDEBUG[0m [2mipc_benchmark[0m[2m:[0m Server receive error (client likely disconnected): Failed to read message length. Connection may be closed or peer disconnected.
+[2m2025-11-24T22:55:30.735611Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m Closing blocking UDS transport
+[2m2025-11-24T22:55:30.735640Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m Blocking UDS transport closed
+[2m2025-11-24T22:55:30.735659Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server exiting cleanly.
+[2m2025-11-24T22:55:30.735794Z[0m [34mDEBUG[0m [2mipc_benchmark[0m[2m:[0m Server receive error (client likely disconnected): Failed to read message length. Connection may be closed or peer disconnected.
+[2m2025-11-24T22:55:30.735832Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m Closing blocking UDS transport
+[2m2025-11-24T22:55:30.735854Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m Blocking UDS transport closed
+[2m2025-11-24T22:55:30.735864Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server exiting cleanly.
+test uds_round_trip_blocking_smoke ... ok
+[2m2025-11-24T22:55:30.737811Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:30.737872Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m Starting blocking UDS server at: /tmp/ipc_test_blocking_uds_size_1.sock
+[2m2025-11-24T22:55:30.737917Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m UDS server bound successfully
+[2m2025-11-24T22:55:30.737947Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m Accepting connection on UDS server
+[2m2025-11-24T22:55:30.737975Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m UDS server accepted connection from: (unnamed)
+[2m2025-11-24T22:55:30.738211Z[0m [34mDEBUG[0m [2mipc_benchmark[0m[2m:[0m Server receive error (client likely disconnected): Failed to read message length. Connection may be closed or peer disconnected.
+[2m2025-11-24T22:55:30.738224Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m Closing blocking UDS transport
+[2m2025-11-24T22:55:30.738235Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m Blocking UDS transport closed
+[2m2025-11-24T22:55:30.738241Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server exiting cleanly.
+test uds_one_way_blocking_smoke ... ok
+[2m2025-11-24T22:55:30.741404Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Running in server-only mode (blocking)
+[2m2025-11-24T22:55:30.741469Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m Starting blocking UDS server at: /tmp/ipc_test_blocking_uds_size_2.sock
+[2m2025-11-24T22:55:30.741551Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m UDS server bound successfully
+[2m2025-11-24T22:55:30.741590Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m Accepting connection on UDS server
+[2m2025-11-24T22:55:30.741608Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m UDS server accepted connection from: (unnamed)
+[2m2025-11-24T22:55:30.742795Z[0m [34mDEBUG[0m [2mipc_benchmark[0m[2m:[0m Server receive error (client likely disconnected): Failed to read message length. Connection may be closed or peer disconnected.
+[2m2025-11-24T22:55:30.742813Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m Closing blocking UDS transport
+[2m2025-11-24T22:55:30.742826Z[0m [34mDEBUG[0m [2mipc_benchmark::ipc::unix_domain_socket_blocking[0m[2m:[0m Blocking UDS transport closed
+[2m2025-11-24T22:55:30.742834Z[0m [32m INFO[0m [2mipc_benchmark[0m[2m:[0m Server exiting cleanly.
+test uds_blocking_various_sizes ... ok
+test uds_blocking_server_ready_smoke ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running `/home/mcurrier/auto/work/rusty-comms/target/debug/deps/integration_pmq_round_trip-f8d7414adf015416`
+
+running 1 test
+test pmq_round_trip_process_smoke ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running `/home/mcurrier/auto/work/rusty-comms/target/debug/deps/integration_server_handshake-f932b7d0a98ba296`
+
+running 1 test
+test server_ready_handshake_via_stdout_pipe ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running `/home/mcurrier/auto/work/rusty-comms/target/debug/deps/integration_shm_round_trip-046251c99c52631c`
+
+running 1 test
+test shm_round_trip_process_smoke ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.02s
+
+     Running `/home/mcurrier/auto/work/rusty-comms/target/debug/deps/integration_tcp_round_trip-f963ac3b44b668e8`
+
+running 2 tests
+test tcp_round_trip_process_smoke ... ok
+test uds_server_ready_smoke ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+   Doc-tests ipc_benchmark
+     Running `/home/mcurrier/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustdoc --edition=2021 --crate-type lib --color auto --crate-name ipc_benchmark --test src/lib.rs --test-run-directory /home/mcurrier/auto/work/rusty-comms -L dependency=/home/mcurrier/auto/work/rusty-comms/target/debug/deps -L dependency=/home/mcurrier/auto/work/rusty-comms/target/debug/deps --extern anyhow=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libanyhow-61be124e0c37e972.rlib --extern async_trait=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libasync_trait-6b1dbe13f0774ddf.so --extern bincode=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libbincode-6afd21e19d244b6a.rlib --extern chrono=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libchrono-cde20120362d2e39.rlib --extern clap=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libclap-c468345d086afa92.rlib --extern colored=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libcolored-f6c3571a9bd6a8b1.rlib --extern core_affinity=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libcore_affinity-814f936187213273.rlib --extern criterion=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libcriterion-7bec42d44de42127.rlib --extern crossbeam=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libcrossbeam-ca7f90e71d9b1e8c.rlib --extern half=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libhalf-8c2f5254eba5425b.rlib --extern hdrhistogram=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libhdrhistogram-e2daf0c77e482dad.rlib --extern ipc_benchmark=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libipc_benchmark-261152ece010ca14.rlib --extern lock_api=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/liblock_api-59ccc7edac88d070.rlib --extern mio=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libmio-9df942de8db17736.rlib --extern nix=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libnix-fbe2d8f6ea29d209.rlib --extern num_cpus=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libnum_cpus-c1eeff974f2d8c92.rlib --extern os_pipe=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libos_pipe-3843e8e03fb6b1de.rlib --extern parking_lot=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libparking_lot-23a647dd2d4e8259.rlib --extern parking_lot_core=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libparking_lot_core-e52cd4e0741630f9.rlib --extern rand=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/librand-7a0bd47fdd6094be.rlib --extern rayon=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/librayon-4cf369d599f91faf.rlib --extern rayon_core=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/librayon_core-3757773438a03f8a.rlib --extern serde=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libserde-572122c2b5b7bbb9.rlib --extern serde_json=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libserde_json-99e838268ae28654.rlib --extern shared_memory=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libshared_memory-547e2c01010d276c.rlib --extern socket2=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libsocket2-c629bbfabd0f4afd.rlib --extern statistics=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libstatistics-eb83fa81cf2cd1d8.rlib --extern tempfile=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libtempfile-1d1ee2971a4c4d7b.rlib --extern thiserror=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libthiserror-c190460caf1057c6.rlib --extern time=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libtime-8d00763ea4fab157.rlib --extern tokio=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libtokio-58df27c28d2f9c03.rlib --extern tokio_macros=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libtokio_macros-45be74854c2f3a91.so --extern tracing=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libtracing-5639a86d77b154d6.rlib --extern tracing_appender=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libtracing_appender-6617ce372b06fe2d.rlib --extern tracing_subscriber=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libtracing_subscriber-bd8d5965df180109.rlib --extern uuid=/home/mcurrier/auto/work/rusty-comms/target/debug/deps/libuuid-bb8f4085a8262f3d.rlib -C embed-bitcode=no --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' --error-format human`
+
+running 40 tests
+test src/ipc/mod.rs - ipc::BlockingTransportFactory::create (line 1282) - compile ... ok
+test src/ipc/mod.rs - ipc::BlockingTransportFactory (line 1225) - compile ... ok
+test src/ipc/shared_memory_direct.rs - ipc::shared_memory_direct::BlockingSharedMemoryDirect (line 273) - compile ... ok
+test src/ipc/shared_memory_direct.rs - ipc::shared_memory_direct::RawSharedMessage::init (line 177) - compile ... ok
+test src/ipc/shared_memory_direct.rs - ipc::shared_memory_direct::RawSharedMessage (line 87) - compile ... ok
+test src/ipc/mod.rs - ipc::BlockingTransport (line 1052) - compile ... ok
+test src/ipc/posix_message_queue_blocking.rs - ipc::posix_message_queue_blocking (line 32) - compile ... ok
+test src/ipc/posix_message_queue.rs - ipc::posix_message_queue::PosixMessageQueueTransport::new (line 163) - compile ... ok
+test src/benchmark_blocking.rs - benchmark_blocking::BlockingBenchmarkRunner (line 170) - compile ... ok
+test src/ipc/shared_memory_blocking.rs - ipc::shared_memory_blocking (line 28) - compile ... ok
+test src/benchmark.rs - benchmark::BenchmarkRunner (line 316) - compile ... ok
+test src/benchmark_blocking.rs - benchmark_blocking::BlockingBenchmarkRunner::new (line 217) - compile ... ok
+test src/ipc/unix_domain_socket_blocking.rs - ipc::unix_domain_socket_blocking (line 31) - compile ... ok
+test src/lib.rs - benchmark_blocking (line 129) - compile ... ok
+test src/lib.rs - (line 28) - compile ... ok
+test src/ipc/tcp_socket_blocking.rs - ipc::tcp_socket_blocking (line 29) - compile ... ok
+test src/results_blocking.rs - results_blocking::BlockingResultsManager::add_results (line 662) - compile ... ok
+test src/results_blocking.rs - results_blocking::BlockingResultsManager::finalize (line 753) - compile ... ok
+test src/cli.rs - cli::IpcMechanism::expand_all (line 510) ... ok
+test src/cli.rs - cli::IpcMechanism::expand_all (line 498) ... ok
+test src/results_blocking.rs - results_blocking::BlockingResultsManager (line 75) ... ok
+test src/results_blocking.rs - results_blocking::BlockingResultsManager::enable_combined_streaming (line 354) ... ok
+test src/results_blocking.rs - results_blocking::BlockingResultsManager::enable_csv_streaming (line 412) ... ok
+test src/execution_mode.rs - execution_mode::ExecutionMode::from_blocking_flag (line 64) ... ok
+test src/results_blocking.rs - results_blocking::BlockingResultsManager::enable_streaming (line 221) ... ok
+test src/results_blocking.rs - results_blocking::BlockingResultsManager::enable_per_message_streaming (line 287) ... ok
+test src/execution_mode.rs - execution_mode::ExecutionMode::is_async (line 85) ... ok
+test src/execution_mode.rs - execution_mode::ExecutionMode::is_blocking (line 99) ... ok
+test src/results_blocking.rs - results_blocking::BlockingResultsManager::new (line 160) ... ok
+test src/lib.rs - execution_mode (line 128) ... ok
+test src/ipc/shared_memory_blocking.rs - ipc::shared_memory_blocking::BlockingSharedMemory::new (line 441) ... ok
+test src/metrics.rs - metrics::PercentileValue (line 151) ... ok
+test src/cli.rs - cli::parse_duration (line 675) ... ok
+test src/lib.rs - metrics (line 165) ... ok
+test src/metrics.rs - metrics::MetricsCollector (line 602) ... ok
+test src/ipc/shared_memory_direct.rs - ipc::shared_memory_direct::BlockingSharedMemoryDirect::new (line 313) ... ok
+test src/ipc/posix_message_queue_blocking.rs - ipc::posix_message_queue_blocking::BlockingPosixMessageQueue::new (line 111) ... ok
+test src/ipc/tcp_socket_blocking.rs - ipc::tcp_socket_blocking::BlockingTcpSocket::new (line 92) ... ok
+test src/ipc/unix_domain_socket_blocking.rs - ipc::unix_domain_socket_blocking::BlockingUnixDomainSocket::new (line 94) ... ok
+test src/cli.rs - cli::IpcMechanism::expand_all (line 486) ... ok
+
+test result: ok. 40 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.21s
+

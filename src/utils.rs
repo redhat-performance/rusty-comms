@@ -21,7 +21,91 @@
 //! - **Performance**: Minimal overhead for frequently called functions
 //! - **Extensibility**: Easy to add new formatters and validators
 
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Returns the system-appropriate temporary directory for IPC files.
+///
+/// This function provides cross-platform support for determining the temporary
+/// directory location, supporting Linux, macOS, and Windows.
+///
+/// ## Resolution Order
+///
+/// 1. **Environment Variable**: If `IPC_BENCHMARK_TEMP_DIR` is set, uses that value
+/// 2. **System Default**: Falls back to `std::env::temp_dir()` which returns:
+///    - **Linux**: `/tmp` or value of `TMPDIR` environment variable
+///    - **macOS**: `/var/folders/.../T/` or value of `TMPDIR` environment variable
+///    - **Windows**: `C:\Users\<user>\AppData\Local\Temp\` or value of `TEMP`/`TMP`
+///
+/// ## Examples
+///
+/// ```rust
+/// use ipc_benchmark::utils::get_temp_dir;
+///
+/// let temp_dir = get_temp_dir();
+/// let socket_path = temp_dir.join("my_socket.sock");
+/// ```
+///
+/// ## Environment Override
+///
+/// ```bash
+/// # Use custom temporary directory
+/// IPC_BENCHMARK_TEMP_DIR=/var/run/ipc ipc-benchmark -m uds
+/// ```
+///
+/// ## Platform Notes
+///
+/// - On Unix systems, socket paths have a maximum length (typically 104-108 bytes)
+/// - The returned path is guaranteed to be a valid directory on the system
+/// - On Windows, Unix domain sockets are only available on Windows 10 build 17063+
+pub fn get_temp_dir() -> PathBuf {
+    // First, check for custom temp directory via environment variable
+    if let Ok(custom_dir) = std::env::var("IPC_BENCHMARK_TEMP_DIR") {
+        let path = PathBuf::from(custom_dir);
+        if path.is_dir() {
+            return path;
+        }
+        // Log warning if custom dir doesn't exist but fall through to default
+        tracing::warn!(
+            "IPC_BENCHMARK_TEMP_DIR is set to '{}' but directory does not exist, using system default",
+            path.display()
+        );
+    }
+
+    // Use system-appropriate temp directory
+    // This handles all platforms correctly:
+    // - Linux: /tmp or TMPDIR
+    // - macOS: /var/folders/.../T/ or TMPDIR
+    // - Windows: %TEMP% or %TMP% or C:\Users\<user>\AppData\Local\Temp
+    std::env::temp_dir()
+}
+
+/// Returns a path for a socket file in the system temporary directory.
+///
+/// This is a convenience function that combines `get_temp_dir()` with a
+/// socket filename to create a full path suitable for Unix domain sockets.
+///
+/// ## Arguments
+///
+/// * `filename` - The name of the socket file (e.g., "ipc_benchmark.sock")
+///
+/// ## Returns
+///
+/// Full path to the socket file in the appropriate temp directory
+///
+/// ## Example
+///
+/// ```rust
+/// use ipc_benchmark::utils::get_temp_socket_path;
+///
+/// let path = get_temp_socket_path("my_app.sock");
+/// // On Linux: "/tmp/my_app.sock"
+/// // On macOS: "/var/folders/.../T/my_app.sock"
+/// // On Windows: "C:\\Users\\...\\AppData\\Local\\Temp\\my_app.sock"
+/// ```
+pub fn get_temp_socket_path(filename: &str) -> String {
+    get_temp_dir().join(filename).to_string_lossy().into_owned()
+}
 
 /// Spawn a future on a dedicated thread, optionally setting CPU affinity
 /// before running it. Returns the future's output.
@@ -120,7 +204,7 @@ pub fn current_timestamp_ns() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::spawn_with_affinity;
+    use super::{get_temp_dir, get_temp_socket_path, spawn_with_affinity};
 
     /// Smoke test for spawn_with_affinity: ensures the future runs and returns a value.
     #[tokio::test]
@@ -131,5 +215,40 @@ mod tests {
         };
         let result: u32 = spawn_with_affinity(fut, None).await.unwrap();
         assert_eq!(result, 42);
+    }
+
+    /// Test that get_temp_dir returns a valid directory
+    #[test]
+    fn test_get_temp_dir_returns_valid_directory() {
+        let temp_dir = get_temp_dir();
+        assert!(
+            temp_dir.is_dir(),
+            "get_temp_dir() should return an existing directory"
+        );
+    }
+
+    /// Test that get_temp_socket_path creates proper path
+    #[test]
+    fn test_get_temp_socket_path_creates_valid_path() {
+        let socket_path = get_temp_socket_path("test_socket.sock");
+        assert!(socket_path.ends_with("test_socket.sock"));
+        // Should contain a path separator
+        assert!(socket_path.contains(std::path::MAIN_SEPARATOR) || socket_path.contains('/'));
+    }
+
+    /// Test that custom temp dir via environment variable works
+    #[test]
+    fn test_custom_temp_dir_via_env() {
+        // Get current temp dir first
+        let system_temp = std::env::temp_dir();
+
+        // Set custom env var to the system temp dir (we know it exists)
+        std::env::set_var("IPC_BENCHMARK_TEMP_DIR", &system_temp);
+
+        let temp_dir = get_temp_dir();
+        assert_eq!(temp_dir, system_temp);
+
+        // Clean up
+        std::env::remove_var("IPC_BENCHMARK_TEMP_DIR");
     }
 }

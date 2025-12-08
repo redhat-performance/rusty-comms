@@ -13,9 +13,9 @@
 //! - `create()` blocks during shared memory segment creation
 //! - `open()` blocks until segment is available
 //! - `send()` blocks until space is available in ring buffer (using pthread
-//!   condition variables on Unix, matching C benchmark methodology)
+//!   condition variables on Unix)
 //! - `recv()` blocks until data is available (using pthread condition variables
-//!   on Unix, matching C benchmark methodology)
+//!   on Unix)
 //!
 //! # Ring Buffer Protocol
 //!
@@ -69,7 +69,7 @@ use libc::{pthread_cond_t, pthread_mutex_t};
 /// manages the circular buffer for message passing.
 ///
 /// Uses process-shared pthread mutex and condition variables for efficient
-/// synchronization, matching the C benchmark methodology.
+/// synchronization.
 #[repr(C)]
 struct SharedMemoryRingBuffer {
     // Ring buffer metadata
@@ -85,7 +85,7 @@ struct SharedMemoryRingBuffer {
     // Message count for coordination
     message_count: AtomicUsize,
 
-    // Process-shared synchronization primitives (matching C implementation)
+    // Process-shared synchronization primitives
     #[cfg(unix)]
     mutex: pthread_mutex_t,
     #[cfg(unix)]
@@ -275,9 +275,8 @@ impl SharedMemoryRingBuffer {
 
     /// Write data to the ring buffer (blocking with condition variable).
     ///
-    /// This method matches the C implementation using pthread_cond_wait.
-    /// It will block until space is available, then write the data and signal
-    /// any waiting readers.
+    /// Uses pthread_cond_wait to block until space is available, then writes
+    /// the data and signals any waiting readers.
     ///
     /// # Safety
     /// Only available on Unix platforms with pthread support.
@@ -335,9 +334,8 @@ impl SharedMemoryRingBuffer {
 
     /// Read data from the ring buffer (blocking with condition variable).
     ///
-    /// This method matches the C implementation using pthread_cond_wait.
-    /// It will block until data is available, then read it and signal
-    /// any waiting writers.
+    /// Uses pthread_cond_wait to block until data is available, then reads
+    /// it and signals any waiting writers.
     ///
     /// # Safety
     /// Only available on Unix platforms with pthread support.
@@ -629,13 +627,13 @@ impl BlockingTransport for BlockingSharedMemory {
             )
         })?;
 
-        // METHODOLOGY CHANGE: Match C benchmark approach where timestamp is captured
-        // immediately before IPC syscall with minimal intervening work.
+        // Capture timestamp immediately before IPC syscall with minimal
+        // intervening work for accurate latency measurement.
         //
         // Pre-serialize with dummy timestamp to get buffer structure, then update
         // only the timestamp bytes immediately before send. This ensures any
         // scheduling delays between timestamp capture and send are included in
-        // the measured latency (matching C programs).
+        // the measured latency.
         let mut message_with_timestamp = message.clone();
         message_with_timestamp.timestamp = 0; // Dummy timestamp for pre-serialization
         let mut serialized =
@@ -648,7 +646,7 @@ impl BlockingTransport for BlockingSharedMemory {
         serialized[ts_offset].copy_from_slice(&timestamp_bytes);
 
         // Send immediately - no intervening work
-        // Use condition variable-based blocking write (matches C implementation)
+        // Use condition variable-based blocking write
         #[cfg(unix)]
         {
             unsafe {
@@ -697,7 +695,7 @@ impl BlockingTransport for BlockingSharedMemory {
             )
         })?;
 
-        // Use condition variable-based blocking read (matches C implementation)
+        // Use condition variable-based blocking read
         #[cfg(unix)]
         let data = unsafe { (*ring_buffer).read_data_blocking()? };
 

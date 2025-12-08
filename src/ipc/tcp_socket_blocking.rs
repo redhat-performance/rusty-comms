@@ -193,13 +193,13 @@ impl BlockingTransport for BlockingTcpSocket {
                  Call start_server_blocking() or start_client_blocking() first.",
         )?;
 
-        // METHODOLOGY CHANGE: Match C benchmark approach where timestamp is captured
-        // immediately before IPC syscall with minimal intervening work.
+        // Capture timestamp immediately before IPC syscall with minimal
+        // intervening work for accurate latency measurement.
         //
         // Pre-serialize with dummy timestamp to get buffer structure, then update
         // only the timestamp bytes immediately before send. This ensures any
         // scheduling delays between timestamp capture and send are included in
-        // the measured latency (matching C programs).
+        // the measured latency.
         let mut message_with_timestamp = message.clone();
         message_with_timestamp.timestamp = 0; // Dummy timestamp for pre-serialization
         let mut serialized =

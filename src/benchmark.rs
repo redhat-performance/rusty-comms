@@ -40,6 +40,7 @@ use crate::{
     ipc::{Message, MessageType, TransportConfig, TransportFactory},
     metrics::{LatencyType, MetricsCollector, PerformanceMetrics},
     results::BenchmarkResults,
+    utils::get_temp_dir,
 };
 use anyhow::{Context, Result};
 use clap::ValueEnum;
@@ -619,7 +620,7 @@ impl BenchmarkRunner {
     /// Spawn the server process with optional latency file for true IPC measurement
     ///
     /// This variant allows passing a latency file path to the server, enabling
-    /// server-side latency calculation that matches the C benchmark methodology.
+    /// server-side latency calculation.
     ///
     /// ## Parameters
     ///
@@ -972,7 +973,7 @@ impl BenchmarkRunner {
     ///
     /// ## Timing Methodology
     ///
-    /// TRUE IPC latency measurement matching C benchmark methodology:
+    /// TRUE IPC latency measurement:
     /// - Client embeds timestamp in message when sending
     /// - Server calculates latency = receive_time - message.timestamp
     /// - Server writes latencies to file
@@ -1692,10 +1693,12 @@ port={}",
             buffer_size,
             host: self.config.host.clone(),
             port: unique_port,
-            socket_path: args
-                .socket_path
-                .clone()
-                .unwrap_or_else(|| format!("/tmp/ipc_benchmark_{}.sock", unique_id)),
+            socket_path: args.socket_path.clone().unwrap_or_else(|| {
+                get_temp_dir()
+                    .join(format!("ipc_benchmark_{}.sock", unique_id))
+                    .to_string_lossy()
+                    .into_owned()
+            }),
             shared_memory_name: args
                 .shared_memory_name
                 .clone()
@@ -1729,13 +1732,14 @@ mod tests {
     use super::*;
     use crate::cli::IpcMechanism;
     use crate::ipc::TransportConfig;
+    use crate::utils::get_temp_dir;
     use std::path::PathBuf;
 
     #[test]
     fn candidate_includes_current_exe_name_match_unix() {
         #[cfg(unix)]
         {
-            let current = PathBuf::from("/tmp/ipc-benchmark");
+            let current = get_temp_dir().join("ipc-benchmark");
             let cands = BenchmarkRunner::candidate_server_binaries_for_test(&current, |_| None);
             assert!(cands.iter().any(|p| p == &current));
         }
@@ -1744,17 +1748,27 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn candidate_includes_current_exe_name_match_windows() {
-        let current = PathBuf::from("C:\\tmp\\ipc-benchmark.exe");
+        let current = get_temp_dir().join("ipc-benchmark.exe");
         let cands = BenchmarkRunner::candidate_server_binaries_for_test(&current, |_| None);
         assert!(cands.iter().any(|p| p == &current));
     }
 
     #[test]
     fn candidate_includes_env_hints() {
+        let temp_dir = get_temp_dir();
+        let dash_var_path = temp_dir
+            .join("from-dash-var")
+            .to_string_lossy()
+            .into_owned();
+        let underscore_var_path = temp_dir
+            .join("from-underscore-var")
+            .to_string_lossy()
+            .into_owned();
+
         let current = PathBuf::from("/not/matching/name");
-        let env = |k: &str| match k {
-            "CARGO_BIN_EXE_ipc-benchmark" => Some(String::from("/tmp/from-dash-var")),
-            "CARGO_BIN_EXE_ipc_benchmark" => Some(String::from("/tmp/from-underscore-var")),
+        let env = move |k: &str| match k {
+            "CARGO_BIN_EXE_ipc-benchmark" => Some(dash_var_path.clone()),
+            "CARGO_BIN_EXE_ipc_benchmark" => Some(underscore_var_path.clone()),
             _ => None,
         };
         let cands = BenchmarkRunner::candidate_server_binaries_for_test(&current, env);
@@ -1762,10 +1776,8 @@ mod tests {
             .iter()
             .map(|p| p.to_string_lossy().to_string())
             .collect();
-        assert!(cand_strs.iter().any(|s| s.ends_with("/tmp/from-dash-var")));
-        assert!(cand_strs
-            .iter()
-            .any(|s| s.ends_with("/tmp/from-underscore-var")));
+        assert!(cand_strs.iter().any(|s| s.ends_with("from-dash-var")));
+        assert!(cand_strs.iter().any(|s| s.ends_with("from-underscore-var")));
     }
 
     #[test]
@@ -1835,7 +1847,7 @@ mod tests {
             buffer_size: 4096,
             host: "127.0.0.1".to_string(),
             port: 9001,
-            socket_path: "/tmp/x".into(),
+            socket_path: get_temp_dir().join("x.sock").to_string_lossy().into_owned(),
             shared_memory_name: "shm-x".into(),
             max_connections: 16,
             message_queue_depth: 10,

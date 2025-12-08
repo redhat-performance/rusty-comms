@@ -75,22 +75,16 @@ use logging::ColorizedFormatter;
 /// ```
 fn main() -> Result<()> {
     // Parse CLI arguments to determine execution mode
-    let args = Args::parse();
+    let mut args = Args::parse();
 
-    // Validate flag combinations
+    // Auto-enable blocking mode when --shm-direct is used
+    // Direct memory shared memory is only available in blocking mode
     if args.shm_direct && !args.blocking {
-        return Err(anyhow::anyhow!(
-            "Error: --shm-direct flag requires --blocking mode.\n\
-             \n\
-             The direct memory shared memory implementation is only available in blocking mode.\n\
-             \n\
-             Usage:\n\
-             \n\
-             Correct:   ipc-benchmark -m shm --blocking --shm-direct -i 10000\n\
-             Incorrect: ipc-benchmark -m shm --shm-direct -i 10000\n\
-             \n\
-             For async mode, use the default ring buffer implementation (omit --shm-direct)."
-        ));
+        eprintln!(
+            "Note: --shm-direct automatically enables --blocking mode \
+             (direct memory SHM requires blocking I/O)"
+        );
+        args.blocking = true;
     }
 
     // Branch to appropriate execution path based on mode
@@ -693,8 +687,7 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
         match transport.receive_blocking() {
             Ok(message) => {
                 // Calculate actual IPC latency: receive_time - send_time
-                // Use monotonic clock to match C benchmark methodology and avoid
-                // NTP adjustments affecting measurements
+                // Use monotonic clock to avoid NTP adjustments affecting measurements
                 let receive_time_ns = get_monotonic_time_ns();
                 let latency_ns = receive_time_ns.saturating_sub(message.timestamp);
 
@@ -893,8 +886,7 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
         match transport.receive().await {
             Ok(msg) => {
                 // Calculate actual IPC latency: receive_time - send_time
-                // Use monotonic clock to match C benchmark methodology and avoid
-                // NTP adjustments affecting measurements
+                // Use monotonic clock to avoid NTP adjustments affecting measurements
                 let receive_time_ns = get_monotonic_time_ns();
                 let latency_ns = receive_time_ns.saturating_sub(msg.timestamp);
 

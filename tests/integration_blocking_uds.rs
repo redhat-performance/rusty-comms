@@ -7,7 +7,9 @@
 #![cfg(unix)] // Unix Domain Sockets are Unix-only
 
 use anyhow::Result;
-use ipc_benchmark::{cli::Args, BenchmarkConfig, BlockingBenchmarkRunner, IpcMechanism};
+use ipc_benchmark::{
+    cli::Args, get_temp_socket_path, BenchmarkConfig, BlockingBenchmarkRunner, IpcMechanism,
+};
 
 /// Verify UDS round-trip works end-to-end in blocking mode with a spawned
 /// server process.
@@ -22,7 +24,7 @@ fn uds_round_trip_blocking_smoke() -> Result<()> {
         concurrency: 1,
         msg_count: 32,
         message_size: 128,
-        socket_path: Some("/tmp/ipc_test_blocking_uds_rt.sock".to_string()),
+        socket_path: Some(get_temp_socket_path("ipc_test_blocking_uds_rt.sock")),
         ..Default::default()
     };
 
@@ -46,7 +48,7 @@ fn uds_one_way_blocking_smoke() -> Result<()> {
         blocking: true,
         msg_count: 16,
         message_size: 64,
-        socket_path: Some("/tmp/ipc_test_blocking_uds_ow.sock".to_string()),
+        socket_path: Some(get_temp_socket_path("ipc_test_blocking_uds_ow.sock")),
         include_first_message: true,
         ..Default::default()
     };
@@ -62,7 +64,7 @@ fn uds_one_way_blocking_smoke() -> Result<()> {
 #[test]
 fn uds_blocking_various_sizes() -> Result<()> {
     for (idx, size) in [64, 256, 1024].iter().enumerate() {
-        let socket_path = format!("/tmp/ipc_test_blocking_uds_size_{}.sock", idx);
+        let socket_path = get_temp_socket_path(&format!("ipc_test_blocking_uds_size_{}.sock", idx));
 
         let args = Args {
             mechanisms: vec![IpcMechanism::UnixDomainSocket],
@@ -96,7 +98,7 @@ fn uds_blocking_server_ready_smoke() -> Result<()> {
         blocking: true,
         msg_count: 1,
         message_size: 64,
-        socket_path: Some("/tmp/ipc_test_blocking_uds_srv.sock".to_string()),
+        socket_path: Some(get_temp_socket_path("ipc_test_blocking_uds_srv.sock")),
         include_first_message: true,
         ..Default::default()
     };

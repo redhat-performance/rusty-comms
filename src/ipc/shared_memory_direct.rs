@@ -1,14 +1,13 @@
 //! Direct memory shared memory transport implementation (blocking).
 //!
 //! This module provides a high-performance blocking implementation of shared
-//! memory IPC using direct memory access, similar to C programs. Unlike the
+//! memory IPC using direct memory access. Unlike the
 //! ring buffer implementation, this uses a simple fixed-size struct that is
 //! written directly to shared memory with no serialization overhead.
 //!
 //! # Design Philosophy
 //!
-//! This implementation prioritizes raw performance and matches the approach
-//! used by C IPC benchmarks:
+//! This implementation prioritizes raw performance:
 //! - **No serialization**: Direct struct copy (memcpy)
 //! - **Simple synchronization**: One mutex + one condition variable
 //! - **Fixed-size layout**: `#[repr(C, packed)]` for predictable memory
@@ -16,16 +15,15 @@
 //!
 //! # Performance Characteristics
 //!
-//! Expected latencies (based on C benchmark comparison):
-//! - Mean: ~6.5µs (vs C's 6.45µs)
-//! - Min: ~5.0µs (vs C's 4.95µs)  
-//! - Max: ~32µs (vs C's 27.34µs, vs ring buffer's 91.77µs)
+//! Expected latencies:
+//! - Mean: ~6-7µs
+//! - Min: ~5µs
+//! - Max: ~30-35µs (significantly better than ring buffer's ~90µs)
 //!
 //! # Trade-offs
 //!
 //! **Advantages:**
 //! - 3× faster max latency vs ring buffer implementation
-//! - Matches C performance (within 20%)
 //! - Simpler code (no ring buffer logic)
 //! - Better cache locality (single contiguous struct)
 //!
@@ -55,9 +53,8 @@ const MAX_PAYLOAD_SIZE: usize = 8192; // 8 KB
 
 /// Raw message structure stored directly in shared memory.
 ///
-/// This struct is designed to match C-style IPC implementations with minimal
-/// overhead. It uses `#[repr(C, packed)]` to ensure predictable memory layout
-/// across process boundaries.
+/// This struct is designed for minimal overhead IPC. It uses `#[repr(C, packed)]`
+/// to ensure predictable memory layout across process boundaries.
 ///
 /// # Memory Layout
 ///
@@ -100,10 +97,10 @@ struct RawSharedMessage {
     /// Initialized with `PTHREAD_PROCESS_SHARED` to work across processes.
     mutex: libc::pthread_mutex_t,
 
-    /// Condition variable for signaling (matches C implementation).
+    /// Condition variable for signaling.
     ///
-    /// Both sender and receiver wait/signal on this SAME condition variable.
-    /// This is the ping-pong pattern used in the C benchmark.
+    /// Both sender and receiver wait/signal on this SAME condition variable
+    /// using a ping-pong pattern for efficient synchronization.
     cond: libc::pthread_cond_t,
 
     /// Message identifier (sequential counter).
@@ -112,7 +109,7 @@ struct RawSharedMessage {
     /// Timestamp when message was sent (nanoseconds since CLOCK_MONOTONIC).
     ///
     /// This is captured immediately before the message is written to shared
-    /// memory, matching C benchmark methodology for accurate latency measurement.
+    /// memory for accurate latency measurement.
     timestamp: u64,
 
     /// Actual number of valid bytes in the payload.
@@ -248,7 +245,7 @@ unsafe impl Send for SendableShmem {}
 /// Direct memory shared memory transport for blocking I/O.
 ///
 /// This transport provides high-performance IPC by writing messages directly
-/// to shared memory with no serialization overhead, matching C-style implementations.
+/// to shared memory with no serialization overhead.
 ///
 /// # Architecture
 ///
@@ -521,7 +518,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 }
             }
 
-            // CRITICAL: Capture timestamp immediately before write (matches C methodology)
+            // CRITICAL: Capture timestamp immediately before write
             let timestamp_ns = crate::ipc::get_monotonic_time_ns();
 
             // Write message data directly to shared memory (no serialization!)
@@ -587,7 +584,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 return Err(anyhow!("Failed to lock mutex: {}", ret));
             }
 
-            // Wait for data to be ready (matches C receiver pattern)
+            // Wait for data to be ready
             while (*ptr).ready == 0 {
                 let ret = libc::pthread_cond_wait(&mut (*ptr).cond, &mut (*ptr).mutex);
                 if ret != 0 {
@@ -611,7 +608,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 payload_len,
             );
 
-            // Clear ready flag and signal (matches C receiver pattern)
+            // Clear ready flag and signal sender
             (*ptr).ready = 0;
             let ret = libc::pthread_cond_signal(&mut (*ptr).cond);
             if ret != 0 {

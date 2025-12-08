@@ -87,6 +87,73 @@ Blocking mode uses only the Rust standard library (`std::net`, `std::thread`, `s
 | **High concurrency (>100 connections)** | Async | More efficient resource usage |
 | **Simple request-response** | Either | Similar performance characteristics |
 
+## Shared Memory Implementations
+
+The benchmark suite provides **two shared memory implementations** for blocking mode, each optimized for different use cases:
+
+### Ring Buffer (Default)
+
+The default implementation uses a ring buffer with bincode serialization. It offers flexibility and cross-platform support.
+
+```bash
+# Ring buffer with blocking mode
+ipc-benchmark -m shm --blocking -i 10000
+
+# Ring buffer with async mode (default)
+ipc-benchmark -m shm -i 10000
+```
+
+**Characteristics:**
+- Works on all platforms (Linux, macOS, Windows, BSD)
+- Supports variable message sizes
+- Uses bincode serialization (~15-30 μs overhead)
+- Average latency: ~20 μs
+
+### Direct Memory (`--shm-direct`)
+
+The high-performance implementation uses direct memory access with no serialization overhead. The `--shm-direct` flag automatically enables blocking mode.
+
+```bash
+# Direct memory (auto-enables blocking mode)
+ipc-benchmark -m shm --shm-direct -i 10000
+
+# With CPU affinity for best results
+ipc-benchmark -m shm --shm-direct -i 10000 --server-affinity 0 --client-affinity 1
+```
+
+**Characteristics:**
+- Unix-only (Linux, macOS, BSD - not Windows)
+- Fixed message size (8KB maximum payload)
+- No serialization (direct memcpy)
+- Average latency: ~7 μs (3× faster)
+- Maximum latency: ~22 μs (450× better than ring buffer)
+
+### Implementation Comparison
+
+| Feature | Ring Buffer (Default) | Direct Memory (`--shm-direct`) |
+|---------|----------------------|-------------------------------|
+| **Average Latency** | ~20 μs | ~7 μs (3× faster) |
+| **Max Latency** | ~10 ms | ~22 μs (450× better) |
+| **Serialization** | bincode | None (memcpy) |
+| **Message Size** | Variable | Fixed (8KB max) |
+| **Platform Support** | All | Unix only |
+| **Best For** | Flexibility, cross-platform | Maximum performance |
+
+### When to Use Each Implementation
+
+**Use Direct Memory (`--shm-direct`) when:**
+- Maximum performance is critical
+- Fixed message sizes are acceptable
+- Running on Unix/Linux systems
+
+**Use Ring Buffer (default) when:**
+- Cross-platform support is needed
+- Variable message sizes are required
+- Flexibility is more important than raw speed
+- Windows support is required
+
+For detailed technical comparison, see [SHM_COMPARISON.md](SHM_COMPARISON.md).
+
 ## Latency Measurement Methodology
 
 This benchmark suite uses **high-precision monotonic clocks** to measure true IPC latency, matching the methodology used in C-based benchmark programs. This ensures accurate, reproducible measurements that are immune to system clock adjustments.
@@ -125,23 +192,10 @@ The latency measurements exclude:
 - ❌ Application processing logic
 - ❌ Memory allocation for payloads
 
-### Comparison with C Benchmarks
+### Timing Methodology
 
-This implementation matches the timing methodology of reference C benchmarks:
+The benchmark captures timestamps immediately before the IPC syscall:
 
-**C Code Pattern:**
-```c
-// Capture timestamp right before send
-clock_gettime(CLOCK_MONOTONIC, &message.start_time);
-mq_send(mq, (const char *)&message, sizeof(message), 0);
-
-// On receive side
-clock_gettime(CLOCK_MONOTONIC, &end);
-latency = (end.tv_sec - message.start_time.tv_sec) * 1e3 + 
-          (end.tv_nsec - message.start_time.tv_nsec) / 1e6;
-```
-
-**Rust Equivalent:**
 ```rust
 // Create message with monotonic timestamp right before serialization
 let mut message = message.clone();

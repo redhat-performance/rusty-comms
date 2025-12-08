@@ -61,6 +61,7 @@ use crate::{
     ipc::{BlockingTransportFactory, Message, MessageType, TransportConfig},
     metrics::{LatencyType, MetricsCollector, PerformanceMetrics},
     results::BenchmarkResults,
+    utils::get_temp_dir,
 };
 use anyhow::{Context, Result};
 use clap::ValueEnum;
@@ -329,7 +330,7 @@ impl BlockingBenchmarkRunner {
     /// Spawn the server process with optional latency file for true IPC measurement
     ///
     /// This variant allows passing a latency file path to the server, enabling
-    /// server-side latency calculation that matches the C benchmark methodology.
+    /// server-side latency calculation.
     ///
     /// ## Parameters
     ///
@@ -607,9 +608,12 @@ impl BlockingBenchmarkRunner {
                 #[cfg(unix)]
                 {
                     if self.mechanism == IpcMechanism::UnixDomainSocket {
-                        args.socket_path
-                            .clone()
-                            .unwrap_or_else(|| format!("/tmp/ipc_benchmark_{}.sock", unique_id))
+                        args.socket_path.clone().unwrap_or_else(|| {
+                            get_temp_dir()
+                                .join(format!("ipc_benchmark_{}.sock", unique_id))
+                                .to_string_lossy()
+                                .into_owned()
+                        })
                     } else {
                         String::new()
                     }
@@ -936,7 +940,7 @@ impl BlockingBenchmarkRunner {
     ///
     /// ## Timing Methodology
     ///
-    /// TRUE IPC latency measurement matching C benchmark methodology:
+    /// TRUE IPC latency measurement:
     /// - Client embeds timestamp in message when sending
     /// - Server calculates latency = receive_time - message.timestamp
     /// - Server writes latencies to file
