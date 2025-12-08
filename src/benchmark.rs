@@ -1600,6 +1600,8 @@ port={}",
         const PMQ_SAFE_DEFAULT_BUFFER_SIZE: usize = 8192;
 
         let unique_id = Uuid::new_v4();
+        // Use shortened UUID for socket paths to stay within macOS SUN_LEN limit (104 bytes)
+        let short_id = &unique_id.to_string()[..8];
         let unique_port = self.config.port + (unique_id.as_u128() as u16 % 1000);
 
         // Determine if the current mechanism is PMQ
@@ -1695,7 +1697,7 @@ port={}",
             port: unique_port,
             socket_path: args.socket_path.clone().unwrap_or_else(|| {
                 get_temp_dir()
-                    .join(format!("ipc_benchmark_{}.sock", unique_id))
+                    .join(format!("ipc_{}.sock", short_id))
                     .to_string_lossy()
                     .into_owned()
             }),
