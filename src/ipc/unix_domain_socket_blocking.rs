@@ -49,7 +49,7 @@
 //! # }
 //! ```
 
-use crate::ipc::{get_monotonic_time_ns, BlockingTransport, Message, TransportConfig};
+use crate::ipc::{BlockingTransport, Message, TransportConfig};
 use anyhow::{Context, Result};
 use std::io::{Read, Write};
 #[cfg(unix)]
@@ -84,10 +84,6 @@ pub struct BlockingUnixDomainSocket {
     /// Connected socket stream for sending/receiving data.
     /// Populated after accept() in server mode or connect() in client mode.
     stream: Option<UnixStream>,
-
-    /// Reusable receive buffer to avoid allocation on every receive.
-    /// Grows as needed but never shrinks, amortizing allocation cost.
-    recv_buffer: Vec<u8>,
 }
 
 impl BlockingUnixDomainSocket {
@@ -108,8 +104,6 @@ impl BlockingUnixDomainSocket {
         Self {
             listener: None,
             stream: None,
-            // Pre-allocate 4KB for typical message sizes
-            recv_buffer: Vec::with_capacity(4096),
         }
     }
 
@@ -236,15 +230,23 @@ impl BlockingTransport for BlockingUnixDomainSocket {
                  Call start_server_blocking() or start_client_blocking() first.",
         )?;
 
-        // Serialize message directly (without cloning) then patch timestamp in-place
-        // This avoids the overhead of cloning the entire message including payload
-        let mut serialized = bincode::serialize(message).context("Failed to serialize message")?;
+        // Capture timestamp immediately before IPC syscall with minimal
+        // intervening work for accurate latency measurement.
+        //
+        // Pre-serialize with dummy timestamp to get buffer structure, then update
+        // only the timestamp bytes immediately before send. This ensures any
+        // scheduling delays between timestamp capture and send are included in
+        // the measured latency.
+        let mut message_with_timestamp = message.clone();
+        message_with_timestamp.timestamp = 0; // Dummy timestamp for pre-serialization
+        let mut serialized =
+            bincode::serialize(&message_with_timestamp).context("Failed to serialize message")?;
 
-        // Capture timestamp immediately before send and patch it into serialized buffer
-        // Timestamp is at bytes 8-16 in bincode format (after 8-byte id field)
-        let timestamp = get_monotonic_time_ns();
+        // Capture timestamp immediately before send and update bytes in buffer
+        message_with_timestamp.set_timestamp_now();
+        let timestamp_bytes = message_with_timestamp.timestamp.to_le_bytes();
         let ts_offset = Message::timestamp_offset();
-        serialized[ts_offset].copy_from_slice(&timestamp.to_le_bytes());
+        serialized[ts_offset].copy_from_slice(&timestamp_bytes);
 
         // Use writev for scatter-gather I/O: single syscall, no extra allocation
         let len_bytes = (serialized.len() as u32).to_le_bytes();
@@ -264,7 +266,7 @@ impl BlockingTransport for BlockingUnixDomainSocket {
         let total_len = 4 + serialized.len();
         let mut written = 0usize;
 
-        // writev should complete in one call for small messages on UDS
+        // writev may not write everything in one call, so loop until complete
         while written < total_len {
             let result = unsafe { libc::writev(fd, iov.as_ptr(), 2) };
             if result < 0 {
@@ -274,6 +276,7 @@ impl BlockingTransport for BlockingUnixDomainSocket {
             written += result as usize;
             if written < total_len {
                 // Partial write - fall back to regular write for remainder
+                // This is rare for small messages on UDS
                 let remaining = &serialized[written.saturating_sub(4)..];
                 stream
                     .write_all(remaining)
@@ -297,7 +300,7 @@ impl BlockingTransport for BlockingUnixDomainSocket {
                  Call start_server_blocking() or start_client_blocking() first.",
         )?;
 
-        // Read length prefix (4 bytes, little-endian)
+        // Read length prefix (4 bytes, little-endian) to match async protocol
         let mut len_bytes = [0u8; 4];
         stream.read_exact(&mut len_bytes).context(
             "Failed to read message length. \
@@ -307,20 +310,15 @@ impl BlockingTransport for BlockingUnixDomainSocket {
 
         trace!("Receiving message of {} bytes", len);
 
-        // Reuse receive buffer - grow if needed but never shrink
-        // This amortizes allocation cost across many receives
-        if self.recv_buffer.len() < len {
-            self.recv_buffer.resize(len, 0);
-        }
-
-        // Read message data into reusable buffer
+        // Read message data
+        let mut buffer = vec![0u8; len];
         stream
-            .read_exact(&mut self.recv_buffer[..len])
+            .read_exact(&mut buffer)
             .context("Failed to read message data")?;
 
-        // Deserialize message from buffer slice
-        let message: Message = bincode::deserialize(&self.recv_buffer[..len])
-            .context("Failed to deserialize message")?;
+        // Deserialize message
+        let message: Message =
+            bincode::deserialize(&buffer).context("Failed to deserialize message")?;
 
         trace!("Received message ID {}", message.id);
         Ok(message)
