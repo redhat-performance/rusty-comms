@@ -953,4 +953,92 @@ mod tests {
         assert!(client.ring_buffer.is_none());
         assert!(client.shmem.is_none());
     }
+
+    #[test]
+    fn test_default_creates_new_transport() {
+        let transport = BlockingSharedMemory::default();
+        assert!(transport.ring_buffer.is_none());
+        assert!(transport.shmem.is_none());
+        assert!(!transport.is_server);
+    }
+
+    #[test]
+    fn test_multiple_messages() {
+        let segment_name = "test_shm_blocking_multi_msg";
+
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingSharedMemory::new();
+            let config = TransportConfig {
+                shared_memory_name: segment_name.to_string(),
+                buffer_size: 8192,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            // Receive multiple messages
+            for expected_id in 1..=5 {
+                let msg = server.receive_blocking().unwrap();
+                assert_eq!(msg.id, expected_id);
+            }
+
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(200));
+
+        let mut client = BlockingSharedMemory::new();
+        let config = TransportConfig {
+            shared_memory_name: segment_name.to_string(),
+            buffer_size: 8192,
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        // Send multiple messages
+        for id in 1..=5 {
+            let msg = Message::new(id, vec![0u8; 50], MessageType::OneWay);
+            client.send_blocking(&msg).unwrap();
+        }
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
+
+    #[test]
+    fn test_large_message() {
+        let segment_name = "test_shm_blocking_large_msg";
+        let large_size = 10000; // 10KB message
+
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingSharedMemory::new();
+            let config = TransportConfig {
+                shared_memory_name: segment_name.to_string(),
+                buffer_size: 65536, // Large buffer
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            let msg = server.receive_blocking().unwrap();
+            assert_eq!(msg.id, 1);
+            assert_eq!(msg.payload.len(), large_size);
+
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(200));
+
+        let mut client = BlockingSharedMemory::new();
+        let config = TransportConfig {
+            shared_memory_name: segment_name.to_string(),
+            buffer_size: 65536,
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        let msg = Message::new(1, vec![0xAB; large_size], MessageType::OneWay);
+        client.send_blocking(&msg).unwrap();
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
 }

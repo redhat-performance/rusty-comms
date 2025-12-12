@@ -543,4 +543,132 @@ mod tests {
 
         let _ = std::fs::remove_file(&socket_path);
     }
+
+    #[test]
+    fn test_default_creates_new_transport() {
+        let transport = BlockingUnixDomainSocket::default();
+        assert!(transport.listener.is_none());
+        assert!(transport.stream.is_none());
+    }
+
+    #[test]
+    fn test_multiple_messages() {
+        let socket_path = get_temp_socket_path("test_uds_blocking_multi.sock");
+        let _ = std::fs::remove_file(&socket_path);
+
+        let server_path = socket_path.clone();
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingUnixDomainSocket::new();
+            let config = TransportConfig {
+                socket_path: server_path,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            // Receive multiple messages
+            for expected_id in 1..=5 {
+                let msg = server.receive_blocking().unwrap();
+                assert_eq!(msg.id, expected_id);
+            }
+
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        let mut client = BlockingUnixDomainSocket::new();
+        let config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        // Send multiple messages
+        for id in 1..=5 {
+            let msg = Message::new(id, vec![0u8; 50], MessageType::OneWay);
+            client.send_blocking(&msg).unwrap();
+        }
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    #[test]
+    fn test_large_message() {
+        let socket_path = get_temp_socket_path("test_uds_blocking_large.sock");
+        let _ = std::fs::remove_file(&socket_path);
+        let large_size = 10000; // 10KB
+
+        let server_path = socket_path.clone();
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingUnixDomainSocket::new();
+            let config = TransportConfig {
+                socket_path: server_path,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            let msg = server.receive_blocking().unwrap();
+            assert_eq!(msg.id, 1);
+            assert_eq!(msg.payload.len(), large_size);
+
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        let mut client = BlockingUnixDomainSocket::new();
+        let config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        let msg = Message::new(1, vec![0xAB; large_size], MessageType::OneWay);
+        client.send_blocking(&msg).unwrap();
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    #[test]
+    fn test_client_connection_refused() {
+        let socket_path = get_temp_socket_path("test_uds_blocking_no_server.sock");
+        let _ = std::fs::remove_file(&socket_path);
+
+        let mut client = BlockingUnixDomainSocket::new();
+        let config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+
+        let result = client.start_client_blocking(&config);
+        assert!(result.is_err());
+
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    #[test]
+    fn test_socket_path_cleanup_on_server_start() {
+        let socket_path = get_temp_socket_path("test_uds_blocking_cleanup.sock");
+
+        // Create a dummy file at the socket path
+        std::fs::write(&socket_path, b"dummy").unwrap();
+        assert!(std::path::Path::new(&socket_path).exists());
+
+        // Server should clean up existing file
+        let mut server = BlockingUnixDomainSocket::new();
+        let config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+        server.start_server_blocking(&config).unwrap();
+        server.close_blocking().unwrap();
+
+        let _ = std::fs::remove_file(&socket_path);
+    }
 }

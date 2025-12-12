@@ -251,4 +251,61 @@ mod tests {
         // Clean up
         std::env::remove_var("IPC_BENCHMARK_TEMP_DIR");
     }
+
+    /// Test spawn_with_affinity with a specific core
+    #[tokio::test]
+    async fn test_spawn_with_affinity_with_core() {
+        // Use core 0 which should always exist
+        let fut = async move { Ok::<_, anyhow::Error>(123u32) };
+        let result = spawn_with_affinity(fut, Some(0)).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 123);
+    }
+
+    /// Test spawn_with_affinity with invalid core still runs
+    #[tokio::test]
+    async fn test_spawn_with_affinity_invalid_core() {
+        // Use an impossibly high core number
+        let fut = async move { Ok::<_, anyhow::Error>(456u32) };
+        let result = spawn_with_affinity(fut, Some(99999)).await;
+        // Should still succeed, just without affinity
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 456);
+    }
+
+    /// Test spawn_with_affinity propagates errors
+    #[tokio::test]
+    async fn test_spawn_with_affinity_error_propagation() {
+        let fut = async move { Err::<u32, _>(anyhow::anyhow!("Test error")) };
+        let result = spawn_with_affinity(fut, None).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Test error"));
+    }
+
+    /// Test get_temp_socket_path with various filenames
+    #[test]
+    fn test_get_temp_socket_path_various_names() {
+        let path1 = get_temp_socket_path("simple.sock");
+        assert!(path1.ends_with("simple.sock"));
+
+        let path2 = get_temp_socket_path("with-dashes.sock");
+        assert!(path2.ends_with("with-dashes.sock"));
+
+        let path3 = get_temp_socket_path("with_underscores.sock");
+        assert!(path3.ends_with("with_underscores.sock"));
+    }
+
+    /// Test that invalid env var path falls back to system temp
+    #[test]
+    fn test_invalid_env_var_falls_back() {
+        // Set env var to non-existent path
+        std::env::set_var("IPC_BENCHMARK_TEMP_DIR", "/nonexistent/path/12345");
+
+        let temp_dir = get_temp_dir();
+        // Should fall back to system temp dir
+        assert!(temp_dir.is_dir());
+
+        // Clean up
+        std::env::remove_var("IPC_BENCHMARK_TEMP_DIR");
+    }
 }

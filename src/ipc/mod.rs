@@ -1493,4 +1493,84 @@ mod tests {
         assert_eq!(config.message_queue_depth, 10);
         assert_eq!(config.message_queue_name, "ipc_benchmark_pmq");
     }
+
+    // ===== MessageType Tests =====
+
+    #[test]
+    fn test_message_type_from_known_values() {
+        assert_eq!(MessageType::from(0), MessageType::OneWay);
+        assert_eq!(MessageType::from(1), MessageType::Request);
+        assert_eq!(MessageType::from(2), MessageType::Response);
+        assert_eq!(MessageType::from(3), MessageType::Ping);
+        assert_eq!(MessageType::from(4), MessageType::Pong);
+        assert_eq!(MessageType::from(5), MessageType::Shutdown);
+    }
+
+    #[test]
+    fn test_message_type_from_unknown_defaults_to_oneway() {
+        // Unknown values should default to OneWay
+        assert_eq!(MessageType::from(6), MessageType::OneWay);
+        assert_eq!(MessageType::from(100), MessageType::OneWay);
+        assert_eq!(MessageType::from(u32::MAX), MessageType::OneWay);
+    }
+
+    // ===== Message Tests =====
+
+    #[test]
+    fn test_message_new_for_blocking() {
+        let payload = vec![1, 2, 3, 4, 5];
+        let msg = Message::new_for_blocking(42, payload.clone(), MessageType::Request);
+
+        assert_eq!(msg.id, 42);
+        assert_eq!(msg.payload, payload);
+        assert_eq!(msg.message_type, MessageType::Request);
+        // Timestamp should be set (non-zero)
+        assert!(msg.timestamp > 0);
+    }
+
+    #[test]
+    fn test_message_set_timestamp_now() {
+        let mut msg = Message::new(1, vec![], MessageType::OneWay);
+        let original_ts = msg.timestamp;
+
+        // Wait a tiny bit to ensure time advances
+        std::thread::sleep(std::time::Duration::from_micros(10));
+
+        msg.set_timestamp_now();
+
+        // New timestamp should be different (and greater)
+        assert!(msg.timestamp >= original_ts);
+    }
+
+    // ===== get_monotonic_time_ns Tests =====
+
+    #[test]
+    fn test_get_monotonic_time_ns_returns_value() {
+        let t1 = get_monotonic_time_ns();
+        assert!(t1 > 0, "Monotonic time should be positive");
+
+        // Two calls should return increasing values (or same if very fast)
+        let t2 = get_monotonic_time_ns();
+        assert!(t2 >= t1, "Time should not go backwards");
+    }
+
+    #[test]
+    fn test_get_monotonic_time_ns_advances() {
+        let t1 = get_monotonic_time_ns();
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        let t2 = get_monotonic_time_ns();
+
+        // After 1ms, time should have advanced by at least ~500,000 ns
+        assert!(
+            t2 > t1,
+            "Time should advance after sleep: t1={}, t2={}",
+            t1,
+            t2
+        );
+        assert!(
+            t2 - t1 >= 500_000,
+            "Should advance by at least 0.5ms: diff={}",
+            t2 - t1
+        );
+    }
 }

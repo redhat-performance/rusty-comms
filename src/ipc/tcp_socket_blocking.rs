@@ -493,4 +493,75 @@ mod tests {
         assert!(client.listener.is_none());
         assert!(client.stream.is_none());
     }
+
+    #[test]
+    fn test_default_creates_new_transport() {
+        let transport = BlockingTcpSocket::default();
+        assert!(transport.listener.is_none());
+        assert!(transport.stream.is_none());
+    }
+
+    #[test]
+    fn test_multiple_messages() {
+        let port = 18086;
+
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingTcpSocket::new();
+            let config = TransportConfig {
+                host: "127.0.0.1".to_string(),
+                port,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            // Receive multiple messages
+            for expected_id in 1..=5 {
+                let msg = server.receive_blocking().unwrap();
+                assert_eq!(msg.id, expected_id);
+            }
+
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        let mut client = BlockingTcpSocket::new();
+        let config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        // Send multiple messages
+        for id in 1..=5 {
+            let msg = Message::new(id, vec![0u8; 50], MessageType::OneWay);
+            client.send_blocking(&msg).unwrap();
+        }
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
+
+    #[test]
+    fn test_client_connection_refused() {
+        let port = 18087; // Port with no server
+
+        let mut client = BlockingTcpSocket::new();
+        let config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+
+        let result = client.start_client_blocking(&config);
+        assert!(result.is_err());
+        // Error should mention connection or server
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("connect") || err_msg.contains("server") || err_msg.contains("refused"),
+            "Error should mention connection issue: {}",
+            err_msg
+        );
+    }
 }

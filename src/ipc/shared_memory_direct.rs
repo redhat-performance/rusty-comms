@@ -785,4 +785,75 @@ mod tests {
         // Wait for server to finish
         server_handle.join().unwrap();
     }
+
+    #[test]
+    fn test_default_creates_new_transport() {
+        let transport = BlockingSharedMemoryDirect::default();
+        assert!(transport.shmem.is_none());
+        assert!(!transport.is_server);
+    }
+
+    #[test]
+    fn test_close_without_init() {
+        let mut transport = BlockingSharedMemoryDirect::new();
+        // Close without initialization should succeed
+        let result = transport.close_blocking();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn test_multiple_messages() {
+        use std::thread;
+        use std::time::Duration;
+        use uuid::Uuid;
+
+        let shm_name = format!("test_shm_multi_{}", Uuid::new_v4());
+        let shm_name_clone = shm_name.clone();
+
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingSharedMemoryDirect::new();
+            let config = TransportConfig {
+                shared_memory_name: shm_name_clone,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            // Receive multiple messages
+            for expected_id in 1..=5 {
+                let msg = server.receive_blocking().unwrap();
+                assert_eq!(msg.id, expected_id);
+            }
+
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        let mut client = BlockingSharedMemoryDirect::new();
+        let config = TransportConfig {
+            shared_memory_name: shm_name,
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        // Send multiple messages
+        for id in 1..=5 {
+            let msg = Message::new(id, vec![0u8; 64], MessageType::OneWay);
+            client.send_blocking(&msg).unwrap();
+        }
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
+
+    #[test]
+    fn test_raw_message_layout() {
+        // Verify alignment and offset calculations are correct
+        let size = RawSharedMessage::SIZE;
+        // Size should be greater than 0 and reasonable
+        assert!(size > 0);
+        // Size should include at least the payload capacity
+        assert!(size >= 8192); // Minimum expected payload size
+    }
 }

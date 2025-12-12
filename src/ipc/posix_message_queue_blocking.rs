@@ -682,4 +682,82 @@ mod tests {
         assert!(server.send_fd.is_none());
         assert!(server.recv_fd.is_none());
     }
+
+    #[test]
+    fn test_default_creates_new_transport() {
+        let transport = BlockingPosixMessageQueue::default();
+        assert!(transport.queue_name_base.is_empty());
+        assert!(transport.send_fd.is_none());
+        assert!(transport.recv_fd.is_none());
+        assert!(!transport.is_creator);
+    }
+
+    #[test]
+    fn test_with_custom_buffer_size() {
+        let queue_name = make_unique_queue_name("custom_limits");
+
+        let mut server = BlockingPosixMessageQueue::new();
+        let config = TransportConfig {
+            message_queue_name: queue_name.clone(),
+            buffer_size: 4096,
+            ..Default::default()
+        };
+
+        let result = server.start_server_blocking(&config);
+        assert!(result.is_ok());
+        // max_msg_size should be set based on buffer_size
+        assert!(server.max_msg_size > 0);
+
+        server.close_blocking().unwrap();
+    }
+
+    #[test]
+    fn test_multiple_messages_one_way() {
+        let queue_name = make_unique_queue_name("multi_oneway");
+
+        let server_queue = queue_name.clone();
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingPosixMessageQueue::new();
+            let config = TransportConfig {
+                message_queue_name: server_queue,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            // Receive 10 one-way messages
+            for expected_id in 1..=10 {
+                let msg = server.receive_blocking().unwrap();
+                assert_eq!(msg.id, expected_id);
+                assert_eq!(msg.message_type, MessageType::OneWay);
+            }
+
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(200));
+
+        let mut client = BlockingPosixMessageQueue::new();
+        let config = TransportConfig {
+            message_queue_name: queue_name,
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        // Send 10 one-way messages
+        for id in 1..=10 {
+            let msg = Message::new(id, vec![0u8; 64], MessageType::OneWay);
+            client.send_blocking(&msg).unwrap();
+        }
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
+
+    #[test]
+    fn test_client_close_without_connect() {
+        let mut client = BlockingPosixMessageQueue::new();
+        // Close without ever connecting should succeed
+        let result = client.close_blocking();
+        assert!(result.is_ok());
+    }
 }

@@ -1439,4 +1439,659 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_benchmark_config_display_with_buffer_size() {
+        use crate::ipc::TransportConfig;
+
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            message_size: 512,
+            msg_count: 5000,
+            buffer_size: Some(16384), // User-provided buffer size
+            blocking: true,
+            ..Default::default()
+        };
+
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let transport_config = TransportConfig {
+            buffer_size: 16384,
+            ..Default::default()
+        };
+
+        let display = BenchmarkConfigDisplay {
+            config: &config,
+            mechanism: IpcMechanism::TcpSocket,
+            transport_config: &transport_config,
+        };
+
+        let output = format!("{}", display);
+
+        // Verify key fields are present
+        assert!(output.contains("Starting Benchmark for: TCP Socket"));
+        assert!(output.contains("Message Size:"));
+        assert!(output.contains("512 bytes"));
+        assert!(output.contains("Buffer Size:"));
+        assert!(output.contains("User-provided"));
+        assert!(output.contains("Message Count:"));
+        assert!(output.contains("5000"));
+    }
+
+    #[test]
+    fn test_benchmark_config_display_automatic_buffer() {
+        use crate::ipc::TransportConfig;
+
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            message_size: 1024,
+            msg_count: 1000,
+            buffer_size: None, // Automatic buffer size
+            blocking: true,
+            ..Default::default()
+        };
+
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let transport_config = TransportConfig::default();
+
+        let display = BenchmarkConfigDisplay {
+            config: &config,
+            mechanism: IpcMechanism::TcpSocket,
+            transport_config: &transport_config,
+        };
+
+        let output = format!("{}", display);
+
+        assert!(output.contains("Automatic"));
+    }
+
+    #[test]
+    fn test_benchmark_config_display_with_duration() {
+        use crate::ipc::TransportConfig;
+
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            message_size: 256,
+            duration: Some(std::time::Duration::from_secs(10)),
+            blocking: true,
+            ..Default::default()
+        };
+
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let transport_config = TransportConfig::default();
+
+        let display = BenchmarkConfigDisplay {
+            config: &config,
+            mechanism: IpcMechanism::TcpSocket,
+            transport_config: &transport_config,
+        };
+
+        let output = format!("{}", display);
+
+        assert!(output.contains("Test Duration:"));
+        assert!(output.contains("10s"));
+    }
+
+    #[test]
+    fn test_benchmark_config_display_with_send_delay() {
+        use crate::ipc::TransportConfig;
+
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            message_size: 100,
+            msg_count: 100,
+            send_delay: Some(std::time::Duration::from_millis(5)),
+            blocking: true,
+            ..Default::default()
+        };
+
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let transport_config = TransportConfig::default();
+
+        let display = BenchmarkConfigDisplay {
+            config: &config,
+            mechanism: IpcMechanism::TcpSocket,
+            transport_config: &transport_config,
+        };
+
+        let output = format!("{}", display);
+
+        assert!(output.contains("Send Delay:"));
+        assert!(output.contains("5ms"));
+    }
+
+    #[test]
+    fn test_benchmark_config_display_with_affinity() {
+        use crate::ipc::TransportConfig;
+
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            message_size: 100,
+            msg_count: 100,
+            server_affinity: Some(0),
+            client_affinity: Some(1),
+            blocking: true,
+            ..Default::default()
+        };
+
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let transport_config = TransportConfig::default();
+
+        let display = BenchmarkConfigDisplay {
+            config: &config,
+            mechanism: IpcMechanism::TcpSocket,
+            transport_config: &transport_config,
+        };
+
+        let output = format!("{}", display);
+
+        assert!(output.contains("Server Affinity:"));
+        assert!(output.contains("0"));
+        assert!(output.contains("Client Affinity:"));
+        assert!(output.contains("1"));
+    }
+
+    #[test]
+    fn test_benchmark_config_display_first_message_included() {
+        use crate::ipc::TransportConfig;
+
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            message_size: 100,
+            msg_count: 100,
+            include_first_message: true,
+            blocking: true,
+            ..Default::default()
+        };
+
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let transport_config = TransportConfig::default();
+
+        let display = BenchmarkConfigDisplay {
+            config: &config,
+            mechanism: IpcMechanism::TcpSocket,
+            transport_config: &transport_config,
+        };
+
+        let output = format!("{}", display);
+
+        assert!(output.contains("First Message:"));
+        assert!(output.contains("Included"));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_benchmark_config_display_pmq_priority() {
+        use crate::ipc::TransportConfig;
+
+        let args = Args {
+            mechanisms: vec![IpcMechanism::PosixMessageQueue],
+            message_size: 100,
+            msg_count: 100,
+            pmq_priority: 5,
+            blocking: true,
+            ..Default::default()
+        };
+
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let transport_config = TransportConfig::default();
+
+        let display = BenchmarkConfigDisplay {
+            config: &config,
+            mechanism: IpcMechanism::PosixMessageQueue,
+            transport_config: &transport_config,
+        };
+
+        let output = format!("{}", display);
+
+        assert!(output.contains("PMQ Priority:"));
+        assert!(output.contains("5"));
+    }
+
+    #[test]
+    fn test_validate_core_availability_invalid_client_affinity() {
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            message_size: 1024,
+            msg_count: 100,
+            client_affinity: Some(9999), // Invalid client core ID
+            blocking: true,
+            ..Default::default()
+        };
+
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args);
+
+        // Should fail with invalid client affinity
+        let result = runner.validate_core_availability();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Invalid client core ID") || err_msg.contains("9999"),
+            "Error should mention invalid client core: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_validate_core_availability_both_invalid() {
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            message_size: 1024,
+            msg_count: 100,
+            server_affinity: Some(8888),
+            client_affinity: Some(9999),
+            blocking: true,
+            ..Default::default()
+        };
+
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args);
+
+        // Should fail - server is validated first
+        let result = runner.validate_core_availability();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_benchmark_config_display_no_affinity_set() {
+        use crate::ipc::TransportConfig;
+
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            message_size: 100,
+            msg_count: 100,
+            server_affinity: None,
+            client_affinity: None,
+            blocking: true,
+            ..Default::default()
+        };
+
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let transport_config = TransportConfig::default();
+
+        let display = BenchmarkConfigDisplay {
+            config: &config,
+            mechanism: IpcMechanism::TcpSocket,
+            transport_config: &transport_config,
+        };
+
+        let output = format!("{}", display);
+
+        assert!(output.contains("Server Affinity:"));
+        assert!(output.contains("Not set"));
+        assert!(output.contains("Client Affinity:"));
+    }
+
+    #[test]
+    fn test_benchmark_config_display_first_message_discarded() {
+        use crate::ipc::TransportConfig;
+
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            message_size: 100,
+            msg_count: 100,
+            include_first_message: false, // Default behavior
+            blocking: true,
+            ..Default::default()
+        };
+
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let transport_config = TransportConfig::default();
+
+        let display = BenchmarkConfigDisplay {
+            config: &config,
+            mechanism: IpcMechanism::TcpSocket,
+            transport_config: &transport_config,
+        };
+
+        let output = format!("{}", display);
+
+        assert!(output.contains("First Message:"));
+        assert!(output.contains("Discarded"));
+    }
+
+    #[test]
+    fn test_get_msg_count_with_duration() {
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            message_size: 1024,
+            duration: Some(std::time::Duration::from_secs(5)),
+            blocking: true,
+            ..Default::default()
+        };
+
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args);
+
+        // Duration-based tests return 0 for msg_count
+        assert_eq!(runner.get_msg_count(), 0);
+    }
+
+    #[test]
+    fn test_benchmark_config_display_all_fields() {
+        use crate::ipc::TransportConfig;
+
+        // Test with many fields set to cover more display branches
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            message_size: 2048,
+            msg_count: 5000,
+            buffer_size: Some(32768),
+            send_delay: Some(std::time::Duration::from_micros(100)),
+            server_affinity: Some(0),
+            client_affinity: Some(1),
+            include_first_message: true,
+            blocking: true,
+            ..Default::default()
+        };
+
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let transport_config = TransportConfig {
+            buffer_size: 32768,
+            ..Default::default()
+        };
+
+        let display = BenchmarkConfigDisplay {
+            config: &config,
+            mechanism: IpcMechanism::TcpSocket,
+            transport_config: &transport_config,
+        };
+
+        let output = format!("{}", display);
+
+        // Verify all fields are present
+        assert!(output.contains("TCP Socket"));
+        assert!(output.contains("2048 bytes"));
+        assert!(output.contains("32768"));
+        assert!(output.contains("User-provided"));
+        assert!(output.contains("5000"));
+        assert!(output.contains("Send Delay:"));
+        assert!(output.contains("Server Affinity:"));
+        assert!(output.contains("0"));
+        assert!(output.contains("Client Affinity:"));
+        assert!(output.contains("1"));
+        assert!(output.contains("First Message:"));
+        assert!(output.contains("Included"));
+    }
+
+    #[test]
+    fn test_runner_creation_with_config() {
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            message_size: 512,
+            msg_count: 100,
+            blocking: true,
+            ..Default::default()
+        };
+
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let runner = BlockingBenchmarkRunner::new(
+            config.clone(),
+            IpcMechanism::TcpSocket,
+            args.clone(),
+        );
+
+        assert_eq!(runner.mechanism, IpcMechanism::TcpSocket);
+        assert_eq!(runner.config.message_size, 512);
+        assert_eq!(runner.get_msg_count(), 100);
+    }
+
+    #[test]
+    fn test_validate_core_availability_valid_cores() {
+        // Get the actual number of cores on this system
+        let num_cores = core_affinity::get_core_ids()
+            .map(|ids| ids.len())
+            .unwrap_or(1);
+
+        if num_cores >= 2 {
+            let args = Args {
+                mechanisms: vec![IpcMechanism::TcpSocket],
+                message_size: 1024,
+                msg_count: 100,
+                server_affinity: Some(0),
+                client_affinity: Some(1),
+                blocking: true,
+                ..Default::default()
+            };
+
+            let config = BenchmarkConfig::from_args(&args).unwrap();
+            let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args);
+
+            // Should succeed with valid core IDs
+            assert!(runner.validate_core_availability().is_ok());
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_benchmark_config_display_uds() {
+        use crate::ipc::TransportConfig;
+
+        let args = Args {
+            mechanisms: vec![IpcMechanism::UnixDomainSocket],
+            message_size: 100,
+            msg_count: 100,
+            blocking: true,
+            ..Default::default()
+        };
+
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let transport_config = TransportConfig::default();
+
+        let display = BenchmarkConfigDisplay {
+            config: &config,
+            mechanism: IpcMechanism::UnixDomainSocket,
+            transport_config: &transport_config,
+        };
+
+        let output = format!("{}", display);
+
+        assert!(output.contains("Unix Domain Socket"));
+    }
+
+    #[test]
+    fn test_benchmark_config_display_shared_memory() {
+        use crate::ipc::TransportConfig;
+
+        let args = Args {
+            mechanisms: vec![IpcMechanism::SharedMemory],
+            message_size: 100,
+            msg_count: 100,
+            blocking: true,
+            ..Default::default()
+        };
+
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let transport_config = TransportConfig::default();
+
+        let display = BenchmarkConfigDisplay {
+            config: &config,
+            mechanism: IpcMechanism::SharedMemory,
+            transport_config: &transport_config,
+        };
+
+        let output = format!("{}", display);
+
+        assert!(output.contains("Shared Memory"));
+    }
+
+    #[test]
+    fn test_runner_with_different_mechanisms() {
+        for mechanism in [
+            IpcMechanism::TcpSocket,
+            IpcMechanism::SharedMemory,
+            #[cfg(unix)]
+            IpcMechanism::UnixDomainSocket,
+        ] {
+            let args = Args {
+                mechanisms: vec![mechanism.clone()],
+                message_size: 256,
+                msg_count: 50,
+                blocking: true,
+                ..Default::default()
+            };
+
+            let config = BenchmarkConfig::from_args(&args).unwrap();
+            let runner = BlockingBenchmarkRunner::new(config, mechanism.clone(), args);
+
+            assert_eq!(runner.mechanism, mechanism);
+        }
+    }
+
+    #[test]
+    fn test_get_msg_count_returns_config_value() {
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            message_size: 100,
+            msg_count: 12345,
+            blocking: true,
+            ..Default::default()
+        };
+
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args);
+
+        assert_eq!(runner.get_msg_count(), 12345);
+    }
+
+    #[test]
+    fn test_get_msg_count_returns_zero_for_duration() {
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            message_size: 100,
+            duration: Some(std::time::Duration::from_secs(5)),
+            blocking: true,
+            ..Default::default()
+        };
+
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args);
+
+        // Duration-based tests have no msg_count
+        assert_eq!(runner.get_msg_count(), 0);
+    }
+
+    #[test]
+    fn test_runner_available_cores() {
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            message_size: 100,
+            msg_count: 100,
+            blocking: true,
+            ..Default::default()
+        };
+
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args);
+
+        // available_cores should be populated
+        assert!(runner.available_cores.is_some());
+        let cores = runner.available_cores.as_ref().unwrap();
+        assert!(!cores.is_empty());
+    }
+
+    #[test]
+    fn test_validate_core_fails_when_cores_empty() {
+        // This tests the edge case where available_cores is None
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            message_size: 100,
+            msg_count: 100,
+            blocking: true,
+            ..Default::default()
+        };
+
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let mut runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args);
+
+        // Manually set available_cores to None to test error path
+        runner.available_cores = None;
+
+        let result = runner.validate_core_availability();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Failed to get core IDs"));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_benchmark_config_display_pmq_mechanism() {
+        use crate::ipc::TransportConfig;
+
+        let args = Args {
+            mechanisms: vec![IpcMechanism::PosixMessageQueue],
+            message_size: 512,
+            msg_count: 1000,
+            pmq_priority: 10,
+            blocking: true,
+            ..Default::default()
+        };
+
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let transport_config = TransportConfig::default();
+
+        let display = BenchmarkConfigDisplay {
+            config: &config,
+            mechanism: IpcMechanism::PosixMessageQueue,
+            transport_config: &transport_config,
+        };
+
+        let output = format!("{}", display);
+
+        // Should contain PMQ-specific info
+        assert!(output.contains("POSIX Message Queue") || output.contains("PMQ"));
+        assert!(output.contains("10")); // Priority
+    }
+
+    #[test]
+    fn test_benchmark_config_default_msg_count() {
+        use crate::ipc::TransportConfig;
+
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            message_size: 100,
+            // No msg_count or duration - should use default
+            blocking: true,
+            ..Default::default()
+        };
+
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let transport_config = TransportConfig::default();
+
+        let display = BenchmarkConfigDisplay {
+            config: &config,
+            mechanism: IpcMechanism::TcpSocket,
+            transport_config: &transport_config,
+        };
+
+        let output = format!("{}", display);
+
+        // Should show message count (not duration)
+        assert!(output.contains("Message Count:"));
+    }
+
+    #[test]
+    fn test_runner_config_fields() {
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            message_size: 2048,
+            msg_count: 5000,
+            buffer_size: Some(16384),
+            server_affinity: Some(0),
+            client_affinity: Some(1),
+            include_first_message: true,
+            blocking: true,
+            ..Default::default()
+        };
+
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let runner = BlockingBenchmarkRunner::new(config.clone(), IpcMechanism::TcpSocket, args);
+
+        // Verify config fields are accessible
+        assert_eq!(runner.config.message_size, 2048);
+        assert_eq!(runner.config.msg_count, Some(5000));
+        assert_eq!(runner.config.buffer_size, Some(16384));
+        assert_eq!(runner.config.server_affinity, Some(0));
+        assert_eq!(runner.config.client_affinity, Some(1));
+        assert!(runner.config.include_first_message);
+    }
 }

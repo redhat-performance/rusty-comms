@@ -1437,4 +1437,1376 @@ mod tests {
         let result = manager.print_summary();
         assert!(result.is_ok());
     }
+
+    #[test]
+    fn test_stream_latency_record_with_streaming_enabled() {
+        let temp_dir = TempDir::new().unwrap();
+        let streaming_path = temp_dir.path().join("streaming_records.json");
+
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        manager.enable_per_message_streaming(&streaming_path).unwrap();
+
+        // Create a test record
+        let record = MessageLatencyRecord {
+            timestamp_ns: 1000000,
+            message_id: 1,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: Some(5000),
+            round_trip_latency_ns: None,
+        };
+
+        let result = manager.stream_latency_record(&record);
+        assert!(result.is_ok());
+
+        // Finalize to close the file properly
+        manager.finalize().unwrap();
+
+        // Verify the record was written
+        let content = std::fs::read_to_string(&streaming_path).unwrap();
+        assert!(content.contains("1000000")); // timestamp
+        assert!(content.contains("5000")); // latency
+    }
+
+    #[test]
+    fn test_stream_latency_record_non_streaming_aggregates() {
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+
+        // Create a test record without enabling streaming
+        let record = MessageLatencyRecord {
+            timestamp_ns: 2000000,
+            message_id: 42,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 200,
+            one_way_latency_ns: Some(10000),
+            round_trip_latency_ns: None,
+        };
+
+        let result = manager.stream_latency_record(&record);
+        assert!(result.is_ok());
+
+        // Verify record was stored in pending_records
+        assert!(manager.pending_records.contains_key(&42));
+    }
+
+    #[test]
+    fn test_stream_latency_record_merges_combined() {
+        let temp_dir = TempDir::new().unwrap();
+        let streaming_path = temp_dir.path().join("combined_stream.json");
+
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        manager.enable_combined_streaming(&streaming_path, true).unwrap();
+
+        // Create one-way record
+        let one_way_record = MessageLatencyRecord {
+            timestamp_ns: 3000000,
+            message_id: 1,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: Some(5000),
+            round_trip_latency_ns: None,
+        };
+
+        // Stream first record
+        manager.stream_latency_record(&one_way_record).unwrap();
+
+        // Create round-trip record for same message
+        let round_trip_record = MessageLatencyRecord {
+            timestamp_ns: 3000000,
+            message_id: 1,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: None,
+            round_trip_latency_ns: Some(12000),
+        };
+
+        // Stream second record - should merge with first
+        manager.stream_latency_record(&round_trip_record).unwrap();
+
+        // Finalize
+        manager.finalize().unwrap();
+
+        // Verify merged record was written
+        let content = std::fs::read_to_string(&streaming_path).unwrap();
+        assert!(content.contains("5000")); // one-way latency
+        assert!(content.contains("12000")); // round-trip latency
+    }
+
+    #[test]
+    fn test_csv_streaming_writes_records() {
+        let temp_dir = TempDir::new().unwrap();
+        let csv_path = temp_dir.path().join("latency_records.csv");
+
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        manager.enable_csv_streaming(&csv_path).unwrap();
+
+        // Create and stream a test record
+        let record = MessageLatencyRecord {
+            timestamp_ns: 4000000,
+            message_id: 5,
+            mechanism: IpcMechanism::UnixDomainSocket,
+            message_size: 512,
+            one_way_latency_ns: Some(8000),
+            round_trip_latency_ns: Some(15000),
+        };
+
+        manager.stream_latency_record(&record).unwrap();
+
+        // Finalize
+        manager.finalize().unwrap();
+
+        // Verify CSV content
+        let content = std::fs::read_to_string(&csv_path).unwrap();
+        assert!(content.contains("4000000")); // timestamp
+        assert!(content.contains("5")); // message_id
+        assert!(content.contains("8000")); // one-way
+        assert!(content.contains("15000")); // round-trip
+    }
+
+    #[test]
+    fn test_message_latency_record_is_combined() {
+        let one_way_only = MessageLatencyRecord {
+            timestamp_ns: 1000,
+            message_id: 1,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: Some(5000),
+            round_trip_latency_ns: None,
+        };
+        assert!(!one_way_only.is_combined());
+
+        let round_trip_only = MessageLatencyRecord {
+            timestamp_ns: 1000,
+            message_id: 1,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: None,
+            round_trip_latency_ns: Some(10000),
+        };
+        assert!(!round_trip_only.is_combined());
+
+        let combined = MessageLatencyRecord {
+            timestamp_ns: 1000,
+            message_id: 1,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: Some(5000),
+            round_trip_latency_ns: Some(10000),
+        };
+        assert!(combined.is_combined());
+    }
+
+    #[test]
+    fn test_message_latency_record_merge() {
+        let mut record1 = MessageLatencyRecord {
+            timestamp_ns: 1000,
+            message_id: 1,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: Some(5000),
+            round_trip_latency_ns: None,
+        };
+
+        let record2 = MessageLatencyRecord {
+            timestamp_ns: 1000,
+            message_id: 1,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: None,
+            round_trip_latency_ns: Some(12000),
+        };
+
+        record1.merge(&record2);
+
+        assert_eq!(record1.one_way_latency_ns, Some(5000));
+        assert_eq!(record1.round_trip_latency_ns, Some(12000));
+        assert!(record1.is_combined());
+    }
+
+    #[test]
+    fn test_message_latency_record_to_value_array() {
+        let record = MessageLatencyRecord {
+            timestamp_ns: 123456789,
+            message_id: 42,
+            mechanism: IpcMechanism::SharedMemory,
+            message_size: 256,
+            one_way_latency_ns: Some(7500),
+            round_trip_latency_ns: Some(14000),
+        };
+
+        let values = record.to_value_array();
+
+        assert_eq!(values.len(), 6);
+        assert_eq!(values[0], serde_json::json!(123456789)); // timestamp
+        assert_eq!(values[1], serde_json::json!(42)); // message_id
+        assert_eq!(values[2], serde_json::json!("SharedMemory")); // mechanism
+        assert_eq!(values[3], serde_json::json!(256)); // message_size
+        assert_eq!(values[4], serde_json::json!(7500)); // one_way
+        assert_eq!(values[5], serde_json::json!(14000)); // round_trip
+    }
+
+    #[test]
+    fn test_message_latency_record_to_csv_record() {
+        let record = MessageLatencyRecord {
+            timestamp_ns: 999888777,
+            message_id: 123,
+            mechanism: IpcMechanism::UnixDomainSocket,
+            message_size: 1024,
+            one_way_latency_ns: Some(5000),
+            round_trip_latency_ns: Some(9500),
+        };
+
+        let csv = record.to_csv_record();
+
+        assert!(csv.contains("999888777"));
+        assert!(csv.contains("123"));
+        // Display format uses "Unix Domain Socket" with spaces
+        assert!(csv.contains("Unix Domain Socket"));
+        assert!(csv.contains("1024"));
+        assert!(csv.contains("5000"));
+        assert!(csv.contains("9500"));
+    }
+
+    #[test]
+    fn test_message_latency_record_to_csv_record_with_nulls() {
+        let record = MessageLatencyRecord {
+            timestamp_ns: 111222333,
+            message_id: 1,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 64,
+            one_way_latency_ns: None,
+            round_trip_latency_ns: None,
+        };
+
+        let csv = record.to_csv_record();
+
+        // Nulls should appear as empty or null values
+        assert!(csv.contains("111222333"));
+        assert!(csv.contains("1"));
+    }
+
+    #[test]
+    fn test_streaming_multiple_records() {
+        let temp_dir = TempDir::new().unwrap();
+        let streaming_path = temp_dir.path().join("multi_records.json");
+
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        manager.enable_per_message_streaming(&streaming_path).unwrap();
+
+        // Stream multiple records
+        for i in 0..5 {
+            let record = MessageLatencyRecord {
+                timestamp_ns: 1000000 + i * 1000,
+                message_id: i,
+                mechanism: IpcMechanism::TcpSocket,
+                message_size: 100,
+                one_way_latency_ns: Some(5000 + i * 100),
+                round_trip_latency_ns: None,
+            };
+            manager.stream_latency_record(&record).unwrap();
+        }
+
+        manager.finalize().unwrap();
+
+        let content = std::fs::read_to_string(&streaming_path).unwrap();
+        // Should contain all 5 message IDs
+        for i in 0..5u64 {
+            assert!(
+                content.contains(&format!("{}", 5000 + i * 100)),
+                "Should contain latency for message {}",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_streaming_without_handle_uses_fallback() {
+        let temp_dir = TempDir::new().unwrap();
+        let streaming_path = temp_dir.path().join("fallback_stream.json");
+
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        
+        // Enable streaming but manually set handle to None to test fallback
+        manager.streaming_enabled = true;
+        manager.streaming_file = Some(streaming_path.clone());
+        manager.streaming_file_handle = None; // Force fallback path
+        manager.first_record_streamed = true;
+
+        // Write header manually since we bypassed enable_per_message_streaming
+        std::fs::write(&streaming_path, "{\n  \"headings\": [\"a\"],\n  \"data\": [").unwrap();
+
+        let record = MessageLatencyRecord {
+            timestamp_ns: 5000000,
+            message_id: 99,
+            mechanism: IpcMechanism::SharedMemory,
+            message_size: 200,
+            one_way_latency_ns: Some(8000),
+            round_trip_latency_ns: None,
+        };
+
+        // This should use the fallback path (open/append)
+        let result = manager.write_streaming_record(&record);
+        assert!(result.is_ok());
+
+        let content = std::fs::read_to_string(&streaming_path).unwrap();
+        assert!(content.contains("8000")); // latency value
+    }
+
+    #[test]
+    fn test_csv_streaming_without_handle_uses_fallback() {
+        let temp_dir = TempDir::new().unwrap();
+        let csv_path = temp_dir.path().join("fallback_csv.csv");
+
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        
+        // Enable CSV streaming but force fallback path
+        manager.csv_streaming_enabled = true;
+        manager.per_message_streaming = true;
+        manager.streaming_csv_file = Some(csv_path.clone());
+        manager.streaming_csv_handle = None; // Force fallback path
+
+        // Write CSV header
+        std::fs::write(&csv_path, "timestamp_ns,message_id,mechanism,message_size,one_way_latency_ns,round_trip_latency_ns\n").unwrap();
+
+        let record = MessageLatencyRecord {
+            timestamp_ns: 7000000,
+            message_id: 77,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 512,
+            one_way_latency_ns: Some(6500),
+            round_trip_latency_ns: Some(12000),
+        };
+
+        // This should use the fallback path
+        let result = manager.write_streaming_record(&record);
+        assert!(result.is_ok());
+
+        let content = std::fs::read_to_string(&csv_path).unwrap();
+        assert!(content.contains("7000000")); // timestamp
+        assert!(content.contains("77")); // message_id
+        assert!(content.contains("6500")); // one_way
+        assert!(content.contains("12000")); // round_trip
+    }
+
+    #[test]
+    fn test_add_multiple_results() {
+        let temp_dir = TempDir::new().unwrap();
+        let output_path = temp_dir.path().join("multi_results.json");
+
+        let mut manager = BlockingResultsManager::new(Some(&output_path), None).unwrap();
+
+        // Add multiple results
+        for _ in 0..3 {
+            let results = create_test_results();
+            manager.add_results(results).unwrap();
+        }
+
+        manager.finalize().unwrap();
+
+        let content = std::fs::read_to_string(&output_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        
+        // Should have results array
+        assert!(parsed.get("results").is_some());
+    }
+
+    #[test]
+    fn test_finalize_without_output_file() {
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        
+        // Finalize without any output file should succeed (no-op)
+        let result = manager.finalize();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_finalize_closes_streaming_handles() {
+        let temp_dir = TempDir::new().unwrap();
+        let streaming_path = temp_dir.path().join("close_test.json");
+
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        manager.enable_per_message_streaming(&streaming_path).unwrap();
+
+        // Stream a record
+        let record = MessageLatencyRecord {
+            timestamp_ns: 1000,
+            message_id: 1,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: Some(5000),
+            round_trip_latency_ns: None,
+        };
+        manager.stream_latency_record(&record).unwrap();
+
+        // Finalize should close handles and complete JSON
+        manager.finalize().unwrap();
+
+        // Verify handles are closed (set to None)
+        assert!(manager.streaming_file_handle.is_none());
+
+        // Verify JSON file was written with data
+        let content = std::fs::read_to_string(&streaming_path).unwrap();
+        assert!(content.contains("5000"), "Should contain the latency value");
+        assert!(content.contains("data"), "Should contain data array");
+    }
+
+    #[test]
+    fn test_write_streaming_record_direct_not_enabled() {
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+
+        let record = MessageLatencyRecord {
+            timestamp_ns: 1000,
+            message_id: 1,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: Some(5000),
+            round_trip_latency_ns: None,
+        };
+
+        // When streaming is not enabled, should return Ok without doing anything
+        let result = manager.write_streaming_record_direct(&record);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_write_streaming_record_direct_combined_record() {
+        let temp_dir = TempDir::new().unwrap();
+        let streaming_path = temp_dir.path().join("direct_combined.json");
+
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        manager.enable_combined_streaming(&streaming_path, true).unwrap();
+
+        // Create a combined record (both latencies present)
+        let record = MessageLatencyRecord {
+            timestamp_ns: 2000,
+            message_id: 1,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: Some(5000),
+            round_trip_latency_ns: Some(10000),
+        };
+
+        // Should write immediately since it's already combined
+        let result = manager.write_streaming_record_direct(&record);
+        assert!(result.is_ok());
+
+        manager.finalize().unwrap();
+
+        let content = std::fs::read_to_string(&streaming_path).unwrap();
+        assert!(content.contains("5000"));
+        assert!(content.contains("10000"));
+    }
+
+    #[test]
+    fn test_write_streaming_record_direct_merges_partial_records() {
+        let temp_dir = TempDir::new().unwrap();
+        let streaming_path = temp_dir.path().join("direct_merge.json");
+
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        manager.enable_combined_streaming(&streaming_path, true).unwrap();
+
+        // Send first partial record (one-way only)
+        let record1 = MessageLatencyRecord {
+            timestamp_ns: 3000,
+            message_id: 42,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: Some(6000),
+            round_trip_latency_ns: None,
+        };
+        manager.write_streaming_record_direct(&record1).unwrap();
+
+        // Verify it's stored in pending
+        assert!(manager.pending_records.contains_key(&42));
+
+        // Send second partial record (round-trip only) for same message
+        let record2 = MessageLatencyRecord {
+            timestamp_ns: 3000,
+            message_id: 42,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: None,
+            round_trip_latency_ns: Some(11000),
+        };
+        manager.write_streaming_record_direct(&record2).unwrap();
+
+        // Pending should be empty now (record was written)
+        assert!(!manager.pending_records.contains_key(&42));
+
+        manager.finalize().unwrap();
+
+        let content = std::fs::read_to_string(&streaming_path).unwrap();
+        assert!(content.contains("6000")); // one-way
+        assert!(content.contains("11000")); // round-trip
+    }
+
+    #[test]
+    fn test_write_streaming_record_direct_non_combined_mode() {
+        let temp_dir = TempDir::new().unwrap();
+        let streaming_path = temp_dir.path().join("direct_non_combined.json");
+
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        manager.enable_per_message_streaming(&streaming_path).unwrap();
+        // Note: both_tests_enabled is false by default
+
+        let record = MessageLatencyRecord {
+            timestamp_ns: 4000,
+            message_id: 1,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: Some(7000),
+            round_trip_latency_ns: None,
+        };
+
+        // Should write immediately since not in combined mode
+        manager.write_streaming_record_direct(&record).unwrap();
+
+        manager.finalize().unwrap();
+
+        let content = std::fs::read_to_string(&streaming_path).unwrap();
+        assert!(content.contains("7000"));
+    }
+
+    #[test]
+    fn test_stream_results_with_streaming_enabled() {
+        let temp_dir = TempDir::new().unwrap();
+        let streaming_path = temp_dir.path().join("stream_results.json");
+
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        
+        // Enable streaming but NOT per-message streaming
+        manager.streaming_enabled = true;
+        manager.per_message_streaming = false;
+        manager.streaming_file = Some(streaming_path.clone());
+
+        // Write opening bracket
+        std::fs::write(&streaming_path, "[").unwrap();
+
+        // Add results - this should trigger stream_results
+        let results = create_test_results();
+        manager.add_results(results).unwrap();
+
+        let content = std::fs::read_to_string(&streaming_path).unwrap();
+        assert!(content.contains("TCP Socket") || content.contains("TcpSocket"));
+    }
+
+    #[test]
+    fn test_stream_results_multiple_results() {
+        let temp_dir = TempDir::new().unwrap();
+        let streaming_path = temp_dir.path().join("multi_stream_results.json");
+
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        
+        manager.streaming_enabled = true;
+        manager.per_message_streaming = false;
+        manager.streaming_file = Some(streaming_path.clone());
+
+        std::fs::write(&streaming_path, "[").unwrap();
+
+        // Add first results
+        let results1 = create_test_results();
+        manager.add_results(results1).unwrap();
+
+        // Add second results - should add comma separator
+        let results2 = create_test_results();
+        manager.add_results(results2).unwrap();
+
+        let content = std::fs::read_to_string(&streaming_path).unwrap();
+        // Should have comma between results
+        assert!(content.contains(","));
+    }
+
+    #[test]
+    fn test_pending_records_flushed_on_finalize() {
+        let temp_dir = TempDir::new().unwrap();
+        let streaming_path = temp_dir.path().join("pending_flush.json");
+
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        manager.enable_combined_streaming(&streaming_path, true).unwrap();
+
+        // Add a partial record that won't be matched
+        let record = MessageLatencyRecord {
+            timestamp_ns: 5000,
+            message_id: 99,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: Some(8000),
+            round_trip_latency_ns: None,
+        };
+        manager.write_streaming_record_direct(&record).unwrap();
+
+        // Should be pending
+        assert!(manager.pending_records.contains_key(&99));
+
+        // Finalize should flush pending records
+        manager.finalize().unwrap();
+
+        // Pending should be empty after finalize
+        assert!(manager.pending_records.is_empty());
+
+        let content = std::fs::read_to_string(&streaming_path).unwrap();
+        assert!(content.contains("8000")); // The partial record should be written
+    }
+
+    #[test]
+    fn test_close_streaming_json_per_message_with_handle() {
+        let temp_dir = TempDir::new().unwrap();
+        let streaming_path = temp_dir.path().join("close_json_handle.json");
+
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        manager.enable_per_message_streaming(&streaming_path).unwrap();
+
+        // Stream a record
+        let record = MessageLatencyRecord {
+            timestamp_ns: 1000,
+            message_id: 1,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: Some(5000),
+            round_trip_latency_ns: None,
+        };
+        manager.stream_latency_record(&record).unwrap();
+
+        // Close the JSON file
+        let result = manager.close_streaming_json();
+        assert!(result.is_ok());
+
+        // Handle should be taken
+        assert!(manager.streaming_file_handle.is_none());
+    }
+
+    #[test]
+    fn test_close_streaming_json_non_per_message() {
+        let temp_dir = TempDir::new().unwrap();
+        let streaming_path = temp_dir.path().join("close_json_non_pm.json");
+
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        
+        // Enable regular streaming (not per-message)
+        manager.streaming_enabled = true;
+        manager.per_message_streaming = false;
+        manager.streaming_file = Some(streaming_path.clone());
+
+        // Write opening bracket
+        std::fs::write(&streaming_path, "[").unwrap();
+
+        // Close should write closing bracket
+        let result = manager.close_streaming_json();
+        assert!(result.is_ok());
+
+        let content = std::fs::read_to_string(&streaming_path).unwrap();
+        assert!(content.ends_with("]\n") || content.ends_with("]"));
+    }
+
+    #[test]
+    fn test_close_streaming_csv() {
+        let temp_dir = TempDir::new().unwrap();
+        let csv_path = temp_dir.path().join("close_csv.csv");
+
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        manager.enable_csv_streaming(&csv_path).unwrap();
+
+        // Stream a record
+        let record = MessageLatencyRecord {
+            timestamp_ns: 2000,
+            message_id: 2,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: Some(6000),
+            round_trip_latency_ns: None,
+        };
+        manager.stream_latency_record(&record).unwrap();
+
+        // Close CSV
+        let result = manager.close_streaming_csv();
+        assert!(result.is_ok());
+
+        // Handle should be taken
+        assert!(manager.streaming_csv_handle.is_none());
+    }
+
+    #[test]
+    fn test_find_lowest_latency_mechanism() {
+        let temp_dir = TempDir::new().unwrap();
+        let output_path = temp_dir.path().join("latency_compare.json");
+
+        let mut manager = BlockingResultsManager::new(Some(&output_path), None).unwrap();
+
+        // Add results with different latencies
+        let mut results1 = create_test_results();
+        results1.summary.average_latency_ns = Some(10000.0);
+        manager.add_results(results1).unwrap();
+
+        // Create a second result with lower latency
+        let mut results2 = BenchmarkResults::new(
+            IpcMechanism::SharedMemory,
+            1024,
+            8192,
+            1,
+            Some(1000),
+            None,
+            0,
+        );
+        results2.summary.average_latency_ns = Some(5000.0); // Lower
+        manager.add_results(results2).unwrap();
+
+        // The lowest latency should be SharedMemory
+        let lowest = manager.find_lowest_latency_mechanism();
+        assert!(lowest.is_some());
+        assert!(lowest.unwrap().contains("Shared Memory"));
+    }
+
+    #[test]
+    fn test_find_fastest_mechanism() {
+        let temp_dir = TempDir::new().unwrap();
+        let output_path = temp_dir.path().join("throughput_compare.json");
+
+        let mut manager = BlockingResultsManager::new(Some(&output_path), None).unwrap();
+
+        // Add results with different throughputs
+        let mut results1 = create_test_results();
+        results1.summary.average_throughput_mbps = 100.0;
+        manager.add_results(results1).unwrap();
+
+        // Create a second result with higher throughput
+        let mut results2 = BenchmarkResults::new(
+            IpcMechanism::SharedMemory,
+            1024,
+            8192,
+            1,
+            Some(1000),
+            None,
+            0,
+        );
+        results2.summary.average_throughput_mbps = 200.0; // Higher
+        manager.add_results(results2).unwrap();
+
+        // The fastest should be SharedMemory
+        let fastest = manager.find_fastest_mechanism();
+        assert!(fastest.is_some());
+        assert!(fastest.unwrap().contains("Shared Memory"));
+    }
+
+    #[test]
+    fn test_get_system_info() {
+        let manager = BlockingResultsManager::new(None, None).unwrap();
+        let sys_info = manager.get_system_info();
+
+        // Should have valid system info
+        assert!(!sys_info.os.is_empty());
+        assert!(!sys_info.architecture.is_empty());
+        assert!(sys_info.cpu_cores > 0);
+        assert!(sys_info.memory_gb > 0.0);
+    }
+
+    #[test]
+    fn test_write_final_results_creates_valid_json() {
+        let temp_dir = TempDir::new().unwrap();
+        let output_path = temp_dir.path().join("final_output.json");
+
+        let mut manager = BlockingResultsManager::new(Some(&output_path), None).unwrap();
+
+        // Add some results
+        let results = create_test_results();
+        manager.add_results(results).unwrap();
+
+        // Finalize writes the final results
+        manager.finalize().unwrap();
+
+        // Verify the file exists and contains valid JSON
+        assert!(output_path.exists());
+        let content = std::fs::read_to_string(&output_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+        // Check structure
+        assert!(parsed.get("metadata").is_some());
+        assert!(parsed.get("results").is_some());
+        assert!(parsed.get("summary").is_some());
+
+        // Check metadata fields
+        let metadata = parsed.get("metadata").unwrap();
+        assert!(metadata.get("version").is_some());
+        assert!(metadata.get("timestamp").is_some());
+        assert!(metadata.get("system_info").is_some());
+    }
+
+    #[test]
+    fn test_finalize_with_all_streaming_types() {
+        let temp_dir = TempDir::new().unwrap();
+        let json_path = temp_dir.path().join("all_stream.json");
+        let csv_path = temp_dir.path().join("all_stream.csv");
+        let output_path = temp_dir.path().join("all_output.json");
+
+        let mut manager = BlockingResultsManager::new(Some(&output_path), None).unwrap();
+        manager.enable_per_message_streaming(&json_path).unwrap();
+        manager.enable_csv_streaming(&csv_path).unwrap();
+
+        // Stream some records
+        for i in 0..3 {
+            let record = MessageLatencyRecord {
+                timestamp_ns: 1000 * (i + 1),
+                message_id: i,
+                mechanism: IpcMechanism::TcpSocket,
+                message_size: 100,
+                one_way_latency_ns: Some(5000 + i * 100),
+                round_trip_latency_ns: None,
+            };
+            manager.stream_latency_record(&record).unwrap();
+        }
+
+        // Add final results
+        let results = create_test_results();
+        manager.add_results(results).unwrap();
+
+        // Finalize everything
+        manager.finalize().unwrap();
+
+        // All files should exist
+        assert!(json_path.exists());
+        assert!(csv_path.exists());
+        assert!(output_path.exists());
+
+        // JSON should be valid
+        let json_content = std::fs::read_to_string(&json_path).unwrap();
+        assert!(json_content.contains("5000"));
+
+        // CSV should have header and data
+        let csv_content = std::fs::read_to_string(&csv_path).unwrap();
+        assert!(csv_content.contains("timestamp_ns"));
+        assert!(csv_content.contains("5000"));
+    }
+
+    #[test]
+    fn test_flush_pending_records_multiple() {
+        let temp_dir = TempDir::new().unwrap();
+        let streaming_path = temp_dir.path().join("flush_multi.json");
+
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        manager.enable_combined_streaming(&streaming_path, true).unwrap();
+
+        // Add multiple pending records
+        for i in 0..5 {
+            let record = MessageLatencyRecord {
+                timestamp_ns: 1000 * (i + 1),
+                message_id: i,
+                mechanism: IpcMechanism::TcpSocket,
+                message_size: 100,
+                one_way_latency_ns: Some(5000 + i * 100),
+                round_trip_latency_ns: None,
+            };
+            manager.write_streaming_record_direct(&record).unwrap();
+        }
+
+        // All should be pending
+        assert_eq!(manager.pending_records.len(), 5);
+
+        // Flush pending records
+        manager.flush_pending_records().unwrap();
+
+        // Should be empty now
+        assert!(manager.pending_records.is_empty());
+
+        // Finalize to close the file
+        manager.finalize().unwrap();
+
+        // All records should be in the file
+        let content = std::fs::read_to_string(&streaming_path).unwrap();
+        for i in 0..5 {
+            let latency = 5000 + i * 100;
+            assert!(
+                content.contains(&latency.to_string()),
+                "Should contain latency {}",
+                latency
+            );
+        }
+    }
+
+    #[test]
+    fn test_flush_pending_records_empty() {
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        manager.both_tests_enabled = true;
+
+        // Flushing empty pending records should succeed
+        let result = manager.flush_pending_records();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_is_combined_streaming_enabled() {
+        let temp_dir = TempDir::new().unwrap();
+        let streaming_path = temp_dir.path().join("combined_check.json");
+
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        assert!(!manager.is_combined_streaming_enabled());
+
+        manager.enable_combined_streaming(&streaming_path, true).unwrap();
+        assert!(manager.is_combined_streaming_enabled());
+    }
+
+    #[test]
+    fn test_message_latency_record_clone() {
+        let record = MessageLatencyRecord {
+            timestamp_ns: 12345,
+            message_id: 99,
+            mechanism: IpcMechanism::SharedMemory,
+            message_size: 512,
+            one_way_latency_ns: Some(7500),
+            round_trip_latency_ns: Some(15000),
+        };
+
+        let cloned = record.clone();
+        assert_eq!(record.timestamp_ns, cloned.timestamp_ns);
+        assert_eq!(record.message_id, cloned.message_id);
+        assert_eq!(record.message_size, cloned.message_size);
+        assert_eq!(record.one_way_latency_ns, cloned.one_way_latency_ns);
+        assert_eq!(record.round_trip_latency_ns, cloned.round_trip_latency_ns);
+    }
+
+    #[test]
+    fn test_manager_with_log_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let output_path = temp_dir.path().join("results.json");
+        let log_path = temp_dir.path().join("benchmark.log");
+
+        let manager = BlockingResultsManager::new(
+            Some(&output_path),
+            Some(log_path.to_str().unwrap()),
+        )
+        .unwrap();
+
+        assert_eq!(manager.log_file, Some(log_path.to_str().unwrap().to_string()));
+    }
+
+    #[test]
+    fn test_streaming_record_ordering() {
+        let temp_dir = TempDir::new().unwrap();
+        let streaming_path = temp_dir.path().join("ordering.json");
+
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        manager.enable_per_message_streaming(&streaming_path).unwrap();
+
+        // Stream records out of order
+        let ids = [5, 2, 8, 1, 9];
+        for &id in &ids {
+            let record = MessageLatencyRecord {
+                timestamp_ns: 1000 * id,
+                message_id: id,
+                mechanism: IpcMechanism::TcpSocket,
+                message_size: 100,
+                one_way_latency_ns: Some(id * 100),
+                round_trip_latency_ns: None,
+            };
+            manager.stream_latency_record(&record).unwrap();
+        }
+
+        manager.finalize().unwrap();
+
+        // All records should be in the file
+        let content = std::fs::read_to_string(&streaming_path).unwrap();
+        for &id in &ids {
+            assert!(
+                content.contains(&(id * 100).to_string()),
+                "Should contain latency for id {}",
+                id
+            );
+        }
+    }
+
+    #[test]
+    fn test_print_summary_empty_results() {
+        let manager = BlockingResultsManager::new(None, None).unwrap();
+        // Should not panic with empty results
+        let result = manager.print_summary();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_print_summary_with_results() {
+        let temp_dir = TempDir::new().unwrap();
+        let output_path = temp_dir.path().join("summary_test.json");
+
+        let mut manager = BlockingResultsManager::new(Some(&output_path), None).unwrap();
+
+        let results = create_test_results();
+        manager.add_results(results).unwrap();
+
+        // Should not panic with results
+        let result = manager.print_summary();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_print_summary_with_streaming_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let output_path = temp_dir.path().join("summary.json");
+        let streaming_json = temp_dir.path().join("streaming.json");
+        let streaming_csv = temp_dir.path().join("streaming.csv");
+
+        let mut manager = BlockingResultsManager::new(Some(&output_path), None).unwrap();
+        manager.enable_per_message_streaming(&streaming_json).unwrap();
+        manager.enable_csv_streaming(&streaming_csv).unwrap();
+
+        let results = create_test_results();
+        manager.add_results(results).unwrap();
+
+        // Should print all file paths
+        let result = manager.print_summary();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_print_summary_with_log_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let output_path = temp_dir.path().join("summary.json");
+        let log_path = temp_dir.path().join("benchmark.log");
+
+        let manager = BlockingResultsManager::new(
+            Some(&output_path),
+            Some(log_path.to_str().unwrap()),
+        )
+        .unwrap();
+
+        let result = manager.print_summary();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_add_results_updates_internal_state() {
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        assert!(manager.results.is_empty());
+
+        let results = create_test_results();
+        manager.add_results(results).unwrap();
+
+        assert_eq!(manager.results.len(), 1);
+
+        // Add another result
+        let results2 = BenchmarkResults::new(
+            IpcMechanism::SharedMemory,
+            512,
+            4096,
+            1,
+            Some(500),
+            None,
+            0,
+        );
+        manager.add_results(results2).unwrap();
+
+        assert_eq!(manager.results.len(), 2);
+    }
+
+    #[test]
+    fn test_enable_combined_streaming_creates_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let streaming_path = temp_dir.path().join("combined.json");
+
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+
+        // Enable combined streaming with both tests
+        manager.enable_combined_streaming(&streaming_path, true).unwrap();
+
+        assert!(manager.streaming_enabled);
+        assert!(manager.per_message_streaming);
+        assert!(manager.both_tests_enabled);
+        assert!(streaming_path.exists());
+
+        manager.finalize().unwrap();
+    }
+
+    #[test]
+    fn test_streaming_csv_writes_header() {
+        let temp_dir = TempDir::new().unwrap();
+        let csv_path = temp_dir.path().join("header_test.csv");
+
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        manager.enable_csv_streaming(&csv_path).unwrap();
+
+        // Finalize without any records
+        manager.finalize().unwrap();
+
+        // File should exist with header
+        let content = std::fs::read_to_string(&csv_path).unwrap();
+        assert!(content.contains("timestamp_ns"));
+        assert!(content.contains("message_id"));
+        assert!(content.contains("mechanism"));
+    }
+
+    #[test]
+    fn test_multiple_records_same_message_id() {
+        let temp_dir = TempDir::new().unwrap();
+        let streaming_path = temp_dir.path().join("same_id.json");
+
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        manager.enable_combined_streaming(&streaming_path, true).unwrap();
+
+        // First record with one-way latency
+        let record1 = MessageLatencyRecord {
+            timestamp_ns: 1000,
+            message_id: 42,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: Some(5000),
+            round_trip_latency_ns: None,
+        };
+        manager.write_streaming_record_direct(&record1).unwrap();
+
+        // Second record with round-trip latency for same message
+        let record2 = MessageLatencyRecord {
+            timestamp_ns: 2000,
+            message_id: 42,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: None,
+            round_trip_latency_ns: Some(10000),
+        };
+        manager.write_streaming_record_direct(&record2).unwrap();
+
+        manager.finalize().unwrap();
+
+        let content = std::fs::read_to_string(&streaming_path).unwrap();
+        // Combined record should have both latencies
+        assert!(content.contains("5000"));
+        assert!(content.contains("10000"));
+    }
+
+    #[test]
+    fn test_print_summary_with_failed_result() {
+        use crate::results::BenchmarkStatus;
+
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+
+        // Create a failed result
+        let mut results = BenchmarkResults::new(
+            IpcMechanism::TcpSocket,
+            1024,
+            8192,
+            1,
+            Some(100),
+            None,
+            0,
+        );
+        results.status = BenchmarkStatus::Failure("Test failure message".to_string());
+        manager.add_results(results).unwrap();
+
+        // Should print without panicking
+        let result = manager.print_summary();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_print_summary_with_latency_results() {
+        use crate::metrics::{LatencyMetrics, LatencyType, PercentileValue, PerformanceMetrics, ThroughputMetrics};
+        use crate::results::BenchmarkStatus;
+
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+
+        let mut results = BenchmarkResults::new(
+            IpcMechanism::TcpSocket,
+            1024,
+            8192,
+            1,
+            Some(100),
+            None,
+            0,
+        );
+        results.status = BenchmarkStatus::Success;
+
+        // Add one-way latency results
+        let latency = LatencyMetrics {
+            latency_type: LatencyType::OneWay,
+            mean_ns: 5000.0,
+            min_ns: 1000,
+            max_ns: 10000,
+            median_ns: 4500.0,
+            std_dev_ns: 1500.0,
+            percentiles: vec![
+                PercentileValue {
+                    percentile: 95.0,
+                    value_ns: 8000,
+                },
+                PercentileValue {
+                    percentile: 99.0,
+                    value_ns: 9500,
+                },
+            ],
+            total_samples: 100,
+            histogram_data: vec![],
+        };
+
+        let throughput = ThroughputMetrics {
+            bytes_per_second: 1000000.0,
+            messages_per_second: 1000.0,
+            total_bytes: 100000,
+            total_messages: 100,
+            duration_ns: 1000000000,
+        };
+
+        results.one_way_results = Some(PerformanceMetrics {
+            latency: Some(latency.clone()),
+            throughput: throughput.clone(),
+            timestamp: chrono::Utc::now(),
+        });
+
+        results.round_trip_results = Some(PerformanceMetrics {
+            latency: Some(latency),
+            throughput,
+            timestamp: chrono::Utc::now(),
+        });
+
+        manager.add_results(results).unwrap();
+
+        // Should print detailed latency info without panicking
+        let result = manager.print_summary();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_write_streaming_record_without_handle() {
+        let temp_dir = TempDir::new().unwrap();
+        let streaming_path = temp_dir.path().join("no_handle.json");
+
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        manager.enable_per_message_streaming(&streaming_path).unwrap();
+
+        // Take the handle so write falls back to file open/append
+        let _ = manager.streaming_file_handle.take();
+
+        // Stream a record - should use fallback path
+        let record = MessageLatencyRecord {
+            timestamp_ns: 1000,
+            message_id: 1,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: Some(5000),
+            round_trip_latency_ns: None,
+        };
+
+        let result = manager.stream_latency_record(&record);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_write_streaming_record_second_record() {
+        let temp_dir = TempDir::new().unwrap();
+        let streaming_path = temp_dir.path().join("second_record.json");
+
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        manager.enable_per_message_streaming(&streaming_path).unwrap();
+
+        // First record
+        let record1 = MessageLatencyRecord {
+            timestamp_ns: 1000,
+            message_id: 1,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: Some(5000),
+            round_trip_latency_ns: None,
+        };
+        manager.stream_latency_record(&record1).unwrap();
+
+        // Second record - should add comma separator
+        let record2 = MessageLatencyRecord {
+            timestamp_ns: 2000,
+            message_id: 2,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: Some(6000),
+            round_trip_latency_ns: None,
+        };
+        manager.stream_latency_record(&record2).unwrap();
+
+        manager.finalize().unwrap();
+
+        let content = std::fs::read_to_string(&streaming_path).unwrap();
+        assert!(content.contains("5000"));
+        assert!(content.contains("6000"));
+    }
+
+    #[test]
+    fn test_pending_records_merge_existing() {
+        let temp_dir = TempDir::new().unwrap();
+        let streaming_path = temp_dir.path().join("merge_pending.json");
+
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        manager.enable_combined_streaming(&streaming_path, true).unwrap();
+
+        // First partial record
+        let record1 = MessageLatencyRecord {
+            timestamp_ns: 1000,
+            message_id: 42,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: Some(5000),
+            round_trip_latency_ns: None,
+        };
+        manager.write_streaming_record_direct(&record1).unwrap();
+
+        // Check it's pending
+        assert!(manager.pending_records.contains_key(&42));
+
+        // Second partial record for same ID
+        let record2 = MessageLatencyRecord {
+            timestamp_ns: 2000,
+            message_id: 42,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: None,
+            round_trip_latency_ns: Some(10000),
+        };
+        manager.write_streaming_record_direct(&record2).unwrap();
+
+        // Finalize should flush merged record
+        manager.finalize().unwrap();
+
+        let content = std::fs::read_to_string(&streaming_path).unwrap();
+        // Merged record should contain both latencies
+        assert!(content.contains("5000"));
+        assert!(content.contains("10000"));
+    }
+
+    #[test]
+    fn test_format_latency_milliseconds() {
+        // >= 1,000,000 ns should format as ms
+        let result = super::format_latency(1_500_000);
+        assert!(result.contains("ms"));
+        assert!(result.contains("1.50"));
+    }
+
+    #[test]
+    fn test_format_latency_microseconds() {
+        // >= 1,000 ns but < 1,000,000 ns should format as us
+        let result = super::format_latency(5_000);
+        assert!(result.contains("us"));
+        assert!(result.contains("5.00"));
+    }
+
+    #[test]
+    fn test_format_latency_nanoseconds() {
+        // < 1,000 ns should format as ns
+        let result = super::format_latency(500);
+        assert!(result.contains("ns"));
+        assert!(result.contains("500"));
+    }
+
+    #[test]
+    fn test_format_latency_boundary_milliseconds() {
+        // Exactly 1,000,000 ns = 1 ms
+        let result = super::format_latency(1_000_000);
+        assert!(result.contains("ms"));
+        assert!(result.contains("1.00"));
+    }
+
+    #[test]
+    fn test_format_latency_boundary_microseconds() {
+        // Exactly 1,000 ns = 1 us
+        let result = super::format_latency(1_000);
+        assert!(result.contains("us"));
+        assert!(result.contains("1.00"));
+    }
+
+    #[test]
+    fn test_format_latency_zero() {
+        let result = super::format_latency(0);
+        assert!(result.contains("0 ns"));
+    }
 }
