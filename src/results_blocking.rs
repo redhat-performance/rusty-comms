@@ -1548,7 +1548,7 @@ mod tests {
         let record = MessageLatencyRecord {
             timestamp_ns: 4000000,
             message_id: 5,
-            mechanism: IpcMechanism::UnixDomainSocket,
+            mechanism: IpcMechanism::TcpSocket,
             message_size: 512,
             one_way_latency_ns: Some(8000),
             round_trip_latency_ns: Some(15000),
@@ -1654,7 +1654,7 @@ mod tests {
         let record = MessageLatencyRecord {
             timestamp_ns: 999888777,
             message_id: 123,
-            mechanism: IpcMechanism::UnixDomainSocket,
+            mechanism: IpcMechanism::TcpSocket,
             message_size: 1024,
             one_way_latency_ns: Some(5000),
             round_trip_latency_ns: Some(9500),
@@ -1664,8 +1664,8 @@ mod tests {
 
         assert!(csv.contains("999888777"));
         assert!(csv.contains("123"));
-        // Display format uses "Unix Domain Socket" with spaces
-        assert!(csv.contains("Unix Domain Socket"));
+        // Display format uses "TCP Socket" with spaces
+        assert!(csv.contains("TCP Socket"));
         assert!(csv.contains("1024"));
         assert!(csv.contains("5000"));
         assert!(csv.contains("9500"));
