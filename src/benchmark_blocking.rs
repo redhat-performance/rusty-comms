@@ -1924,7 +1924,7 @@ mod tests {
             IpcMechanism::UnixDomainSocket,
         ] {
             let args = Args {
-                mechanisms: vec![mechanism.clone()],
+                mechanisms: vec![mechanism],
                 message_size: 256,
                 msg_count: 50,
                 blocking: true,
@@ -1932,7 +1932,7 @@ mod tests {
             };
 
             let config = BenchmarkConfig::from_args(&args).unwrap();
-            let runner = BlockingBenchmarkRunner::new(config, mechanism.clone(), args);
+            let runner = BlockingBenchmarkRunner::new(config, mechanism, args);
 
             assert_eq!(runner.mechanism, mechanism);
         }
