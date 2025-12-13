@@ -1825,11 +1825,8 @@ mod tests {
         };
 
         let config = BenchmarkConfig::from_args(&args).unwrap();
-        let runner = BlockingBenchmarkRunner::new(
-            config.clone(),
-            IpcMechanism::TcpSocket,
-            args.clone(),
-        );
+        let runner =
+            BlockingBenchmarkRunner::new(config.clone(), IpcMechanism::TcpSocket, args.clone());
 
         assert_eq!(runner.mechanism, IpcMechanism::TcpSocket);
         assert_eq!(runner.config.message_size, 512);
@@ -2009,7 +2006,10 @@ mod tests {
 
         let result = runner.validate_core_availability();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Failed to get core IDs"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Failed to get core IDs"));
     }
 
     #[test]

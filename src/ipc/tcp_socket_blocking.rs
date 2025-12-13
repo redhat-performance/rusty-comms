@@ -559,7 +559,9 @@ mod tests {
         // Error should mention connection or server
         let err_msg = result.unwrap_err().to_string();
         assert!(
-            err_msg.contains("connect") || err_msg.contains("server") || err_msg.contains("refused"),
+            err_msg.contains("connect")
+                || err_msg.contains("server")
+                || err_msg.contains("refused"),
             "Error should mention connection issue: {}",
             err_msg
         );

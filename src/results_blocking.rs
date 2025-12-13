@@ -1444,7 +1444,9 @@ mod tests {
         let streaming_path = temp_dir.path().join("streaming_records.json");
 
         let mut manager = BlockingResultsManager::new(None, None).unwrap();
-        manager.enable_per_message_streaming(&streaming_path).unwrap();
+        manager
+            .enable_per_message_streaming(&streaming_path)
+            .unwrap();
 
         // Create a test record
         let record = MessageLatencyRecord {
@@ -1495,7 +1497,9 @@ mod tests {
         let streaming_path = temp_dir.path().join("combined_stream.json");
 
         let mut manager = BlockingResultsManager::new(None, None).unwrap();
-        manager.enable_combined_streaming(&streaming_path, true).unwrap();
+        manager
+            .enable_combined_streaming(&streaming_path, true)
+            .unwrap();
 
         // Create one-way record
         let one_way_record = MessageLatencyRecord {
@@ -1691,7 +1695,9 @@ mod tests {
         let streaming_path = temp_dir.path().join("multi_records.json");
 
         let mut manager = BlockingResultsManager::new(None, None).unwrap();
-        manager.enable_per_message_streaming(&streaming_path).unwrap();
+        manager
+            .enable_per_message_streaming(&streaming_path)
+            .unwrap();
 
         // Stream multiple records
         for i in 0..5 {
@@ -1725,7 +1731,7 @@ mod tests {
         let streaming_path = temp_dir.path().join("fallback_stream.json");
 
         let mut manager = BlockingResultsManager::new(None, None).unwrap();
-        
+
         // Enable streaming but manually set handle to None to test fallback
         manager.streaming_enabled = true;
         manager.streaming_file = Some(streaming_path.clone());
@@ -1733,7 +1739,11 @@ mod tests {
         manager.first_record_streamed = true;
 
         // Write header manually since we bypassed enable_per_message_streaming
-        std::fs::write(&streaming_path, "{\n  \"headings\": [\"a\"],\n  \"data\": [").unwrap();
+        std::fs::write(
+            &streaming_path,
+            "{\n  \"headings\": [\"a\"],\n  \"data\": [",
+        )
+        .unwrap();
 
         let record = MessageLatencyRecord {
             timestamp_ns: 5000000,
@@ -1758,7 +1768,7 @@ mod tests {
         let csv_path = temp_dir.path().join("fallback_csv.csv");
 
         let mut manager = BlockingResultsManager::new(None, None).unwrap();
-        
+
         // Enable CSV streaming but force fallback path
         manager.csv_streaming_enabled = true;
         manager.per_message_streaming = true;
@@ -1805,7 +1815,7 @@ mod tests {
 
         let content = std::fs::read_to_string(&output_path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
-        
+
         // Should have results array
         assert!(parsed.get("results").is_some());
     }
@@ -1813,7 +1823,7 @@ mod tests {
     #[test]
     fn test_finalize_without_output_file() {
         let mut manager = BlockingResultsManager::new(None, None).unwrap();
-        
+
         // Finalize without any output file should succeed (no-op)
         let result = manager.finalize();
         assert!(result.is_ok());
@@ -1825,7 +1835,9 @@ mod tests {
         let streaming_path = temp_dir.path().join("close_test.json");
 
         let mut manager = BlockingResultsManager::new(None, None).unwrap();
-        manager.enable_per_message_streaming(&streaming_path).unwrap();
+        manager
+            .enable_per_message_streaming(&streaming_path)
+            .unwrap();
 
         // Stream a record
         let record = MessageLatencyRecord {
@@ -1874,7 +1886,9 @@ mod tests {
         let streaming_path = temp_dir.path().join("direct_combined.json");
 
         let mut manager = BlockingResultsManager::new(None, None).unwrap();
-        manager.enable_combined_streaming(&streaming_path, true).unwrap();
+        manager
+            .enable_combined_streaming(&streaming_path, true)
+            .unwrap();
 
         // Create a combined record (both latencies present)
         let record = MessageLatencyRecord {
@@ -1903,7 +1917,9 @@ mod tests {
         let streaming_path = temp_dir.path().join("direct_merge.json");
 
         let mut manager = BlockingResultsManager::new(None, None).unwrap();
-        manager.enable_combined_streaming(&streaming_path, true).unwrap();
+        manager
+            .enable_combined_streaming(&streaming_path, true)
+            .unwrap();
 
         // Send first partial record (one-way only)
         let record1 = MessageLatencyRecord {
@@ -1946,7 +1962,9 @@ mod tests {
         let streaming_path = temp_dir.path().join("direct_non_combined.json");
 
         let mut manager = BlockingResultsManager::new(None, None).unwrap();
-        manager.enable_per_message_streaming(&streaming_path).unwrap();
+        manager
+            .enable_per_message_streaming(&streaming_path)
+            .unwrap();
         // Note: both_tests_enabled is false by default
 
         let record = MessageLatencyRecord {
@@ -1973,7 +1991,7 @@ mod tests {
         let streaming_path = temp_dir.path().join("stream_results.json");
 
         let mut manager = BlockingResultsManager::new(None, None).unwrap();
-        
+
         // Enable streaming but NOT per-message streaming
         manager.streaming_enabled = true;
         manager.per_message_streaming = false;
@@ -1996,7 +2014,7 @@ mod tests {
         let streaming_path = temp_dir.path().join("multi_stream_results.json");
 
         let mut manager = BlockingResultsManager::new(None, None).unwrap();
-        
+
         manager.streaming_enabled = true;
         manager.per_message_streaming = false;
         manager.streaming_file = Some(streaming_path.clone());
@@ -2022,7 +2040,9 @@ mod tests {
         let streaming_path = temp_dir.path().join("pending_flush.json");
 
         let mut manager = BlockingResultsManager::new(None, None).unwrap();
-        manager.enable_combined_streaming(&streaming_path, true).unwrap();
+        manager
+            .enable_combined_streaming(&streaming_path, true)
+            .unwrap();
 
         // Add a partial record that won't be matched
         let record = MessageLatencyRecord {
@@ -2054,7 +2074,9 @@ mod tests {
         let streaming_path = temp_dir.path().join("close_json_handle.json");
 
         let mut manager = BlockingResultsManager::new(None, None).unwrap();
-        manager.enable_per_message_streaming(&streaming_path).unwrap();
+        manager
+            .enable_per_message_streaming(&streaming_path)
+            .unwrap();
 
         // Stream a record
         let record = MessageLatencyRecord {
@@ -2081,7 +2103,7 @@ mod tests {
         let streaming_path = temp_dir.path().join("close_json_non_pm.json");
 
         let mut manager = BlockingResultsManager::new(None, None).unwrap();
-        
+
         // Enable regular streaming (not per-message)
         manager.streaming_enabled = true;
         manager.per_message_streaming = false;
@@ -2282,7 +2304,9 @@ mod tests {
         let streaming_path = temp_dir.path().join("flush_multi.json");
 
         let mut manager = BlockingResultsManager::new(None, None).unwrap();
-        manager.enable_combined_streaming(&streaming_path, true).unwrap();
+        manager
+            .enable_combined_streaming(&streaming_path, true)
+            .unwrap();
 
         // Add multiple pending records
         for i in 0..5 {
@@ -2339,7 +2363,9 @@ mod tests {
         let mut manager = BlockingResultsManager::new(None, None).unwrap();
         assert!(!manager.is_combined_streaming_enabled());
 
-        manager.enable_combined_streaming(&streaming_path, true).unwrap();
+        manager
+            .enable_combined_streaming(&streaming_path, true)
+            .unwrap();
         assert!(manager.is_combined_streaming_enabled());
     }
 
@@ -2368,13 +2394,14 @@ mod tests {
         let output_path = temp_dir.path().join("results.json");
         let log_path = temp_dir.path().join("benchmark.log");
 
-        let manager = BlockingResultsManager::new(
-            Some(&output_path),
-            Some(log_path.to_str().unwrap()),
-        )
-        .unwrap();
+        let manager =
+            BlockingResultsManager::new(Some(&output_path), Some(log_path.to_str().unwrap()))
+                .unwrap();
 
-        assert_eq!(manager.log_file, Some(log_path.to_str().unwrap().to_string()));
+        assert_eq!(
+            manager.log_file,
+            Some(log_path.to_str().unwrap().to_string())
+        );
     }
 
     #[test]
@@ -2383,7 +2410,9 @@ mod tests {
         let streaming_path = temp_dir.path().join("ordering.json");
 
         let mut manager = BlockingResultsManager::new(None, None).unwrap();
-        manager.enable_per_message_streaming(&streaming_path).unwrap();
+        manager
+            .enable_per_message_streaming(&streaming_path)
+            .unwrap();
 
         // Stream records out of order
         let ids = [5, 2, 8, 1, 9];
@@ -2443,7 +2472,9 @@ mod tests {
         let streaming_csv = temp_dir.path().join("streaming.csv");
 
         let mut manager = BlockingResultsManager::new(Some(&output_path), None).unwrap();
-        manager.enable_per_message_streaming(&streaming_json).unwrap();
+        manager
+            .enable_per_message_streaming(&streaming_json)
+            .unwrap();
         manager.enable_csv_streaming(&streaming_csv).unwrap();
 
         let results = create_test_results();
@@ -2460,11 +2491,9 @@ mod tests {
         let output_path = temp_dir.path().join("summary.json");
         let log_path = temp_dir.path().join("benchmark.log");
 
-        let manager = BlockingResultsManager::new(
-            Some(&output_path),
-            Some(log_path.to_str().unwrap()),
-        )
-        .unwrap();
+        let manager =
+            BlockingResultsManager::new(Some(&output_path), Some(log_path.to_str().unwrap()))
+                .unwrap();
 
         let result = manager.print_summary();
         assert!(result.is_ok());
@@ -2481,15 +2510,8 @@ mod tests {
         assert_eq!(manager.results.len(), 1);
 
         // Add another result
-        let results2 = BenchmarkResults::new(
-            IpcMechanism::SharedMemory,
-            512,
-            4096,
-            1,
-            Some(500),
-            None,
-            0,
-        );
+        let results2 =
+            BenchmarkResults::new(IpcMechanism::SharedMemory, 512, 4096, 1, Some(500), None, 0);
         manager.add_results(results2).unwrap();
 
         assert_eq!(manager.results.len(), 2);
@@ -2503,7 +2525,9 @@ mod tests {
         let mut manager = BlockingResultsManager::new(None, None).unwrap();
 
         // Enable combined streaming with both tests
-        manager.enable_combined_streaming(&streaming_path, true).unwrap();
+        manager
+            .enable_combined_streaming(&streaming_path, true)
+            .unwrap();
 
         assert!(manager.streaming_enabled);
         assert!(manager.per_message_streaming);
@@ -2537,7 +2561,9 @@ mod tests {
         let streaming_path = temp_dir.path().join("same_id.json");
 
         let mut manager = BlockingResultsManager::new(None, None).unwrap();
-        manager.enable_combined_streaming(&streaming_path, true).unwrap();
+        manager
+            .enable_combined_streaming(&streaming_path, true)
+            .unwrap();
 
         // First record with one-way latency
         let record1 = MessageLatencyRecord {
@@ -2576,15 +2602,8 @@ mod tests {
         let mut manager = BlockingResultsManager::new(None, None).unwrap();
 
         // Create a failed result
-        let mut results = BenchmarkResults::new(
-            IpcMechanism::TcpSocket,
-            1024,
-            8192,
-            1,
-            Some(100),
-            None,
-            0,
-        );
+        let mut results =
+            BenchmarkResults::new(IpcMechanism::TcpSocket, 1024, 8192, 1, Some(100), None, 0);
         results.status = BenchmarkStatus::Failure("Test failure message".to_string());
         manager.add_results(results).unwrap();
 
@@ -2595,20 +2614,15 @@ mod tests {
 
     #[test]
     fn test_print_summary_with_latency_results() {
-        use crate::metrics::{LatencyMetrics, LatencyType, PercentileValue, PerformanceMetrics, ThroughputMetrics};
+        use crate::metrics::{
+            LatencyMetrics, LatencyType, PercentileValue, PerformanceMetrics, ThroughputMetrics,
+        };
         use crate::results::BenchmarkStatus;
 
         let mut manager = BlockingResultsManager::new(None, None).unwrap();
 
-        let mut results = BenchmarkResults::new(
-            IpcMechanism::TcpSocket,
-            1024,
-            8192,
-            1,
-            Some(100),
-            None,
-            0,
-        );
+        let mut results =
+            BenchmarkResults::new(IpcMechanism::TcpSocket, 1024, 8192, 1, Some(100), None, 0);
         results.status = BenchmarkStatus::Success;
 
         // Add one-way latency results
@@ -2666,7 +2680,9 @@ mod tests {
         let streaming_path = temp_dir.path().join("no_handle.json");
 
         let mut manager = BlockingResultsManager::new(None, None).unwrap();
-        manager.enable_per_message_streaming(&streaming_path).unwrap();
+        manager
+            .enable_per_message_streaming(&streaming_path)
+            .unwrap();
 
         // Take the handle so write falls back to file open/append
         let _ = manager.streaming_file_handle.take();
@@ -2691,7 +2707,9 @@ mod tests {
         let streaming_path = temp_dir.path().join("second_record.json");
 
         let mut manager = BlockingResultsManager::new(None, None).unwrap();
-        manager.enable_per_message_streaming(&streaming_path).unwrap();
+        manager
+            .enable_per_message_streaming(&streaming_path)
+            .unwrap();
 
         // First record
         let record1 = MessageLatencyRecord {
@@ -2728,7 +2746,9 @@ mod tests {
         let streaming_path = temp_dir.path().join("merge_pending.json");
 
         let mut manager = BlockingResultsManager::new(None, None).unwrap();
-        manager.enable_combined_streaming(&streaming_path, true).unwrap();
+        manager
+            .enable_combined_streaming(&streaming_path, true)
+            .unwrap();
 
         // First partial record
         let record1 = MessageLatencyRecord {
