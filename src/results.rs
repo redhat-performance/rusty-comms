@@ -2292,15 +2292,8 @@ mod tests {
     fn test_results_manager_add_results() {
         let mut mgr = ResultsManager::new(None, None).unwrap();
 
-        let results = BenchmarkResults::new(
-            IpcMechanism::TcpSocket,
-            1024,
-            8192,
-            1,
-            Some(100),
-            None,
-            0,
-        );
+        let results =
+            BenchmarkResults::new(IpcMechanism::TcpSocket, 1024, 8192, 1, Some(100), None, 0);
 
         let rt = Runtime::new().unwrap();
         rt.block_on(mgr.add_results(results.clone())).unwrap();
@@ -2312,15 +2305,8 @@ mod tests {
 
     #[test]
     fn test_benchmark_results_new() {
-        let results = BenchmarkResults::new(
-            IpcMechanism::TcpSocket,
-            1024,
-            8192,
-            1,
-            Some(100),
-            None,
-            0,
-        );
+        let results =
+            BenchmarkResults::new(IpcMechanism::TcpSocket, 1024, 8192, 1, Some(100), None, 0);
 
         assert!(results.one_way_results.is_none());
         assert!(results.round_trip_results.is_none());

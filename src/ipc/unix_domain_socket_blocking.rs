@@ -937,7 +937,8 @@ mod tests {
                 assert_eq!(request.message_type, MessageType::Request);
 
                 // Send response
-                let response = Message::new(expected_id, request.payload.clone(), MessageType::Response);
+                let response =
+                    Message::new(expected_id, request.payload.clone(), MessageType::Response);
                 server.send_blocking(&response).unwrap();
             }
 
