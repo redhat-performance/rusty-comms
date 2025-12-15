@@ -671,4 +671,820 @@ mod tests {
 
         let _ = std::fs::remove_file(&socket_path);
     }
+
+    #[test]
+    fn test_send_without_connection_fails() {
+        // Test that send fails when no connection exists
+        let mut transport = BlockingUnixDomainSocket::new();
+        let msg = Message::new(1, vec![0u8; 10], MessageType::OneWay);
+
+        let result = transport.send_blocking(&msg);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("socket not connected"));
+    }
+
+    #[test]
+    fn test_receive_without_connection_fails() {
+        // Test that receive fails when no connection exists
+        let mut transport = BlockingUnixDomainSocket::new();
+
+        let result = transport.receive_blocking();
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("socket not connected"));
+    }
+
+    #[test]
+    fn test_ping_pong_message_types() {
+        let socket_path = get_temp_socket_path("test_uds_blocking_ping_pong.sock");
+        let _ = std::fs::remove_file(&socket_path);
+
+        let server_path = socket_path.clone();
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingUnixDomainSocket::new();
+            let config = TransportConfig {
+                socket_path: server_path,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            // Receive Ping
+            let ping = server.receive_blocking().unwrap();
+            assert_eq!(ping.message_type, MessageType::Ping);
+            assert_eq!(ping.id, 100);
+
+            // Send Pong
+            let pong = Message::new(ping.id, Vec::new(), MessageType::Pong);
+            server.send_blocking(&pong).unwrap();
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        let mut client = BlockingUnixDomainSocket::new();
+        let config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        // Send Ping
+        let ping = Message::new(100, Vec::new(), MessageType::Ping);
+        client.send_blocking(&ping).unwrap();
+
+        // Receive Pong
+        let pong = client.receive_blocking().unwrap();
+        assert_eq!(pong.message_type, MessageType::Pong);
+        assert_eq!(pong.id, 100);
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    #[test]
+    fn test_empty_payload_message() {
+        let socket_path = get_temp_socket_path("test_uds_blocking_empty.sock");
+        let _ = std::fs::remove_file(&socket_path);
+
+        let server_path = socket_path.clone();
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingUnixDomainSocket::new();
+            let config = TransportConfig {
+                socket_path: server_path,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            let msg = server.receive_blocking().unwrap();
+            assert_eq!(msg.id, 1);
+            assert!(msg.payload.is_empty());
+
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        let mut client = BlockingUnixDomainSocket::new();
+        let config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        // Send message with empty payload
+        let msg = Message::new(1, Vec::new(), MessageType::OneWay);
+        client.send_blocking(&msg).unwrap();
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    #[test]
+    fn test_very_large_message() {
+        // Test message larger than socket buffer (65KB)
+        let socket_path = get_temp_socket_path("test_uds_blocking_very_large.sock");
+        let _ = std::fs::remove_file(&socket_path);
+        let very_large_size = 100_000; // 100KB
+
+        let server_path = socket_path.clone();
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingUnixDomainSocket::new();
+            let config = TransportConfig {
+                socket_path: server_path,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            let msg = server.receive_blocking().unwrap();
+            assert_eq!(msg.id, 1);
+            assert_eq!(msg.payload.len(), very_large_size);
+            // Verify payload content
+            assert!(msg.payload.iter().all(|&b| b == 0xCD));
+
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        let mut client = BlockingUnixDomainSocket::new();
+        let config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        let msg = Message::new(1, vec![0xCD; very_large_size], MessageType::OneWay);
+        client.send_blocking(&msg).unwrap();
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    #[test]
+    fn test_payload_content_integrity() {
+        let socket_path = get_temp_socket_path("test_uds_blocking_integrity.sock");
+        let _ = std::fs::remove_file(&socket_path);
+
+        // Create payload with distinct pattern
+        let payload: Vec<u8> = (0..256).map(|i| i as u8).collect();
+        let payload_clone = payload.clone();
+
+        let server_path = socket_path.clone();
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingUnixDomainSocket::new();
+            let config = TransportConfig {
+                socket_path: server_path,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            let msg = server.receive_blocking().unwrap();
+            assert_eq!(msg.payload, payload_clone);
+
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        let mut client = BlockingUnixDomainSocket::new();
+        let config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        let msg = Message::new(1, payload, MessageType::OneWay);
+        client.send_blocking(&msg).unwrap();
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    #[test]
+    fn test_server_sends_to_client() {
+        // Test bidirectional: server initiates send to client
+        let socket_path = get_temp_socket_path("test_uds_blocking_server_sends.sock");
+        let _ = std::fs::remove_file(&socket_path);
+
+        let server_path = socket_path.clone();
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingUnixDomainSocket::new();
+            let config = TransportConfig {
+                socket_path: server_path,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            // Server sends first
+            let msg = Message::new(999, vec![1, 2, 3, 4, 5], MessageType::OneWay);
+            server.send_blocking(&msg).unwrap();
+
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        let mut client = BlockingUnixDomainSocket::new();
+        let config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        // Client receives message from server
+        let msg = client.receive_blocking().unwrap();
+        assert_eq!(msg.id, 999);
+        assert_eq!(msg.payload, vec![1, 2, 3, 4, 5]);
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    #[test]
+    fn test_multiple_round_trips_same_connection() {
+        let socket_path = get_temp_socket_path("test_uds_blocking_multi_rt.sock");
+        let _ = std::fs::remove_file(&socket_path);
+        let num_round_trips = 10;
+
+        let server_path = socket_path.clone();
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingUnixDomainSocket::new();
+            let config = TransportConfig {
+                socket_path: server_path,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            for expected_id in 1..=num_round_trips {
+                // Receive request
+                let request = server.receive_blocking().unwrap();
+                assert_eq!(request.id, expected_id);
+                assert_eq!(request.message_type, MessageType::Request);
+
+                // Send response
+                let response = Message::new(expected_id, request.payload.clone(), MessageType::Response);
+                server.send_blocking(&response).unwrap();
+            }
+
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        let mut client = BlockingUnixDomainSocket::new();
+        let config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        for id in 1..=num_round_trips {
+            // Send request
+            let payload = vec![id as u8; 10];
+            let request = Message::new(id, payload.clone(), MessageType::Request);
+            client.send_blocking(&request).unwrap();
+
+            // Receive response
+            let response = client.receive_blocking().unwrap();
+            assert_eq!(response.id, id);
+            assert_eq!(response.message_type, MessageType::Response);
+            assert_eq!(response.payload, payload);
+        }
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    #[test]
+    fn test_ensure_connection_idempotent() {
+        // Test that ensure_connection can be called multiple times safely
+        let socket_path = get_temp_socket_path("test_uds_blocking_idempotent.sock");
+        let _ = std::fs::remove_file(&socket_path);
+
+        let server_path = socket_path.clone();
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingUnixDomainSocket::new();
+            let config = TransportConfig {
+                socket_path: server_path,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            // Multiple sends should work (ensure_connection called each time)
+            for i in 1..=3 {
+                let msg = server.receive_blocking().unwrap();
+                assert_eq!(msg.id, i);
+            }
+
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        let mut client = BlockingUnixDomainSocket::new();
+        let config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        // Send multiple messages (ensure_connection called internally each time)
+        for i in 1..=3u64 {
+            let msg = Message::new(i, vec![0u8; 10], MessageType::OneWay);
+            client.send_blocking(&msg).unwrap();
+        }
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    #[test]
+    fn test_message_timestamp_is_set() {
+        let socket_path = get_temp_socket_path("test_uds_blocking_timestamp.sock");
+        let _ = std::fs::remove_file(&socket_path);
+
+        let server_path = socket_path.clone();
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingUnixDomainSocket::new();
+            let config = TransportConfig {
+                socket_path: server_path,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            let msg = server.receive_blocking().unwrap();
+            // Timestamp should be non-zero (set by send)
+            assert!(msg.timestamp > 0);
+
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        let mut client = BlockingUnixDomainSocket::new();
+        let config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        let msg = Message::new(1, vec![0u8; 10], MessageType::OneWay);
+        client.send_blocking(&msg).unwrap();
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    #[test]
+    fn test_all_message_types() {
+        let socket_path = get_temp_socket_path("test_uds_blocking_all_types.sock");
+        let _ = std::fs::remove_file(&socket_path);
+
+        let all_types = vec![
+            MessageType::OneWay,
+            MessageType::Request,
+            MessageType::Response,
+            MessageType::Ping,
+            MessageType::Pong,
+        ];
+        let types_clone = all_types.clone();
+
+        let server_path = socket_path.clone();
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingUnixDomainSocket::new();
+            let config = TransportConfig {
+                socket_path: server_path,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            for (i, expected_type) in types_clone.iter().enumerate() {
+                let msg = server.receive_blocking().unwrap();
+                assert_eq!(msg.id, i as u64);
+                assert_eq!(msg.message_type, *expected_type);
+            }
+
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        let mut client = BlockingUnixDomainSocket::new();
+        let config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        for (i, msg_type) in all_types.iter().enumerate() {
+            let msg = Message::new(i as u64, vec![i as u8; 10], *msg_type);
+            client.send_blocking(&msg).unwrap();
+        }
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    #[test]
+    fn test_server_rebind_after_close() {
+        let socket_path = get_temp_socket_path("test_uds_blocking_rebind.sock");
+        let _ = std::fs::remove_file(&socket_path);
+
+        // First server session
+        {
+            let mut server = BlockingUnixDomainSocket::new();
+            let config = TransportConfig {
+                socket_path: socket_path.clone(),
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+            server.close_blocking().unwrap();
+        }
+
+        // Second server session should succeed (socket file should be cleaned up)
+        {
+            let mut server = BlockingUnixDomainSocket::new();
+            let config = TransportConfig {
+                socket_path: socket_path.clone(),
+                ..Default::default()
+            };
+            // This should succeed because start_server_blocking cleans up existing socket
+            server.start_server_blocking(&config).unwrap();
+            server.close_blocking().unwrap();
+        }
+
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    #[test]
+    fn test_server_bind_fails_on_invalid_path() {
+        // Test that bind fails with appropriate error for non-existent directory
+        let mut server = BlockingUnixDomainSocket::new();
+        let config = TransportConfig {
+            socket_path: "/nonexistent_dir_12345/socket.sock".to_string(),
+            ..Default::default()
+        };
+
+        let result = server.start_server_blocking(&config);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Failed to bind") || err_msg.contains("No such file"),
+            "Expected bind error, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_receive_detects_peer_disconnect() {
+        let socket_path = get_temp_socket_path("test_uds_blocking_disconnect.sock");
+        let _ = std::fs::remove_file(&socket_path);
+
+        let server_path = socket_path.clone();
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingUnixDomainSocket::new();
+            let config = TransportConfig {
+                socket_path: server_path,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            // Try to receive - client will disconnect before sending
+            let result = server.receive_blocking();
+            // Should get an error when peer disconnects
+            assert!(result.is_err());
+
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        let mut client = BlockingUnixDomainSocket::new();
+        let config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        // Close immediately without sending anything
+        client.close_blocking().unwrap();
+
+        server_handle.join().unwrap();
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    #[test]
+    fn test_extremely_large_message() {
+        // Test message larger than typical kernel buffer (1MB)
+        // This may exercise partial write paths
+        let socket_path = get_temp_socket_path("test_uds_blocking_huge.sock");
+        let _ = std::fs::remove_file(&socket_path);
+        let huge_size = 1_000_000; // 1MB
+
+        let server_path = socket_path.clone();
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingUnixDomainSocket::new();
+            let config = TransportConfig {
+                socket_path: server_path,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            let msg = server.receive_blocking().unwrap();
+            assert_eq!(msg.id, 1);
+            assert_eq!(msg.payload.len(), huge_size);
+            // Verify first and last bytes
+            assert_eq!(msg.payload[0], 0xAA);
+            assert_eq!(msg.payload[huge_size - 1], 0xAA);
+
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        let mut client = BlockingUnixDomainSocket::new();
+        let config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        let msg = Message::new(1, vec![0xAA; huge_size], MessageType::OneWay);
+        client.send_blocking(&msg).unwrap();
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    #[test]
+    fn test_bidirectional_interleaved_messages() {
+        // Test alternating sends from both sides
+        let socket_path = get_temp_socket_path("test_uds_blocking_bidir.sock");
+        let _ = std::fs::remove_file(&socket_path);
+
+        let server_path = socket_path.clone();
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingUnixDomainSocket::new();
+            let config = TransportConfig {
+                socket_path: server_path,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            for i in 0..5u64 {
+                // Receive from client
+                let msg = server.receive_blocking().unwrap();
+                assert_eq!(msg.id, i * 2); // Even IDs from client
+
+                // Send to client
+                let response = Message::new(i * 2 + 1, vec![0u8; 10], MessageType::OneWay);
+                server.send_blocking(&response).unwrap();
+            }
+
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        let mut client = BlockingUnixDomainSocket::new();
+        let config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        for i in 0..5u64 {
+            // Send to server
+            let msg = Message::new(i * 2, vec![0u8; 10], MessageType::OneWay);
+            client.send_blocking(&msg).unwrap();
+
+            // Receive from server
+            let response = client.receive_blocking().unwrap();
+            assert_eq!(response.id, i * 2 + 1); // Odd IDs from server
+        }
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    #[test]
+    fn test_client_receive_after_server_close() {
+        let socket_path = get_temp_socket_path("test_uds_blocking_server_close.sock");
+        let _ = std::fs::remove_file(&socket_path);
+
+        use std::sync::{Arc, Barrier};
+        let barrier = Arc::new(Barrier::new(2));
+
+        let server_path = socket_path.clone();
+        let server_barrier = Arc::clone(&barrier);
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingUnixDomainSocket::new();
+            let config = TransportConfig {
+                socket_path: server_path,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            // Wait for client to connect and be ready to receive
+            server_barrier.wait();
+
+            // Close without sending - client should get error
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        let mut client = BlockingUnixDomainSocket::new();
+        let config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        // Signal server we're ready
+        barrier.wait();
+
+        // Small delay to let server close
+        thread::sleep(Duration::from_millis(50));
+
+        // Try to receive - should fail because server closed
+        let result = client.receive_blocking();
+        assert!(result.is_err());
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    #[test]
+    fn test_message_with_max_u64_id() {
+        let socket_path = get_temp_socket_path("test_uds_blocking_max_id.sock");
+        let _ = std::fs::remove_file(&socket_path);
+
+        let server_path = socket_path.clone();
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingUnixDomainSocket::new();
+            let config = TransportConfig {
+                socket_path: server_path,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            let msg = server.receive_blocking().unwrap();
+            assert_eq!(msg.id, u64::MAX);
+
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        let mut client = BlockingUnixDomainSocket::new();
+        let config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        let msg = Message::new(u64::MAX, vec![0u8; 10], MessageType::OneWay);
+        client.send_blocking(&msg).unwrap();
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    #[test]
+    fn test_rapid_connect_disconnect_cycles() {
+        let socket_path = get_temp_socket_path("test_uds_blocking_rapid.sock");
+        let _ = std::fs::remove_file(&socket_path);
+
+        // Multiple rapid connect/disconnect cycles
+        for cycle in 0..3 {
+            let server_path = socket_path.clone();
+            let server_handle = thread::spawn(move || {
+                let mut server = BlockingUnixDomainSocket::new();
+                let config = TransportConfig {
+                    socket_path: server_path,
+                    ..Default::default()
+                };
+                server.start_server_blocking(&config).unwrap();
+
+                let msg = server.receive_blocking().unwrap();
+                assert_eq!(msg.id, cycle);
+
+                server.close_blocking().unwrap();
+            });
+
+            thread::sleep(Duration::from_millis(50));
+
+            let mut client = BlockingUnixDomainSocket::new();
+            let config = TransportConfig {
+                socket_path: socket_path.clone(),
+                ..Default::default()
+            };
+            client.start_client_blocking(&config).unwrap();
+
+            let msg = Message::new(cycle, vec![0u8; 10], MessageType::OneWay);
+            client.send_blocking(&msg).unwrap();
+
+            client.close_blocking().unwrap();
+            server_handle.join().unwrap();
+        }
+
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    #[test]
+    fn test_close_is_idempotent() {
+        // Calling close multiple times should not panic
+        let mut transport = BlockingUnixDomainSocket::new();
+
+        // Close without ever connecting
+        transport.close_blocking().unwrap();
+        transport.close_blocking().unwrap();
+        transport.close_blocking().unwrap();
+
+        // Verify state
+        assert!(transport.listener.is_none());
+        assert!(transport.stream.is_none());
+    }
+
+    #[test]
+    fn test_server_can_send_before_receiving() {
+        // Server sends first without receiving anything
+        let socket_path = get_temp_socket_path("test_uds_blocking_server_first.sock");
+        let _ = std::fs::remove_file(&socket_path);
+
+        let server_path = socket_path.clone();
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingUnixDomainSocket::new();
+            let config = TransportConfig {
+                socket_path: server_path,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            // Send immediately after accept (triggered by send)
+            let msg = Message::new(42, vec![1, 2, 3], MessageType::OneWay);
+            server.send_blocking(&msg).unwrap();
+
+            // Then receive response
+            let response = server.receive_blocking().unwrap();
+            assert_eq!(response.id, 43);
+
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        let mut client = BlockingUnixDomainSocket::new();
+        let config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        // Receive from server first
+        let msg = client.receive_blocking().unwrap();
+        assert_eq!(msg.id, 42);
+        assert_eq!(msg.payload, vec![1, 2, 3]);
+
+        // Then send response
+        let response = Message::new(43, Vec::new(), MessageType::Response);
+        client.send_blocking(&response).unwrap();
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+
+        let _ = std::fs::remove_file(&socket_path);
+    }
 }

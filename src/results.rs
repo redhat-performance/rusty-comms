@@ -2093,4 +2093,256 @@ mod tests {
             "CSV should contain at least one data row"
         );
     }
+
+    #[test]
+    fn test_message_latency_record_to_csv_record_one_way() {
+        let record = MessageLatencyRecord {
+            timestamp_ns: 1234567890,
+            message_id: 42,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 1024,
+            one_way_latency_ns: Some(5000),
+            round_trip_latency_ns: None,
+        };
+
+        let csv = record.to_csv_record();
+        assert!(csv.contains("1234567890"));
+        assert!(csv.contains("42"));
+        // Mechanism is serialized as "TcpSocket" or similar
+        assert!(csv.contains("1024"));
+        assert!(csv.contains("5000"));
+        // Round-trip should be empty
+        assert!(csv.ends_with(','));
+    }
+
+    #[test]
+    fn test_message_latency_record_to_csv_record_round_trip() {
+        let record = MessageLatencyRecord {
+            timestamp_ns: 1234567890,
+            message_id: 42,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 1024,
+            one_way_latency_ns: None,
+            round_trip_latency_ns: Some(10000),
+        };
+
+        let csv = record.to_csv_record();
+        assert!(csv.contains("10000"));
+        // One-way should be empty (comma followed by comma)
+        assert!(csv.contains(",,"));
+    }
+
+    #[test]
+    fn test_message_latency_record_to_csv_record_combined() {
+        let record = MessageLatencyRecord {
+            timestamp_ns: 1234567890,
+            message_id: 42,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 1024,
+            one_way_latency_ns: Some(5000),
+            round_trip_latency_ns: Some(10000),
+        };
+
+        let csv = record.to_csv_record();
+        assert!(csv.contains("5000"));
+        assert!(csv.contains("10000"));
+    }
+
+    #[test]
+    fn test_message_latency_record_to_value_array() {
+        let record = MessageLatencyRecord {
+            timestamp_ns: 9999,
+            message_id: 1,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 512,
+            one_way_latency_ns: Some(1000),
+            round_trip_latency_ns: None,
+        };
+
+        let values = record.to_value_array();
+        assert_eq!(values.len(), 6);
+        assert_eq!(values[0], serde_json::json!(9999u64));
+        assert_eq!(values[1], serde_json::json!(1u64));
+        assert_eq!(values[3], serde_json::json!(512));
+        assert_eq!(values[4], serde_json::json!(Some(1000u64)));
+        assert_eq!(values[5], serde_json::json!(Option::<u64>::None));
+    }
+
+    #[test]
+    fn test_message_latency_record_merge() {
+        let mut record1 = MessageLatencyRecord {
+            timestamp_ns: 2000,
+            message_id: 1,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: Some(500),
+            round_trip_latency_ns: None,
+        };
+
+        let record2 = MessageLatencyRecord {
+            timestamp_ns: 1000, // Earlier timestamp
+            message_id: 1,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: None,
+            round_trip_latency_ns: Some(1200),
+        };
+
+        record1.merge(&record2);
+
+        // Should take earlier timestamp
+        assert_eq!(record1.timestamp_ns, 1000);
+        // Should have both latencies
+        assert_eq!(record1.one_way_latency_ns, Some(500));
+        assert_eq!(record1.round_trip_latency_ns, Some(1200));
+    }
+
+    #[test]
+    fn test_message_latency_record_merge_overwrites_latency() {
+        let mut record1 = MessageLatencyRecord {
+            timestamp_ns: 1000,
+            message_id: 1,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: Some(500),
+            round_trip_latency_ns: None,
+        };
+
+        let record2 = MessageLatencyRecord {
+            timestamp_ns: 2000,
+            message_id: 1,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: Some(600), // Different value
+            round_trip_latency_ns: None,
+        };
+
+        record1.merge(&record2);
+
+        // Should overwrite with new value
+        assert_eq!(record1.one_way_latency_ns, Some(600));
+        // Should keep original timestamp (earlier)
+        assert_eq!(record1.timestamp_ns, 1000);
+    }
+
+    #[test]
+    fn test_message_latency_record_is_combined() {
+        let one_way_only = MessageLatencyRecord {
+            timestamp_ns: 1000,
+            message_id: 1,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: Some(500),
+            round_trip_latency_ns: None,
+        };
+        assert!(!one_way_only.is_combined());
+
+        let round_trip_only = MessageLatencyRecord {
+            timestamp_ns: 1000,
+            message_id: 1,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: None,
+            round_trip_latency_ns: Some(1000),
+        };
+        assert!(!round_trip_only.is_combined());
+
+        let combined = MessageLatencyRecord {
+            timestamp_ns: 1000,
+            message_id: 1,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 100,
+            one_way_latency_ns: Some(500),
+            round_trip_latency_ns: Some(1000),
+        };
+        assert!(combined.is_combined());
+    }
+
+    #[test]
+    fn test_message_latency_record_new_combined() {
+        let record = MessageLatencyRecord::new_combined(
+            42,
+            IpcMechanism::TcpSocket,
+            256,
+            Duration::from_micros(100),
+            Duration::from_micros(200),
+        );
+
+        assert_eq!(record.message_id, 42);
+        assert_eq!(record.mechanism, IpcMechanism::TcpSocket);
+        assert_eq!(record.message_size, 256);
+        assert_eq!(record.one_way_latency_ns, Some(100_000)); // 100 micros = 100,000 ns
+        assert_eq!(record.round_trip_latency_ns, Some(200_000));
+        assert!(record.is_combined());
+        assert!(record.timestamp_ns > 0);
+    }
+
+    #[test]
+    fn test_message_latency_record_headings() {
+        assert_eq!(MessageLatencyRecord::HEADINGS.len(), 6);
+        assert_eq!(MessageLatencyRecord::HEADINGS[0], "timestamp_ns");
+        assert_eq!(MessageLatencyRecord::HEADINGS[1], "message_id");
+        assert_eq!(MessageLatencyRecord::HEADINGS[2], "mechanism");
+        assert_eq!(MessageLatencyRecord::HEADINGS[3], "message_size");
+        assert_eq!(MessageLatencyRecord::HEADINGS[4], "one_way_latency_ns");
+        assert_eq!(MessageLatencyRecord::HEADINGS[5], "round_trip_latency_ns");
+    }
+
+    #[test]
+    fn test_results_manager_add_results() {
+        let mut mgr = ResultsManager::new(None, None).unwrap();
+
+        let results = BenchmarkResults::new(
+            IpcMechanism::TcpSocket,
+            1024,
+            8192,
+            1,
+            Some(100),
+            None,
+            0,
+        );
+
+        let rt = Runtime::new().unwrap();
+        rt.block_on(mgr.add_results(results.clone())).unwrap();
+        assert_eq!(mgr.results.len(), 1);
+
+        rt.block_on(mgr.add_results(results)).unwrap();
+        assert_eq!(mgr.results.len(), 2);
+    }
+
+    #[test]
+    fn test_benchmark_results_new() {
+        let results = BenchmarkResults::new(
+            IpcMechanism::TcpSocket,
+            1024,
+            8192,
+            1,
+            Some(100),
+            None,
+            0,
+        );
+
+        assert!(results.one_way_results.is_none());
+        assert!(results.round_trip_results.is_none());
+        assert_eq!(results.mechanism, IpcMechanism::TcpSocket);
+        assert_eq!(results.test_config.message_size, 1024);
+        assert_eq!(results.test_config.buffer_size, 8192);
+    }
+
+    #[test]
+    fn test_benchmark_results_with_duration() {
+        let results = BenchmarkResults::new(
+            IpcMechanism::TcpSocket,
+            512,
+            4096,
+            2,
+            None,
+            Some(Duration::from_secs(10)),
+            100,
+        );
+
+        assert_eq!(results.test_config.duration, Some(Duration::from_secs(10)));
+        assert_eq!(results.test_config.concurrency, 2);
+        assert_eq!(results.test_config.message_size, 512);
+    }
 }
