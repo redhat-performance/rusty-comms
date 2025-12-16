@@ -36,7 +36,7 @@ use clap::Parser;
 use ipc_benchmark::{
     benchmark::{BenchmarkConfig, BenchmarkRunner},
     benchmark_blocking::BlockingBenchmarkRunner,
-    cli::{Args, IpcMechanism},
+    cli::{Args, IpcMechanism, RunMode},
     ipc::{get_monotonic_time_ns, Message, MessageType, TransportFactory},
     results::{BenchmarkResults, ResultsManager},
     results_blocking::BlockingResultsManager,
@@ -52,8 +52,8 @@ use logging::ColorizedFormatter;
 
 /// Main entry point for the IPC benchmark suite.
 ///
-/// This function determines the execution mode (async or blocking) based on
-/// the `--blocking` CLI flag and dispatches to the appropriate execution path.
+/// This function determines the execution mode based on CLI flags and dispatches
+/// to the appropriate execution path.
 ///
 /// # Execution Modes
 ///
@@ -61,8 +61,14 @@ use logging::ColorizedFormatter;
 ///   non-blocking I/O
 /// - **Blocking**: Uses std library with traditional blocking I/O operations
 ///
+/// # Run Modes
+///
+/// - **Standalone (default)**: Spawns client as subprocess on same host
+/// - **Host**: Creates Podman container as client, drives tests from host
+/// - **Client**: Runs inside container, connects back to host server
+///
 /// The mode selection happens at runtime based on CLI arguments, allowing the
-/// same binary to run in either mode without recompilation.
+/// same binary to run in any mode without recompilation.
 ///
 /// # Examples
 ///
@@ -72,10 +78,21 @@ use logging::ColorizedFormatter;
 ///
 /// # Run in blocking mode
 /// ipc-benchmark -m uds -s 1024 -i 10000 --blocking
+///
+/// # Run in host mode (creates container)
+/// ipc-benchmark -m uds --run-mode host -i 10000
+///
+/// # Stop containers
+/// ipc-benchmark --stop-container all
 /// ```
 fn main() -> Result<()> {
     // Parse CLI arguments to determine execution mode
     let mut args = Args::parse();
+
+    // Handle container stop command first (exits after)
+    if let Some(ref mechanism) = args.stop_container {
+        return stop_container_command(&args, mechanism);
+    }
 
     // Auto-enable blocking mode when --shm-direct is used
     // Direct memory shared memory is only available in blocking mode
@@ -87,14 +104,139 @@ fn main() -> Result<()> {
         args.blocking = true;
     }
 
-    // Branch to appropriate execution path based on mode
-    if args.blocking {
-        // Blocking mode: use std library with blocking I/O
-        run_blocking_mode(args)
-    } else {
-        // Async mode: use Tokio runtime with async/await
-        run_async_mode(args)
+    // Branch based on run mode and execution mode (async/blocking)
+    match args.run_mode {
+        RunMode::Standalone => {
+            // Existing behavior - spawn subprocess client
+            if args.blocking {
+                run_blocking_mode(args)
+            } else {
+                run_async_mode(args)
+            }
+        }
+        RunMode::Host => {
+            // Host mode - create container, drive tests
+            if args.blocking {
+                run_host_mode_blocking(args)
+            } else {
+                run_host_mode_async(args)
+            }
+        }
+        RunMode::Client => {
+            // Client mode - connect to host (run inside container)
+            if args.blocking {
+                run_client_mode_blocking(args)
+            } else {
+                run_client_mode_async(args)
+            }
+        }
     }
+}
+
+/// Stop container command handler.
+///
+/// Stops the specified benchmark container(s) and exits.
+///
+/// # Arguments
+///
+/// * `args` - CLI arguments containing container configuration
+/// * `mechanism` - Mechanism name ("uds", "shm", "pmq") or "all"
+///
+/// # Returns
+///
+/// * `Ok(())` - Containers stopped successfully
+/// * `Err` - Failed to stop containers
+fn stop_container_command(_args: &Args, _mechanism: &str) -> Result<()> {
+    // TODO: Implement in Stage 6
+    Err(anyhow::anyhow!(
+        "Container stop not yet implemented. Will be completed in Stage 6."
+    ))
+}
+
+/// Run benchmark in host mode with async I/O.
+///
+/// Creates Podman container client, drives tests, collects results.
+/// The host acts as server and spawns a container running the benchmark
+/// in client mode.
+///
+/// # Arguments
+///
+/// * `args` - Parsed command-line arguments
+///
+/// # Returns
+///
+/// * `Ok(())` - Benchmark completed successfully
+/// * `Err` - Benchmark or container management failed
+#[tokio::main]
+async fn run_host_mode_async(_args: Args) -> Result<()> {
+    // TODO: Implement in Stage 3
+    Err(anyhow::anyhow!(
+        "Host mode (async) not yet implemented. Will be completed in Stage 3."
+    ))
+}
+
+/// Run benchmark in host mode with blocking I/O.
+///
+/// Creates Podman container client, drives tests, collects results.
+/// The host acts as server and spawns a container running the benchmark
+/// in client mode.
+///
+/// # Arguments
+///
+/// * `args` - Parsed command-line arguments
+///
+/// # Returns
+///
+/// * `Ok(())` - Benchmark completed successfully
+/// * `Err` - Benchmark or container management failed
+fn run_host_mode_blocking(_args: Args) -> Result<()> {
+    // TODO: Implement in Stage 3
+    Err(anyhow::anyhow!(
+        "Host mode (blocking) not yet implemented. Will be completed in Stage 3."
+    ))
+}
+
+/// Run benchmark in client mode with async I/O.
+///
+/// Runs inside container, connects back to host server.
+/// This mode is automatically invoked by the host mode when it creates
+/// the container.
+///
+/// # Arguments
+///
+/// * `args` - Parsed command-line arguments (includes connection info)
+///
+/// # Returns
+///
+/// * `Ok(())` - Client completed successfully
+/// * `Err` - Connection or benchmark failed
+#[tokio::main]
+async fn run_client_mode_async(_args: Args) -> Result<()> {
+    // TODO: Implement in Stage 4
+    Err(anyhow::anyhow!(
+        "Client mode (async) not yet implemented. Will be completed in Stage 4."
+    ))
+}
+
+/// Run benchmark in client mode with blocking I/O.
+///
+/// Runs inside container, connects back to host server.
+/// This mode is automatically invoked by the host mode when it creates
+/// the container.
+///
+/// # Arguments
+///
+/// * `args` - Parsed command-line arguments (includes connection info)
+///
+/// # Returns
+///
+/// * `Ok(())` - Client completed successfully
+/// * `Err` - Connection or benchmark failed
+fn run_client_mode_blocking(_args: Args) -> Result<()> {
+    // TODO: Implement in Stage 4
+    Err(anyhow::anyhow!(
+        "Client mode (blocking) not yet implemented. Will be completed in Stage 4."
+    ))
 }
 
 /// Run the benchmark in async mode using Tokio runtime.

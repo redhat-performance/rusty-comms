@@ -294,6 +294,11 @@ fn create_args(
         shared_memory_name: None,
         message_queue_name: None,
         internal_latency_file: None,
+        // Host-container mode options
+        run_mode: ipc_benchmark::cli::RunMode::Standalone,
+        stop_container: None,
+        container_image: "localhost/ipc-benchmark:latest".to_string(),
+        container_prefix: "rusty-comms".to_string(),
     }
 }
 
