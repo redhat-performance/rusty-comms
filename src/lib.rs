@@ -154,6 +154,24 @@ pub mod results;
 /// - System information collection for reproducibility
 pub mod results_blocking;
 
+/// Container management for host-to-container IPC benchmarking
+///
+/// This module provides Podman container lifecycle management for running
+/// IPC benchmark clients inside containers. All operations use
+/// `std::process::Command` to invoke Podman CLI — no shell scripts.
+///
+/// ## Supported IPC Mechanisms
+///
+/// - **UDS**: Mount socket directory for Unix Domain Sockets
+/// - **SHM**: Use `--ipc=host` for shared memory access
+/// - **PMQ**: Mount `/dev/mqueue` for POSIX message queues
+///
+/// ## Key Types
+///
+/// - `ContainerManager`: Manages container lifecycle (create, start, stop)
+/// - `ContainerConfig`: Mechanism-specific container configuration
+pub mod container;
+
 pub mod utils;
 
 // Re-export commonly used utilities for convenient access

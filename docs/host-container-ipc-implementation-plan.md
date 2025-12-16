@@ -111,7 +111,7 @@ and execute the next incomplete stage. Each stage is self-contained with clear:
 ## Master Progress Checklist
 
 **Last Updated:** 2025-12-16  
-**Overall Status:** Stage 1 Complete (1/8 stages complete)
+**Overall Status:** Stage 2 Complete (2/8 stages complete)
 
 ### Stage Completion Status
 
@@ -119,12 +119,12 @@ and execute the next incomplete stage. Each stage is self-contained with clear:
   - [✓] Step 1.1: Add --run-mode CLI option with RunMode enum
   - [✓] Step 1.2: Add --stop-container CLI option
   - [✓] Step 1.3: Update main() to branch on run mode
-  - [ ] Git commit created
+  - [✓] Git commit created (15dca4e)
 
-- [ ] **Stage 2**: Container Management Module (3/3 steps)
-  - [ ] Step 2.1: Create ContainerManager struct
-  - [ ] Step 2.2: Implement container create/start/stop
-  - [ ] Step 2.3: Implement mechanism-specific volume mounts
+- [✓] **Stage 2**: Container Management Module (3/3 steps)
+  - [✓] Step 2.1: Create ContainerManager struct
+  - [✓] Step 2.2: Implement container create/start/stop
+  - [✓] Step 2.3: Implement mechanism-specific volume mounts
   - [ ] Git commit created
 
 - [ ] **Stage 3**: Host Mode Implementation (3/3 steps)
@@ -178,7 +178,7 @@ and execute the next incomplete stage. Each stage is self-contained with clear:
 
 **Expected commits:** 9 total (8 stage commits + final tag)
 
-- [ ] Stage 1 commit
+- [✓] Stage 1 commit (15dca4e)
 - [ ] Stage 2 commit
 - [ ] Stage 3 commit
 - [ ] Stage 4 commit
@@ -189,8 +189,8 @@ and execute the next incomplete stage. Each stage is self-contained with clear:
 - [ ] Git tag: v0.3.0-host-container
 
 ---
-
-## CURRENT STAGE: Stage 2
+ 
+## CURRENT STAGE: Stage 3
 
 ---
 
@@ -573,7 +573,7 @@ AI-assisted-by: Claude Opus 4.5"
 ## STAGE 2: Container Management Module
 
 **Estimated Time:** 3-4 hours  
-**Status:** `[ ]` Not Started  
+**Status:** `[✓]` Completed  
 **Prerequisites:** Stage 1 complete
 
 ### Objectives
@@ -1305,6 +1305,37 @@ podman build -t localhost/ipc-benchmark:latest .
 **Notes:**
 - Existing standalone mode unchanged (backward compatible)
 - Ready to proceed to Stage 2 (Container Management Module)
+
+---
+
+### 2025-12-16 - Stage 2: Container Management Module
+**Status:** Completed  
+**Time Spent:** ~30 minutes  
+**Changes:**
+- Created `src/container.rs` with ContainerManager and ContainerConfig
+- Implemented container lifecycle operations: create, start, stop, remove
+- Implemented mechanism-specific volume mounts:
+  - UDS: Mount `/tmp/rusty-comms` directory
+  - SHM: Use `--ipc=host` for shared memory
+  - PMQ: Mount `/dev/mqueue` with `--privileged`
+  - TCP: Use `--network=host`
+- Added utility methods: exists, is_running, ensure_running, exec, run_oneshot
+- Added stop_all and remove_all for batch operations
+- Added ensure_socket_dir and is_podman_available utilities
+- Added image_exists check
+- Exported container module from lib.rs
+- Added 8 comprehensive tests (all passing)
+- All operations use std::process::Command (no shell scripts)
+
+**Validation Results:**
+- All 8 container tests passing
+- Clippy clean
+- Code formatted
+
+**Notes:**
+- All Podman operations are pure Rust via std::process::Command
+- Container names use short mechanism codes (uds, shm, pmq, tcp)
+- Ready to proceed to Stage 3 (Host Mode Implementation)
 
 ---
 
