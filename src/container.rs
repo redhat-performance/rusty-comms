@@ -612,10 +612,13 @@ impl ContainerManager {
         mechanisms
     }
 
-    /// Ensure the socket directory exists on the host.
+    /// Ensure the socket directory exists on the host with proper permissions.
     ///
-    /// Creates /tmp/rusty-comms if it doesn't exist. Required for UDS.
+    /// Creates /tmp/rusty-comms with 777 permissions if it doesn't exist.
+    /// Required for UDS so containers can create socket files.
     pub fn ensure_socket_dir() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
         let path = std::path::Path::new(UDS_SOCKET_DIR);
         if !path.exists() {
             std::fs::create_dir_all(path).with_context(|| {
@@ -623,6 +626,16 @@ impl ContainerManager {
             })?;
             info!("Created socket directory: {}", UDS_SOCKET_DIR);
         }
+
+        // Set 777 permissions so containers can create socket files
+        let permissions = std::fs::Permissions::from_mode(0o777);
+        std::fs::set_permissions(path, permissions).with_context(|| {
+            format!(
+                "Failed to set permissions on socket directory: {}",
+                UDS_SOCKET_DIR
+            )
+        })?;
+
         Ok(())
     }
 
