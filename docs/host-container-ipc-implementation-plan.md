@@ -111,7 +111,7 @@ and execute the next incomplete stage. Each stage is self-contained with clear:
 ## Master Progress Checklist
 
 **Last Updated:** 2025-12-17  
-**Overall Status:** Stage 5 Complete (5/8 stages complete)
+**Overall Status:** Stage 6 Complete (6/8 stages complete)
 
 ### Stage Completion Status
 
@@ -143,10 +143,10 @@ and execute the next incomplete stage. Each stage is self-contained with clear:
   - [✓] Step 5.2: Add /dev/shm mount handling
   - [✓] Git commit created
 
-- [ ] **Stage 6**: Container Lifecycle Commands (2/2 steps)
-  - [ ] Step 6.1: Implement --stop-container functionality
-  - [ ] Step 6.2: Implement --list-containers (optional)
-  - [ ] Git commit created
+- [✓] **Stage 6**: Container Lifecycle Commands (2/2 steps)
+  - [✓] Step 6.1: Implement --stop-container functionality (already done in Stage 3 & 4)
+  - [✓] Step 6.2: Implement --list-containers
+  - [✓] Git commit created
 
 - [ ] **Stage 7**: Integration Testing (4/4 substages)
   - [ ] Step 7.1: UDS host-container tests
@@ -181,7 +181,8 @@ and execute the next incomplete stage. Each stage is self-contained with clear:
 - [✓] Stage 1 commit (15dca4e)
 - [✓] Stage 2 commit (797af91)
 - [✓] Stage 3 & 4 commit (d15de19)
-- [✓] Stage 5 commit (pending)
+- [✓] Stage 5 commit (01e0a4d)
+- [✓] Stage 6 commit (pending)
 - [ ] Stage 6 commit
 - [ ] Stage 7 commit
 - [ ] Stage 8 commit
@@ -189,7 +190,7 @@ and execute the next incomplete stage. Each stage is self-contained with clear:
 
 ---
  
-## CURRENT STAGE: Stage 6
+## CURRENT STAGE: Stage 7
 
 ---
 
@@ -1362,6 +1363,30 @@ podman build -t localhost/ipc-benchmark:latest .
   - `/dev/shm:/dev/shm:rw` mount (more isolated)
 - Cleanup of shared memory segments prevents stale data between runs
 - Ready to proceed to Stage 6 (Container Lifecycle Commands)
+
+---
+
+### 2025-12-17 - Stage 6: Container Lifecycle Commands
+**Status:** Completed  
+**Time Spent:** ~15 minutes  
+**Changes:**
+- Verified `--stop-container` was already implemented in previous stages
+- Added `--list-containers` CLI flag in `cli.rs`
+- Added `list_containers_command()` in `main.rs`
+- Lists all benchmark containers and their status (running/stopped)
+- Shows helpful commands for managing containers
+- Added 2 new tests for `--list-containers`
+- Updated examples to include new `list_containers` field
+
+**Validation Results:**
+- All 24 CLI tests passing
+- Clippy clean
+- Code formatted
+
+**Notes:**
+- Container lifecycle management complete
+- Both `--stop-container` and `--list-containers` functional
+- Ready to proceed to Stage 7 (Integration Testing)
 
 ---
 

@@ -297,6 +297,7 @@ fn create_args(
         // Host-container mode options
         run_mode: ipc_benchmark::cli::RunMode::Standalone,
         stop_container: None,
+        list_containers: false,
         container_image: "localhost/ipc-benchmark:latest".to_string(),
         container_prefix: "rusty-comms".to_string(),
     }

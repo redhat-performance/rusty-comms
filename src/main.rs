@@ -96,6 +96,11 @@ fn main() -> Result<()> {
         return stop_container_command(&args, mechanism);
     }
 
+    // Handle container list command (exits after)
+    if args.list_containers {
+        return list_containers_command(&args);
+    }
+
     // Auto-enable blocking mode when --shm-direct is used
     // Direct memory shared memory is only available in blocking mode
     if args.shm_direct && !args.blocking {
@@ -178,6 +183,57 @@ fn stop_container_command(args: &Args, mechanism: &str) -> Result<()> {
         container_manager.remove(&container_name)?;
         info!("Container '{}' stopped and removed", container_name);
     }
+
+    Ok(())
+}
+
+/// List all benchmark containers managed by this tool.
+///
+/// Shows container names and their status (running/stopped/not found).
+///
+/// # Arguments
+///
+/// * `args` - Parsed command-line arguments (for container prefix)
+///
+/// # Returns
+///
+/// * `Ok(())` - List completed successfully
+/// * `Err` - Failed to query containers
+fn list_containers_command(args: &Args) -> Result<()> {
+    let container_manager = ContainerManager::new(&args.container_prefix, &args.container_image);
+
+    println!("Benchmark containers (prefix: {}):", args.container_prefix);
+    println!("{:-<50}", "");
+
+    let mechanisms = vec![
+        #[cfg(unix)]
+        IpcMechanism::UnixDomainSocket,
+        IpcMechanism::SharedMemory,
+        IpcMechanism::TcpSocket,
+        #[cfg(target_os = "linux")]
+        IpcMechanism::PosixMessageQueue,
+    ];
+
+    let mut found_any = false;
+    for mechanism in &mechanisms {
+        let container_name = container_manager.container_name(mechanism);
+
+        let exists = container_manager.exists(&container_name)?;
+        if exists {
+            found_any = true;
+            let running = container_manager.is_running(&container_name)?;
+            let status = if running { "running" } else { "stopped" };
+            println!("  {} : {}", container_name, status);
+        }
+    }
+
+    if !found_any {
+        println!("  (no containers found)");
+    }
+
+    println!();
+    println!("Use --stop-container <mechanism> to stop a container.");
+    println!("Use --stop-container all to stop all containers.");
 
     Ok(())
 }
