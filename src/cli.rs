@@ -447,6 +447,21 @@ pub struct Args {
     #[arg(long, value_name = "MECHANISM", help_heading = ADVANCED)]
     pub stop_container: Option<String>,
 
+    /// List all benchmark containers managed by this tool.
+    ///
+    /// When provided, lists all containers with the configured prefix
+    /// (default: "rusty-comms") and their status (running/stopped).
+    /// Does not run a benchmark.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # List all benchmark containers
+    /// ipc-benchmark --list-containers
+    /// ```
+    #[arg(long, help_heading = ADVANCED)]
+    pub list_containers: bool,
+
     /// Container image to use for client containers.
     ///
     /// Specifies the Podman image containing the ipc-benchmark binary.
@@ -1132,6 +1147,18 @@ mod tests {
     fn test_stop_container_all() {
         let args = Args::parse_from(["ipc-benchmark", "--stop-container", "all"]);
         assert_eq!(args.stop_container, Some("all".to_string()));
+    }
+
+    #[test]
+    fn test_list_containers_default() {
+        let args = Args::parse_from(["ipc-benchmark", "-m", "tcp"]);
+        assert!(!args.list_containers);
+    }
+
+    #[test]
+    fn test_list_containers_flag() {
+        let args = Args::parse_from(["ipc-benchmark", "--list-containers"]);
+        assert!(args.list_containers);
     }
 
     #[test]
