@@ -125,12 +125,32 @@ impl ContainerConfig {
     /// SHM container configuration.
     ///
     /// Uses --ipc=host to share /dev/shm with host for shared memory access.
+    /// This shares the entire IPC namespace (shm, semaphores, message queues).
+    ///
+    /// For more isolation, use `shm_config_with_mount()` which only shares `/dev/shm`.
     fn shm_config() -> Self {
         Self {
             name: String::new(),
             mechanism: IpcMechanism::SharedMemory,
             volume_mounts: vec![],
             extra_args: vec!["--ipc=host".to_string()],
+            command_args: vec![],
+        }
+    }
+
+    /// SHM container configuration with explicit mount.
+    ///
+    /// Mounts `/dev/shm` directly instead of using `--ipc=host`.
+    /// This provides more isolation while still allowing shared memory access.
+    ///
+    /// Note: This requires the container to have appropriate permissions.
+    #[allow(dead_code)]
+    pub fn shm_config_with_mount() -> Self {
+        Self {
+            name: String::new(),
+            mechanism: IpcMechanism::SharedMemory,
+            volume_mounts: vec!["/dev/shm:/dev/shm:rw".to_string()],
+            extra_args: vec![],
             command_args: vec![],
         }
     }
@@ -689,6 +709,15 @@ mod tests {
         let config = ContainerConfig::for_mechanism(&IpcMechanism::SharedMemory).unwrap();
         assert_eq!(config.mechanism, IpcMechanism::SharedMemory);
         assert!(config.extra_args.iter().any(|a| a == "--ipc=host"));
+    }
+
+    #[test]
+    fn test_container_config_shm_with_mount() {
+        let config = ContainerConfig::shm_config_with_mount();
+        assert_eq!(config.mechanism, IpcMechanism::SharedMemory);
+        // Should have /dev/shm mount instead of --ipc=host
+        assert!(config.volume_mounts.iter().any(|m| m.contains("/dev/shm")));
+        assert!(!config.extra_args.iter().any(|a| a == "--ipc=host"));
     }
 
     #[test]

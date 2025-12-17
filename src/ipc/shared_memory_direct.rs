@@ -37,6 +37,15 @@
 //!
 //! This implementation is only available on Unix platforms (Linux, macOS, BSD)
 //! as it relies on POSIX shared memory and pthread primitives.
+//!
+//! # Container Support
+//!
+//! This transport works across host-container boundaries when:
+//! - **Linux with `--ipc=host`**: Container shares host's IPC namespace including `/dev/shm`
+//! - **Linux with explicit mount**: Container has `/dev/shm:/dev/shm:rw` volume mount
+//!
+//! The shared memory name (e.g., `/ipc-bench-shm-abc123`) creates a file at
+//! `/dev/shm/ipc-bench-shm-abc123` that both host and container can access.
 
 use crate::ipc::{BlockingTransport, Message, MessageType, TransportConfig};
 use anyhow::{anyhow, Context, Result};
@@ -297,6 +306,11 @@ pub struct BlockingSharedMemoryDirect {
     ///
     /// The server is responsible for initializing and destroying pthread primitives.
     is_server: bool,
+
+    /// Shared memory segment name (for cleanup).
+    ///
+    /// Stored so we can call shm_unlink during close on the server side.
+    shm_name: String,
 }
 
 impl BlockingSharedMemoryDirect {
@@ -317,6 +331,7 @@ impl BlockingSharedMemoryDirect {
         Self {
             shmem: None,
             is_server: false,
+            shm_name: String::new(),
         }
     }
 
@@ -391,6 +406,27 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
             config.shared_memory_name
         );
 
+        // Clean up any existing shared memory segment with this name.
+        // This ensures a fresh start and works across host-container boundaries
+        // where a previous run may have left stale segments.
+        #[cfg(unix)]
+        {
+            use std::ffi::CString;
+            // Prepend "/" if not already present (POSIX shm requires it)
+            let shm_name = if config.shared_memory_name.starts_with('/') {
+                config.shared_memory_name.clone()
+            } else {
+                format!("/{}", config.shared_memory_name)
+            };
+            if let Ok(c_name) = CString::new(shm_name.as_bytes()) {
+                unsafe {
+                    // Ignore errors - segment may not exist
+                    libc::shm_unlink(c_name.as_ptr());
+                }
+                debug!("Cleaned up any existing shm segment: {}", shm_name);
+            }
+        }
+
         // Create shared memory with unique name from config
         let shmem = ShmemConf::new()
             .size(RawSharedMessage::SIZE)
@@ -412,6 +448,12 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
 
         self.shmem = Some(SendableShmem(shmem));
         self.is_server = true;
+        // Store name for cleanup during close
+        self.shm_name = if config.shared_memory_name.starts_with('/') {
+            config.shared_memory_name.clone()
+        } else {
+            format!("/{}", config.shared_memory_name)
+        };
 
         // Note: We don't wait for client here because we need to signal ready to parent first
         // The parent waits for our stdout signal before starting the client
@@ -646,9 +688,32 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                     (*ptr).destroy();
                 }
             }
+
+            // Unlink the shared memory segment to free system resources.
+            // This is important for host-container mode where stale segments
+            // could interfere with subsequent benchmark runs.
+            #[cfg(unix)]
+            if !self.shm_name.is_empty() {
+                use std::ffi::CString;
+                if let Ok(c_name) = CString::new(self.shm_name.as_bytes()) {
+                    unsafe {
+                        let ret = libc::shm_unlink(c_name.as_ptr());
+                        if ret == 0 {
+                            debug!("Unlinked shm segment: {}", self.shm_name);
+                        } else {
+                            debug!(
+                                "Failed to unlink shm segment: {} (errno: {})",
+                                self.shm_name,
+                                *libc::__errno_location()
+                            );
+                        }
+                    }
+                }
+            }
         }
 
         self.shmem = None;
+        self.shm_name.clear();
         debug!("Direct memory SHM transport closed");
         Ok(())
     }
