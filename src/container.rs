@@ -116,8 +116,10 @@ impl ContainerConfig {
         Self {
             name: String::new(),
             mechanism: IpcMechanism::UnixDomainSocket,
-            volume_mounts: vec![format!("{}:{}:rw", UDS_SOCKET_DIR, UDS_SOCKET_DIR)],
-            extra_args: vec![],
+            // Use :z suffix for SELinux relabeling (shared content between containers)
+            volume_mounts: vec![format!("{}:{}:z", UDS_SOCKET_DIR, UDS_SOCKET_DIR)],
+            // Disable SELinux label separation for socket access
+            extra_args: vec!["--security-opt".to_string(), "label=disable".to_string()],
             command_args: vec![],
         }
     }
@@ -149,7 +151,8 @@ impl ContainerConfig {
         Self {
             name: String::new(),
             mechanism: IpcMechanism::SharedMemory,
-            volume_mounts: vec!["/dev/shm:/dev/shm:rw".to_string()],
+            // Use :z suffix for SELinux relabeling
+            volume_mounts: vec!["/dev/shm:/dev/shm:z".to_string()],
             extra_args: vec![],
             command_args: vec![],
         }
@@ -164,7 +167,8 @@ impl ContainerConfig {
         Self {
             name: String::new(),
             mechanism: IpcMechanism::PosixMessageQueue,
-            volume_mounts: vec!["/dev/mqueue:/dev/mqueue:rw".to_string()],
+            // Use :z suffix for SELinux relabeling
+            volume_mounts: vec!["/dev/mqueue:/dev/mqueue:z".to_string()],
             extra_args: vec!["--privileged".to_string()],
             command_args: vec![],
         }
