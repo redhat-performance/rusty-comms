@@ -118,8 +118,13 @@ impl ContainerConfig {
             mechanism: IpcMechanism::UnixDomainSocket,
             // Use :z suffix for SELinux relabeling (shared content between containers)
             volume_mounts: vec![format!("{}:{}:z", UDS_SOCKET_DIR, UDS_SOCKET_DIR)],
-            // Disable SELinux label separation for socket access
-            extra_args: vec!["--security-opt".to_string(), "label=disable".to_string()],
+            extra_args: vec![
+                // Keep host user ID so socket files have correct ownership
+                "--userns=keep-id".to_string(),
+                // Disable SELinux label separation for socket access
+                "--security-opt".to_string(),
+                "label=disable".to_string(),
+            ],
             command_args: vec![],
         }
     }
