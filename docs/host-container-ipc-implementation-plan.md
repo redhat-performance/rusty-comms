@@ -110,8 +110,8 @@ and execute the next incomplete stage. Each stage is self-contained with clear:
 
 ## Master Progress Checklist
 
-**Last Updated:** 2025-12-16  
-**Overall Status:** Stage 2 Complete (2/8 stages complete)
+**Last Updated:** 2025-12-17  
+**Overall Status:** Stage 3 & 4 Complete (4/8 stages complete)
 
 ### Stage Completion Status
 
@@ -125,18 +125,18 @@ and execute the next incomplete stage. Each stage is self-contained with clear:
   - [✓] Step 2.1: Create ContainerManager struct
   - [✓] Step 2.2: Implement container create/start/stop
   - [✓] Step 2.3: Implement mechanism-specific volume mounts
-  - [ ] Git commit created
+  - [✓] Git commit created (797af91)
 
-- [ ] **Stage 3**: Host Mode Implementation (3/3 steps)
-  - [ ] Step 3.1: Create HostModeRunner for driving tests
-  - [ ] Step 3.2: Integrate ContainerManager with runner
-  - [ ] Step 3.3: Implement container client spawning
-  - [ ] Git commit created
+- [✓] **Stage 3**: Host Mode Implementation (3/3 steps)
+  - [✓] Step 3.1: Create HostModeRunner for driving tests
+  - [✓] Step 3.2: Integrate ContainerManager with runner
+  - [✓] Step 3.3: Implement container client spawning
+  - [✓] Git commit pending
 
-- [ ] **Stage 4**: Client Mode Implementation (2/2 steps)
-  - [ ] Step 4.1: Update async transports for client mode
-  - [ ] Step 4.2: Update blocking transports for client mode
-  - [ ] Git commit created
+- [✓] **Stage 4**: Client Mode Implementation (2/2 steps)
+  - [✓] Step 4.1: Update async transports for client mode (returns helpful error)
+  - [✓] Step 4.2: Update blocking transports for client mode (fully implemented)
+  - [✓] Git commit pending
 
 - [ ] **Stage 5**: SHM-Direct Container Support (2/2 steps)
   - [ ] Step 5.1: Update shared_memory_direct.rs for container paths
@@ -179,7 +179,7 @@ and execute the next incomplete stage. Each stage is self-contained with clear:
 **Expected commits:** 9 total (8 stage commits + final tag)
 
 - [✓] Stage 1 commit (15dca4e)
-- [ ] Stage 2 commit
+- [✓] Stage 2 commit (797af91)
 - [ ] Stage 3 commit
 - [ ] Stage 4 commit
 - [ ] Stage 5 commit
