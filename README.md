@@ -87,6 +87,58 @@ Blocking mode uses only the Rust standard library (`std::net`, `std::thread`, `s
 | **High concurrency (>100 connections)** | Async | More efficient resource usage |
 | **Simple request-response** | Either | Similar performance characteristics |
 
+## Host-Container Mode
+
+The benchmark suite supports running IPC benchmarks between the host system and a Podman container. This enables realistic performance measurement across container isolation boundaries.
+
+### Quick Start
+
+```bash
+# Build container image
+podman build -t localhost/ipc-benchmark:latest .
+
+# Run UDS benchmark with container
+./target/release/ipc-benchmark \
+    -m uds \
+    --run-mode host \
+    --blocking \
+    --msg-count 1000
+```
+
+### Run Modes
+
+| Mode | Description |
+|------|-------------|
+| `standalone` | Default. Both client and server run on host |
+| `host` | Host drives benchmark, container is responder |
+| `client` | Runs inside container (auto-invoked by host mode) |
+
+### Supported Mechanisms
+
+All IPC mechanisms work in host-container mode with appropriate container configuration:
+
+| Mechanism | Container Setup | Notes |
+|-----------|-----------------|-------|
+| UDS | Volume mount `/tmp/rusty-comms` | Full support |
+| SHM | `--ipc=host` | One-way only |
+| TCP | `--network=host` | Full support |
+| PMQ | Mount `/dev/mqueue` + privileged | Limited by kernel |
+
+### Container Management
+
+```bash
+# List benchmark containers
+./target/release/ipc-benchmark --list-containers
+
+# Stop all benchmark containers
+./target/release/ipc-benchmark --stop-container all
+```
+
+### Documentation
+
+- **Setup**: See [docs/PODMAN_SETUP.md](docs/PODMAN_SETUP.md)
+- **Usage**: See [docs/HOST_CONTAINER_USAGE.md](docs/HOST_CONTAINER_USAGE.md)
+
 ## Shared Memory Implementations
 
 The benchmark suite provides **two shared memory implementations** for blocking mode, each optimized for different use cases:
