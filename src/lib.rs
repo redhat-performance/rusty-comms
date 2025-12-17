@@ -172,6 +172,22 @@ pub mod results_blocking;
 /// - `ContainerConfig`: Mechanism-specific container configuration
 pub mod container;
 
+/// Host-container benchmark runner
+///
+/// This module provides infrastructure for running IPC benchmarks between
+/// a host (driver) and a Podman container (responder). The host drives the
+/// tests while the container acts as the IPC server/receiver.
+///
+/// ## Architecture
+///
+/// - Host: Runs on the bare metal, drives tests, collects results
+/// - Container: Runs inside Podman, acts as IPC server (receiver/responder)
+///
+/// ## Key Types
+///
+/// - `HostBenchmarkRunner`: Manages container spawn and benchmark execution
+pub mod host_container;
+
 pub mod utils;
 
 // Re-export commonly used utilities for convenient access
@@ -213,6 +229,17 @@ pub use metrics::{LatencyMetrics, ThroughputMetrics};
 /// `BlockingResultsManager` for blocking mode.
 pub use results::{BenchmarkResults, ResultsManager};
 pub use results_blocking::BlockingResultsManager;
+
+/// Container management types
+///
+/// Re-exported from the container module for managing Podman containers
+/// for host-to-container IPC benchmarking.
+pub use container::{ContainerConfig, ContainerManager};
+
+/// Host-container benchmark runner
+///
+/// Re-exported for running benchmarks between host and container.
+pub use host_container::HostBenchmarkRunner;
 
 /// The current version of the IPC benchmark suite
 ///
