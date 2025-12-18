@@ -187,6 +187,24 @@ impl BlockingTransport for BlockingUnixDomainSocket {
 
         debug!("UDS server bound successfully");
 
+        // Set socket permissions to 777 so host can connect when running in container.
+        // This is needed because rootless Podman remaps user IDs, making the socket
+        // inaccessible to the host user without world-writable permissions.
+        #[cfg(unix)]
+        {
+            use std::ffi::CString;
+            if let Ok(c_path) = CString::new(config.socket_path.as_bytes()) {
+                let result = unsafe { libc::chmod(c_path.as_ptr(), 0o777) };
+                if result == 0 {
+                    debug!("Set socket permissions to 777");
+                } else {
+                    debug!("Failed to set socket permissions: errno={}", unsafe {
+                        *libc::__errno_location()
+                    });
+                }
+            }
+        }
+
         // Store the listener but don't accept yet.
         // The accept() will happen on the first send/receive via ensure_connection().
         // This allows the server to signal readiness before blocking on accept.

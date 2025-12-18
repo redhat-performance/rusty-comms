@@ -119,8 +119,6 @@ impl ContainerConfig {
             // Use :z suffix for SELinux relabeling (shared content between containers)
             volume_mounts: vec![format!("{}:{}:z", UDS_SOCKET_DIR, UDS_SOCKET_DIR)],
             extra_args: vec![
-                // Keep host user ID so socket files have correct ownership
-                "--userns=keep-id".to_string(),
                 // Disable SELinux label separation for socket access
                 "--security-opt".to_string(),
                 "label=disable".to_string(),
@@ -139,8 +137,16 @@ impl ContainerConfig {
         Self {
             name: String::new(),
             mechanism: IpcMechanism::SharedMemory,
-            volume_mounts: vec![],
-            extra_args: vec!["--ipc=host".to_string()],
+            // Mount shared directory for file-backed shared memory AND host's /dev/shm
+            volume_mounts: vec![
+                format!("{}:{}:z", UDS_SOCKET_DIR, UDS_SOCKET_DIR),
+                "/dev/shm:/dev/shm".to_string(),
+            ],
+            extra_args: vec![
+                "--ipc=host".to_string(),
+                "--security-opt".to_string(),
+                "label=disable".to_string(),
+            ],
             command_args: vec![],
         }
     }
@@ -172,9 +178,13 @@ impl ContainerConfig {
         Self {
             name: String::new(),
             mechanism: IpcMechanism::PosixMessageQueue,
-            // Use :z suffix for SELinux relabeling
-            volume_mounts: vec!["/dev/mqueue:/dev/mqueue:z".to_string()],
-            extra_args: vec!["--privileged".to_string()],
+            // Mount mqueue and use host IPC namespace for queue visibility
+            volume_mounts: vec!["/dev/mqueue:/dev/mqueue".to_string()],
+            extra_args: vec![
+                "--ipc=host".to_string(),
+                "--security-opt".to_string(),
+                "label=disable".to_string(),
+            ],
             command_args: vec![],
         }
     }
@@ -748,7 +758,7 @@ mod tests {
         let config = ContainerConfig::for_mechanism(&IpcMechanism::PosixMessageQueue).unwrap();
         assert_eq!(config.mechanism, IpcMechanism::PosixMessageQueue);
         assert!(config.volume_mounts.iter().any(|m| m.contains("mqueue")));
-        assert!(config.extra_args.iter().any(|a| a == "--privileged"));
+        assert!(config.extra_args.iter().any(|a| a == "--ipc=host"));
     }
 
     #[test]

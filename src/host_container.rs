@@ -49,6 +49,9 @@ use std::process::{Child, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
+#[cfg(target_os = "linux")]
+use libc;
+
 use crate::benchmark::BenchmarkConfig;
 use crate::cli::{Args, IpcMechanism};
 use crate::container::{ContainerConfig, ContainerManager, UDS_SOCKET_DIR};
@@ -119,10 +122,15 @@ impl HostBenchmarkRunner {
 
         let mut config = TransportConfig::default();
 
-        // Set buffer size (use provided or calculate based on message size)
+        // Set buffer size
         config.buffer_size = self.config.buffer_size.unwrap_or_else(|| {
-            // Default to 2x message size or minimum of 4KB
-            std::cmp::max(self.config.message_size * 2, 4096)
+            // SHM needs larger buffer for warmup iterations
+            if self.mechanism == IpcMechanism::SharedMemory {
+                65536 // 64KB for SHM
+            } else {
+                // For other mechanisms, use 2x message size or minimum 4KB
+                std::cmp::max(self.config.message_size * 2, 4096)
+            }
         });
 
         // Set mechanism-specific configuration
@@ -290,6 +298,8 @@ impl HostBenchmarkRunner {
             IpcMechanism::SharedMemory => {
                 cmd_args.push("--shared-memory-name".to_string());
                 cmd_args.push(transport_config.shared_memory_name.clone());
+                cmd_args.push("--buffer-size".to_string());
+                cmd_args.push(transport_config.buffer_size.to_string());
                 if self.args.shm_direct {
                     cmd_args.push("--shm-direct".to_string());
                 }
@@ -326,6 +336,11 @@ impl HostBenchmarkRunner {
         // Add extra args (e.g., --ipc=host)
         for arg in &container_config.extra_args {
             cmd.arg(arg);
+        }
+
+        // For SHM, tell container to open existing segment (created by host)
+        if self.mechanism == IpcMechanism::SharedMemory {
+            cmd.args(["-e", "IPC_SHM_OPEN_EXISTING=1"]);
         }
 
         // Add image
@@ -398,8 +413,83 @@ impl HostBenchmarkRunner {
             .unwrap_or_else(|| format!("{:?}", self.mechanism).to_lowercase())
     }
 
+    /// Pre-create SHM segment from host for container access.
+    /// Returns the Shmem handle that must be kept alive during the test.
+    fn precreate_shm_segment(
+        &self,
+        transport_config: &TransportConfig,
+    ) -> Result<Option<shared_memory::Shmem>> {
+        if self.mechanism != IpcMechanism::SharedMemory {
+            return Ok(None);
+        }
+
+        // Calculate total size (must match what the transport expects)
+        use crate::ipc::shared_memory_blocking::SharedMemoryRingBuffer;
+        let buffer_size = transport_config.buffer_size;
+        let total_size = SharedMemoryRingBuffer::HEADER_SIZE + buffer_size;
+
+        // Clean up any existing segment
+        #[cfg(target_os = "linux")]
+        {
+            use std::ffi::CString;
+            let shm_name = if transport_config.shared_memory_name.starts_with('/') {
+                transport_config.shared_memory_name.clone()
+            } else {
+                format!("/{}", transport_config.shared_memory_name)
+            };
+            if let Ok(c_name) = CString::new(shm_name.as_bytes()) {
+                unsafe {
+                    libc::shm_unlink(c_name.as_ptr());
+                }
+            }
+        }
+
+        // Create the segment
+        let shmem = shared_memory::ShmemConf::new()
+            .size(total_size)
+            .os_id(&transport_config.shared_memory_name)
+            .create()
+            .with_context(|| {
+                format!(
+                    "Failed to pre-create SHM segment: {}",
+                    transport_config.shared_memory_name
+                )
+            })?;
+
+        // Initialize the ring buffer structure
+        let ptr = shmem.as_ptr() as *mut SharedMemoryRingBuffer;
+        unsafe {
+            std::ptr::write(ptr, SharedMemoryRingBuffer::new(buffer_size));
+        }
+        debug!("Initialized SHM ring buffer");
+
+        // Set permissions to 777 so container can access
+        #[cfg(unix)]
+        {
+            let shm_file_name = transport_config
+                .shared_memory_name
+                .strip_prefix('/')
+                .unwrap_or(&transport_config.shared_memory_name);
+            let shm_path = format!("/dev/shm/{}", shm_file_name);
+            if let Ok(c_path) = std::ffi::CString::new(shm_path.as_bytes()) {
+                unsafe {
+                    libc::chmod(c_path.as_ptr(), 0o777);
+                }
+            }
+        }
+
+        debug!(
+            "Pre-created SHM segment for container: {}",
+            transport_config.shared_memory_name
+        );
+        Ok(Some(shmem))
+    }
+
     /// Run warmup iterations with container server.
     fn run_warmup_blocking(&self, transport_config: &TransportConfig) -> Result<()> {
+        // For SHM, pre-create the segment from host so container can access it
+        let _shm_handle = self.precreate_shm_segment(transport_config)?;
+
         // Spawn container as server
         let (mut container, mut reader) = self.spawn_container_server(transport_config)?;
 
@@ -443,6 +533,9 @@ impl HostBenchmarkRunner {
     ) -> Result<PerformanceMetrics> {
         let mut metrics_collector =
             MetricsCollector::new(Some(LatencyType::OneWay), self.config.percentiles.clone())?;
+
+        // For SHM, pre-create the segment from host so container can access it
+        let _shm_handle = self.precreate_shm_segment(transport_config)?;
 
         // Spawn container as server
         let (mut container, mut reader) = self.spawn_container_server(transport_config)?;

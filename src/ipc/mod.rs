@@ -578,6 +578,9 @@ impl Default for TransportConfig {
     /// - Queue name: ipc_benchmark_pmq (descriptive unique name)
     fn default() -> Self {
         Self {
+            // Default 8KB buffer works for all IPC mechanisms including PMQ
+            // (PMQ has system limits, typically 8192 max message size)
+            // SHM host-container mode overrides this to 64KB in host_container.rs
             buffer_size: 8192,
             host: "127.0.0.1".to_string(),
             port: 8080,
