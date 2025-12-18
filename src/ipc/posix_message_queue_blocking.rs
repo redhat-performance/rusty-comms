@@ -215,16 +215,37 @@ impl BlockingPosixMessageQueue {
         // Create the message queue
         // O_CREAT | O_EXCL | O_RDWR: Create new queue, fail if exists, read-write
         let flags = MQ_OFlag::O_CREAT | MQ_OFlag::O_EXCL | MQ_OFlag::O_RDWR;
-        let mode = Mode::S_IRUSR | Mode::S_IWUSR; // 0600 permissions
+        // Use 0666 permissions for container access
+        let mode = Mode::S_IRUSR
+            | Mode::S_IWUSR
+            | Mode::S_IRGRP
+            | Mode::S_IWGRP
+            | Mode::S_IROTH
+            | Mode::S_IWOTH;
 
-        mq_open(queue_name, flags, mode, Some(&attrs)).with_context(|| {
+        let fd = mq_open(queue_name, flags, mode, Some(&attrs)).with_context(|| {
             format!(
                 "Failed to create POSIX message queue: {}. \
                  Queue may already exist or system limits may be reached. \
                  Check /proc/sys/fs/mqueue/ for limits.",
                 queue_name
             )
-        })
+        })?;
+
+        // Set permissions to 777 for container access
+        // Queue file is at /dev/mqueue/<name_without_leading_slash>
+        let file_name = queue_name.strip_prefix('/').unwrap_or(queue_name);
+        let mqueue_path = format!("/dev/mqueue/{}", file_name);
+        if let Ok(c_path) = std::ffi::CString::new(mqueue_path.as_bytes()) {
+            let result = unsafe { libc::chmod(c_path.as_ptr(), 0o777) };
+            if result == 0 {
+                debug!("Set PMQ permissions to 777: {}", queue_name);
+            } else {
+                debug!("Failed to set PMQ permissions: {}", queue_name);
+            }
+        }
+
+        Ok(fd)
     }
 
     /// Open an existing message queue with retry logic

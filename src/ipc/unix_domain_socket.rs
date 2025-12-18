@@ -207,6 +207,23 @@ impl IpcTransport for UnixDomainSocketTransport {
 
         // Create listener
         let listener = UnixListener::bind(&config.socket_path)?;
+
+        // Set socket permissions to 777 for container access
+        #[cfg(unix)]
+        {
+            use std::ffi::CString;
+            if let Ok(c_path) = CString::new(config.socket_path.as_bytes()) {
+                let result = unsafe { libc::chmod(c_path.as_ptr(), 0o777) };
+                if result == 0 {
+                    debug!("Set socket permissions to 777");
+                } else {
+                    debug!("Failed to set socket permissions: errno={}", unsafe {
+                        *libc::__errno_location()
+                    });
+                }
+            }
+        }
+
         self.listener = Some(listener);
         self.state = TransportState::Connected;
 
@@ -367,6 +384,23 @@ impl IpcTransport for UnixDomainSocketTransport {
 
         // Create listener
         let listener = UnixListener::bind(&config.socket_path)?;
+
+        // Set socket permissions to 777 for container access
+        #[cfg(unix)]
+        {
+            use std::ffi::CString;
+            if let Ok(c_path) = CString::new(config.socket_path.as_bytes()) {
+                let result = unsafe { libc::chmod(c_path.as_ptr(), 0o777) };
+                if result == 0 {
+                    debug!("Set socket permissions to 777");
+                } else {
+                    debug!("Failed to set socket permissions: errno={}", unsafe {
+                        *libc::__errno_location()
+                    });
+                }
+            }
+        }
+
         debug!(
             "Unix Domain Socket multi-server listening on: {}",
             config.socket_path

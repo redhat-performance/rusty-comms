@@ -71,7 +71,7 @@ use libc::{pthread_cond_t, pthread_mutex_t};
 /// Uses process-shared pthread mutex and condition variables for efficient
 /// synchronization.
 #[repr(C)]
-struct SharedMemoryRingBuffer {
+pub struct SharedMemoryRingBuffer {
     // Ring buffer metadata
     capacity: AtomicUsize,
     read_pos: AtomicUsize,
@@ -97,10 +97,11 @@ struct SharedMemoryRingBuffer {
 }
 
 impl SharedMemoryRingBuffer {
-    const HEADER_SIZE: usize = std::mem::size_of::<Self>();
+    /// Header size for the ring buffer structure.
+    pub const HEADER_SIZE: usize = std::mem::size_of::<Self>();
 
     /// Create a new ring buffer header with process-shared synchronization
-    fn new(capacity: usize) -> Self {
+    pub fn new(capacity: usize) -> Self {
         #[cfg(unix)]
         unsafe {
             use std::mem::MaybeUninit;
@@ -289,6 +290,8 @@ impl SharedMemoryRingBuffer {
         libc::pthread_mutex_lock(&self.mutex as *const _ as *mut _);
 
         // Wait for space to become available
+        // Use timed wait to handle cross-process signaling issues
+        let mut wait_count = 0;
         while self.available_write_space() < required_space {
             // Check for shutdown while waiting
             if self.shutdown.load(Ordering::Acquire) {
@@ -296,11 +299,30 @@ impl SharedMemoryRingBuffer {
                 return Err(anyhow!("Connection closed"));
             }
 
-            // Wait on condition variable (releases mutex, reacquires on wake)
-            libc::pthread_cond_wait(
+            // Use timed wait instead of infinite wait for cross-process robustness
+            let mut timeout = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 10_000_000, // 10ms
+            };
+            libc::clock_gettime(libc::CLOCK_REALTIME, &mut timeout);
+            timeout.tv_nsec += 10_000_000; // Add 10ms
+            if timeout.tv_nsec >= 1_000_000_000 {
+                timeout.tv_sec += 1;
+                timeout.tv_nsec -= 1_000_000_000;
+            }
+
+            libc::pthread_cond_timedwait(
                 &self.space_ready as *const _ as *mut _,
                 &self.mutex as *const _ as *mut _,
+                &timeout,
             );
+
+            wait_count += 1;
+            if wait_count > 3000 {
+                // 30 second timeout
+                libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
+                return Err(anyhow!("Timeout waiting for buffer space"));
+            }
         }
 
         // Space is available, write the data
@@ -345,6 +367,8 @@ impl SharedMemoryRingBuffer {
         libc::pthread_mutex_lock(&self.mutex as *const _ as *mut _);
 
         // Wait for data to become available
+        // Use timed wait for cross-process robustness
+        let mut wait_count = 0;
         while self.available_read_data() < 4 {
             // Check for shutdown while waiting
             if self.shutdown.load(Ordering::Acquire) {
@@ -352,11 +376,30 @@ impl SharedMemoryRingBuffer {
                 return Err(anyhow!("Connection closed"));
             }
 
-            // Wait on condition variable (releases mutex, reacquires on wake)
-            libc::pthread_cond_wait(
+            // Use timed wait instead of infinite wait
+            let mut timeout = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 10_000_000, // 10ms
+            };
+            libc::clock_gettime(libc::CLOCK_REALTIME, &mut timeout);
+            timeout.tv_nsec += 10_000_000;
+            if timeout.tv_nsec >= 1_000_000_000 {
+                timeout.tv_sec += 1;
+                timeout.tv_nsec -= 1_000_000_000;
+            }
+
+            libc::pthread_cond_timedwait(
                 &self.data_ready as *const _ as *mut _,
                 &self.mutex as *const _ as *mut _,
+                &timeout,
             );
+
+            wait_count += 1;
+            if wait_count > 3000 {
+                // 30 second timeout
+                libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
+                return Err(anyhow!("Timeout waiting for data"));
+            }
         }
 
         // Data is available, read it
@@ -530,31 +573,90 @@ impl BlockingTransport for BlockingSharedMemory {
             }
         }
 
-        // Create shared memory segment
-        let shmem = ShmemConf::new()
-            .size(total_size)
-            .os_id(&config.shared_memory_name)
-            .create()
-            .with_context(|| {
-                format!(
-                    "Failed to create shared memory segment: {}. \
-                     Ensure no existing segment with this name.",
-                    config.shared_memory_name
-                )
-            })?;
+        // Check if we should open existing segment instead of creating
+        // (Used when host pre-creates the segment for container access)
+        let open_existing = std::env::var("IPC_SHM_OPEN_EXISTING").is_ok();
 
-        // Initialize the ring buffer
+        let shmem = if open_existing {
+            // Open existing segment (created by host)
+            let start = std::time::Instant::now();
+            let timeout = Duration::from_secs(30);
+            loop {
+                match ShmemConf::new()
+                    .size(total_size)
+                    .os_id(&config.shared_memory_name)
+                    .open()
+                {
+                    Ok(shm) => break shm,
+                    Err(e) => {
+                        if start.elapsed() > timeout {
+                            return Err(anyhow!(
+                                "Failed to open shared memory segment: {}. Error: {}",
+                                config.shared_memory_name,
+                                e
+                            ));
+                        }
+                        thread::sleep(Duration::from_millis(50));
+                    }
+                }
+            }
+        } else {
+            // Create new segment (normal standalone mode)
+            ShmemConf::new()
+                .size(total_size)
+                .os_id(&config.shared_memory_name)
+                .create()
+                .with_context(|| {
+                    format!(
+                        "Failed to create shared memory segment: {}. \
+                         Ensure no existing segment with this name.",
+                        config.shared_memory_name
+                    )
+                })?
+        };
+
         let ptr = shmem.as_ptr() as *mut SharedMemoryRingBuffer;
-        unsafe {
-            std::ptr::write(ptr, SharedMemoryRingBuffer::new(buffer_size));
-            (*ptr).server_ready.store(true, Ordering::Release);
+
+        if open_existing {
+            // Opening existing segment - just set server ready, don't reinitialize
+            unsafe {
+                (*ptr).server_ready.store(true, Ordering::Release);
+            }
+            debug!("Opened existing SHM segment as server");
+        } else {
+            // Creating new segment - initialize the ring buffer
+            unsafe {
+                std::ptr::write(ptr, SharedMemoryRingBuffer::new(buffer_size));
+                (*ptr).server_ready.store(true, Ordering::Release);
+            }
+
+            // Set SHM permissions to 777 for container access
+            // The file is at /dev/shm/<name> (strip leading "/" from shm name)
+            #[cfg(unix)]
+            {
+                let shm_file_name = config
+                    .shared_memory_name
+                    .strip_prefix('/')
+                    .unwrap_or(&config.shared_memory_name);
+                let shm_path = format!("/dev/shm/{}", shm_file_name);
+                if let Ok(c_path) = std::ffi::CString::new(shm_path.as_bytes()) {
+                    let result = unsafe { libc::chmod(c_path.as_ptr(), 0o777) };
+                    if result == 0 {
+                        debug!("Set SHM permissions to 777");
+                    } else {
+                        debug!("Failed to set SHM permissions: errno={}", unsafe {
+                            *libc::__errno_location()
+                        });
+                    }
+                }
+            }
+
+            debug!("Created new SHM segment as server");
         }
 
         self.ring_buffer = Some(ptr);
         self.shmem = Some(Arc::new(Mutex::new(shmem)));
         self.is_server = true;
-
-        debug!("Shared memory server created successfully");
 
         // Don't wait for client here - do it on first send/receive.
         // This allows the server to signal readiness before blocking.
@@ -601,6 +703,8 @@ impl BlockingTransport for BlockingSharedMemory {
         // Mark client as ready
         unsafe {
             (*ptr).client_ready.store(true, Ordering::Release);
+            // Signal data_ready in case server is waiting
+            libc::pthread_cond_broadcast(&(*ptr).data_ready as *const _ as *mut _);
         }
 
         self.ring_buffer = Some(ptr);
