@@ -642,6 +642,14 @@ impl ResultsManager {
         Ok(())
     }
 
+    /// Set combined mode for record merging
+    ///
+    /// When set to true, records with the same message ID will be merged
+    /// so that one-way and round-trip latencies appear in the same record.
+    pub fn set_combined_mode(&mut self, enabled: bool) {
+        self.both_tests_enabled = enabled;
+    }
+
     /// Enable CSV latency streaming to a file
     ///
     /// Configures real-time per-message latency streaming in CSV format.
@@ -710,14 +718,10 @@ impl ResultsManager {
     /// Records are written with proper JSON array formatting including
     /// comma separation between elements.
     pub async fn stream_latency_record(&mut self, record: &MessageLatencyRecord) -> Result<()> {
-        // If streaming to per-message output is enabled, write immediately so the
-        // client/parent process can observe results even with a separate server process.
+        // If streaming to per-message output is enabled, use write_streaming_record_direct
+        // which handles both combined records and partial records that need to be merged.
         if self.per_message_streaming {
-            if record.is_combined() {
-                self.write_streaming_record_direct(record).await?;
-            } else {
-                self.write_streaming_record(record).await?;
-            }
+            self.write_streaming_record_direct(record).await?;
             return Ok(());
         }
 
