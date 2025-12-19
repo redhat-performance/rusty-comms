@@ -253,14 +253,157 @@ fn list_containers_command(args: &Args) -> Result<()> {
 /// * `Ok(())` - Benchmark completed successfully
 /// * `Err` - Benchmark or container management failed
 #[tokio::main]
-async fn run_host_mode_async(_args: Args) -> Result<()> {
-    // Host mode async is not yet implemented.
-    // For now, recommend using blocking mode for host-container benchmarks.
-    Err(anyhow::anyhow!(
-        "Host mode async is not yet implemented.\n\
-         Use --blocking flag for host-container benchmarks:\n\
-         ipc-benchmark -m uds --run-mode host --blocking"
-    ))
+async fn run_host_mode_async(args: Args) -> Result<()> {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::Layer;
+
+    // Configure logging level based on verbosity flags
+    let log_level = match args.verbose {
+        0 => tracing_subscriber::filter::LevelFilter::INFO,
+        1 => tracing_subscriber::filter::LevelFilter::DEBUG,
+        _ => tracing_subscriber::filter::LevelFilter::TRACE,
+    };
+
+    // Configure the detailed log layer (file or stderr)
+    let guard;
+    let detailed_log_layer;
+
+    if let Some("stderr") = args.log_file.as_deref() {
+        detailed_log_layer = tracing_subscriber::fmt::layer()
+            .with_writer(std::io::stderr)
+            .with_filter(log_level)
+            .boxed();
+        guard = None;
+    } else {
+        let file_appender = match args.log_file.as_deref() {
+            Some(path_str) => {
+                let log_path = std::path::Path::new(path_str);
+                let log_dir = log_path
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."));
+                let log_filename = log_path
+                    .file_name()
+                    .unwrap_or_else(|| std::ffi::OsStr::new("ipc_benchmark.log"));
+                tracing_appender::rolling::daily(log_dir, log_filename)
+            }
+            None => tracing_appender::rolling::daily(".", "ipc_benchmark.log"),
+        };
+        let (non_blocking_writer, file_guard) = tracing_appender::non_blocking(file_appender);
+        detailed_log_layer = tracing_subscriber::fmt::layer()
+            .with_writer(non_blocking_writer)
+            .with_ansi(false)
+            .with_filter(log_level)
+            .boxed();
+        guard = Some(file_guard);
+    }
+
+    // Stdout layer for user-facing output
+    let stdout_log = if !args.quiet {
+        Some(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stdout)
+                .event_format(ColorizedFormatter)
+                .with_filter(log_level),
+        )
+    } else {
+        None
+    };
+
+    // Initialize the tracing subscriber
+    tracing_subscriber::registry()
+        .with(detailed_log_layer)
+        .with(stdout_log)
+        .init();
+
+    let _log_guard = guard;
+
+    info!("Starting IPC Benchmark Suite (Host-Container Mode, Async)");
+
+    // Create benchmark configuration from parsed CLI arguments
+    let config = BenchmarkConfig::from_args(&args)?;
+
+    // Calculate today's date for log file naming
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+
+    let log_file_for_manager = match args.log_file.as_deref() {
+        Some("stderr") => Some("stderr".to_string()),
+        Some(path_str) => Some(format!("{}.{}", path_str, today)),
+        None => Some(format!("ipc_benchmark.log.{}", today)),
+    };
+
+    // Initialize async results manager
+    let mut results_manager =
+        ResultsManager::new(args.output_file.as_deref(), log_file_for_manager.as_deref())?;
+
+    // Enable streaming if specified
+    let both_tests_enabled = config.one_way && config.round_trip;
+
+    if let Some(ref streaming_file) = args.streaming_output_json {
+        info!(
+            "Enabling per-message latency streaming to: {:?}",
+            streaming_file
+        );
+        if both_tests_enabled {
+            results_manager.enable_combined_streaming(streaming_file, true)?;
+        } else {
+            results_manager.enable_per_message_streaming(streaming_file)?;
+        }
+    }
+
+    if let Some(ref streaming_file) = args.streaming_output_csv {
+        info!("Enabling CSV latency streaming to: {:?}", streaming_file);
+        results_manager.enable_csv_streaming(streaming_file)?;
+        // Set combined mode for CSV if both tests are enabled
+        if both_tests_enabled {
+            results_manager.set_combined_mode(true);
+        }
+    }
+
+    // Get expanded mechanisms (handles 'all' expansion)
+    let mechanisms = IpcMechanism::expand_all(args.mechanisms.clone());
+
+    // Run benchmarks for each selected mechanism
+    for &mechanism in &mechanisms {
+        info!("Running async host-container benchmark for {}", mechanism);
+
+        let runner = HostBenchmarkRunner::new(config.clone(), mechanism, args.clone());
+
+        match runner.run(Some(&mut results_manager)).await {
+            Ok(results) => {
+                info!(
+                    "Successfully completed async host-container benchmark for {} mechanism",
+                    mechanism
+                );
+                results_manager.add_results(results).await?;
+            }
+            Err(e) => {
+                let error_msg = e.to_string();
+                error!(
+                    "Async host-container benchmark for {} failed: {}. {}",
+                    mechanism,
+                    error_msg,
+                    if args.continue_on_error {
+                        "Continuing to next mechanism."
+                    } else {
+                        "Aborting."
+                    }
+                );
+
+                if !args.continue_on_error {
+                    return Err(e);
+                }
+            }
+        }
+    }
+
+    // Finalize and write results
+    results_manager.finalize().await?;
+    results_manager.print_summary()?;
+
+    info!("IPC Benchmark Suite (Host-Container Mode, Async) completed successfully");
+
+    Ok(())
 }
 
 /// Run benchmark in host mode with blocking I/O.
@@ -357,12 +500,13 @@ fn run_host_mode_blocking(args: Args) -> Result<()> {
         BlockingResultsManager::new(args.output_file.as_deref(), log_file_for_manager.as_deref())?;
 
     // Enable streaming if specified
+    let both_tests_enabled = config.one_way && config.round_trip;
+
     if let Some(ref streaming_file) = args.streaming_output_json {
         info!(
             "Enabling per-message latency streaming to: {:?}",
             streaming_file
         );
-        let both_tests_enabled = config.one_way && config.round_trip;
         if both_tests_enabled {
             results_manager.enable_combined_streaming(streaming_file, true)?;
         } else {
@@ -373,6 +517,10 @@ fn run_host_mode_blocking(args: Args) -> Result<()> {
     if let Some(ref streaming_file) = args.streaming_output_csv {
         info!("Enabling CSV latency streaming to: {:?}", streaming_file);
         results_manager.enable_csv_streaming(streaming_file)?;
+        // Set combined mode for CSV if both tests are enabled
+        if both_tests_enabled {
+            results_manager.set_combined_mode(true);
+        }
     }
 
     // Get expanded mechanisms (handles 'all' expansion)
@@ -754,14 +902,14 @@ async fn run_async_mode(args: Args) -> Result<()> {
     // Enable per-message latency streaming if specified
     // Per-message streaming captures individual message latency values with
     // timestamps for real-time monitoring of latency characteristics during execution
+    // Check if both test types are enabled for combined streaming
+    let both_tests_enabled = config.one_way && config.round_trip;
+
     if let Some(ref streaming_file) = args.streaming_output_json {
         info!(
             "Enabling per-message latency streaming to: {:?}",
             streaming_file
         );
-
-        // Check if both test types are enabled for combined streaming
-        let both_tests_enabled = config.one_way && config.round_trip;
 
         if both_tests_enabled {
             info!("Both one-way and round-trip tests enabled - using combined streaming mode");
@@ -775,6 +923,10 @@ async fn run_async_mode(args: Args) -> Result<()> {
     if let Some(ref streaming_file) = args.streaming_output_csv {
         info!("Enabling CSV latency streaming to: {:?}", streaming_file);
         results_manager.enable_csv_streaming(streaming_file)?;
+        // Set combined mode for CSV if both tests are enabled
+        if both_tests_enabled {
+            results_manager.set_combined_mode(true);
+        }
     }
 
     // Get expanded mechanisms (handles 'all' expansion)
@@ -978,14 +1130,14 @@ fn run_blocking_mode(args: Args) -> Result<()> {
     // Per-message streaming captures individual message latency values with
     // timestamps for real-time monitoring of latency characteristics during
     // execution.
+    // Check if both test types are enabled for combined streaming
+    let both_tests_enabled = config.one_way && config.round_trip;
+
     if let Some(ref streaming_file) = args.streaming_output_json {
         info!(
             "Enabling per-message latency streaming to: {:?}",
             streaming_file
         );
-
-        // Check if both test types are enabled for combined streaming
-        let both_tests_enabled = config.one_way && config.round_trip;
 
         if both_tests_enabled {
             info!(
@@ -1002,6 +1154,10 @@ fn run_blocking_mode(args: Args) -> Result<()> {
     if let Some(ref streaming_file) = args.streaming_output_csv {
         info!("Enabling CSV latency streaming to: {:?}", streaming_file);
         results_manager.enable_csv_streaming(streaming_file)?;
+        // Set combined mode for CSV if both tests are enabled
+        if both_tests_enabled {
+            results_manager.set_combined_mode(true);
+        }
     }
 
     // Get expanded mechanisms (handles 'all' expansion)

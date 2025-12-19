@@ -314,6 +314,11 @@ pub struct BlockingSharedMemoryDirect {
 }
 
 impl BlockingSharedMemoryDirect {
+    /// Size of the shared memory segment required for direct memory transport.
+    ///
+    /// Use this constant when pre-creating SHM segments for host-container mode.
+    pub const SEGMENT_SIZE: usize = RawSharedMessage::SIZE;
+
     /// Create a new direct memory shared memory transport.
     ///
     /// Creates an uninitialized transport. Call `start_server_blocking()` or
@@ -333,6 +338,67 @@ impl BlockingSharedMemoryDirect {
             is_server: false,
             shm_name: String::new(),
         }
+    }
+
+    /// Pre-create and initialize a SHM-direct segment for host-container mode.
+    ///
+    /// This function creates the shared memory segment and initializes the
+    /// pthread mutex/condvar on the host side. The container will then open
+    /// this existing segment when `IPC_SHM_OPEN_EXISTING` environment variable is set.
+    ///
+    /// # Arguments
+    ///
+    /// * `shm_name` - The shared memory segment name (e.g., "/ipc-bench-shm-abc123")
+    ///
+    /// # Returns
+    ///
+    /// The `Shmem` handle that must be kept alive during the benchmark.
+    pub fn precreate_segment(shm_name: &str) -> Result<Shmem> {
+        // Clean up any existing segment
+        #[cfg(unix)]
+        {
+            use std::ffi::CString;
+            let normalized_name = if shm_name.starts_with('/') {
+                shm_name.to_string()
+            } else {
+                format!("/{}", shm_name)
+            };
+            if let Ok(c_name) = CString::new(normalized_name.as_bytes()) {
+                unsafe {
+                    libc::shm_unlink(c_name.as_ptr());
+                }
+            }
+        }
+
+        // Create the segment
+        let shmem = ShmemConf::new()
+            .size(Self::SEGMENT_SIZE)
+            .os_id(shm_name)
+            .create()
+            .with_context(|| format!("Failed to pre-create SHM-direct segment: {}", shm_name))?;
+
+        // Initialize the RawSharedMessage structure
+        unsafe {
+            let ptr = shmem.as_ptr() as *mut RawSharedMessage;
+            (*ptr)
+                .init()
+                .context("Failed to initialize RawSharedMessage")?;
+        }
+
+        // Set permissions to 777 so container can access
+        #[cfg(unix)]
+        {
+            let shm_file_name = shm_name.strip_prefix('/').unwrap_or(shm_name);
+            let shm_path = format!("/dev/shm/{}", shm_file_name);
+            if let Ok(c_path) = std::ffi::CString::new(shm_path.as_bytes()) {
+                unsafe {
+                    libc::chmod(c_path.as_ptr(), 0o777);
+                }
+            }
+        }
+
+        debug!("Pre-created SHM-direct segment: {}", shm_name);
+        Ok(shmem)
     }
 
     /// Get a raw pointer to the shared message structure.
@@ -406,50 +472,93 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
             config.shared_memory_name
         );
 
-        // Clean up any existing shared memory segment with this name.
-        // This ensures a fresh start and works across host-container boundaries
-        // where a previous run may have left stale segments.
-        #[cfg(unix)]
-        {
-            use std::ffi::CString;
-            // Prepend "/" if not already present (POSIX shm requires it)
-            let shm_name = if config.shared_memory_name.starts_with('/') {
-                config.shared_memory_name.clone()
-            } else {
-                format!("/{}", config.shared_memory_name)
-            };
-            if let Ok(c_name) = CString::new(shm_name.as_bytes()) {
-                unsafe {
-                    // Ignore errors - segment may not exist
-                    libc::shm_unlink(c_name.as_ptr());
+        // Check if we should open an existing segment (host-container mode)
+        // In host-container mode, the host pre-creates the SHM segment and the
+        // container opens it rather than creating a new one.
+        let open_existing = std::env::var("IPC_SHM_OPEN_EXISTING").is_ok();
+        debug!(
+            "SHM-direct IPC_SHM_OPEN_EXISTING check: open_existing={}",
+            open_existing
+        );
+
+        let shmem = if open_existing {
+            // Open existing segment (created by host)
+            let start = std::time::Instant::now();
+            let timeout = std::time::Duration::from_secs(30);
+            loop {
+                match ShmemConf::new()
+                    .size(RawSharedMessage::SIZE)
+                    .os_id(&config.shared_memory_name)
+                    .open()
+                {
+                    Ok(shm) => {
+                        debug!("Opened existing SHM-direct segment as server");
+                        break shm;
+                    }
+                    Err(e) => {
+                        if start.elapsed() > timeout {
+                            return Err(anyhow!(
+                                "Failed to open shared memory segment: {}. Error: {}",
+                                config.shared_memory_name,
+                                e
+                            ));
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
                 }
-                debug!("Cleaned up any existing shm segment: {}", shm_name);
             }
+        } else {
+            // Clean up any existing shared memory segment with this name.
+            // This ensures a fresh start and works across host-container boundaries
+            // where a previous run may have left stale segments.
+            #[cfg(unix)]
+            {
+                use std::ffi::CString;
+                // Prepend "/" if not already present (POSIX shm requires it)
+                let shm_name = if config.shared_memory_name.starts_with('/') {
+                    config.shared_memory_name.clone()
+                } else {
+                    format!("/{}", config.shared_memory_name)
+                };
+                if let Ok(c_name) = CString::new(shm_name.as_bytes()) {
+                    unsafe {
+                        // Ignore errors - segment may not exist
+                        libc::shm_unlink(c_name.as_ptr());
+                    }
+                    debug!("Cleaned up any existing shm segment: {}", shm_name);
+                }
+            }
+
+            // Create shared memory with unique name from config
+            ShmemConf::new()
+                .size(RawSharedMessage::SIZE)
+                .os_id(&config.shared_memory_name)
+                .create()
+                .context("Failed to create shared memory for direct access")?
+        };
+
+        debug!(
+            "Shared memory {} successfully",
+            if open_existing { "opened" } else { "created" }
+        );
+
+        // Initialize the structure (only if we created it, not if opening existing)
+        if !open_existing {
+            unsafe {
+                let ptr = shmem.as_ptr() as *mut RawSharedMessage;
+                (*ptr)
+                    .init()
+                    .context("Failed to initialize RawSharedMessage")?;
+            }
+            debug!("RawSharedMessage initialized successfully");
         }
-
-        // Create shared memory with unique name from config
-        let shmem = ShmemConf::new()
-            .size(RawSharedMessage::SIZE)
-            .os_id(&config.shared_memory_name)
-            .create()
-            .context("Failed to create shared memory for direct access")?;
-
-        debug!("Shared memory created successfully");
-
-        // Initialize the structure
-        unsafe {
-            let ptr = shmem.as_ptr() as *mut RawSharedMessage;
-            (*ptr)
-                .init()
-                .context("Failed to initialize RawSharedMessage")?;
-        }
-
-        debug!("RawSharedMessage initialized successfully");
 
         self.shmem = Some(SendableShmem(shmem));
         self.is_server = true;
-        // Store name for cleanup during close
-        self.shm_name = if config.shared_memory_name.starts_with('/') {
+        // Store name for cleanup during close (but don't unlink if we opened existing)
+        self.shm_name = if open_existing {
+            String::new() // Don't store name - we don't own this segment
+        } else if config.shared_memory_name.starts_with('/') {
             config.shared_memory_name.clone()
         } else {
             format!("/{}", config.shared_memory_name)
@@ -524,39 +633,18 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 return Err(anyhow!("Failed to lock mutex: {}", ret));
             }
 
+            trace!("send_blocking: locked mutex, ready={}", (*ptr).ready);
+
             // Backpressure: Wait if previous message hasn't been consumed yet
             // This prevents overwriting unread data
-            if (*ptr).ready == 1 {
-                trace!("Waiting for receiver to consume previous message (backpressure)");
-
-                // Use timed wait (5 seconds) to avoid infinite blocking
-                let mut timespec = libc::timespec {
-                    tv_sec: 0,
-                    tv_nsec: 0,
-                };
-                libc::clock_gettime(libc::CLOCK_REALTIME, &mut timespec);
-                timespec.tv_sec += 5; // 5 second timeout
-
-                while (*ptr).ready == 1 {
-                    let ret = libc::pthread_cond_timedwait(
-                        &mut (*ptr).cond,
-                        &mut (*ptr).mutex,
-                        &timespec,
-                    );
-
-                    if ret == libc::ETIMEDOUT {
-                        libc::pthread_mutex_unlock(&mut (*ptr).mutex);
-                        return Err(anyhow!(
-                            "Timeout waiting for receiver to consume previous message. \
-                             Is the server process receiving?"
-                        ));
-                    } else if ret != 0 {
-                        // 0 = woken by signal, check ready again
-                        libc::pthread_mutex_unlock(&mut (*ptr).mutex);
-                        return Err(anyhow!("pthread_cond_timedwait failed: {}", ret));
-                    }
-
-                    // Loop back to check ready flag again
+            // Use short polling intervals with mutex release to allow receiver to make progress
+            while (*ptr).ready == 1 {
+                // Release mutex, sleep briefly, then reacquire and check
+                libc::pthread_mutex_unlock(&mut (*ptr).mutex);
+                std::thread::sleep(std::time::Duration::from_micros(100)); // 100us polling
+                let ret = libc::pthread_mutex_lock(&mut (*ptr).mutex);
+                if ret != 0 {
+                    return Err(anyhow!("Failed to reacquire mutex: {}", ret));
                 }
             }
 
@@ -579,6 +667,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
 
             // Set ready flag and signal (fire-and-forget for one-way messaging)
             (*ptr).ready = 1;
+
             let ret = libc::pthread_cond_signal(&mut (*ptr).cond);
             if ret != 0 {
                 libc::pthread_mutex_unlock(&mut (*ptr).mutex);
@@ -627,11 +716,14 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
             }
 
             // Wait for data to be ready
+            // Use polling with mutex release to allow sender to make progress
             while (*ptr).ready == 0 {
-                let ret = libc::pthread_cond_wait(&mut (*ptr).cond, &mut (*ptr).mutex);
+                // Release mutex, sleep briefly, then reacquire and check
+                libc::pthread_mutex_unlock(&mut (*ptr).mutex);
+                std::thread::sleep(std::time::Duration::from_micros(100)); // 100us polling
+                let ret = libc::pthread_mutex_lock(&mut (*ptr).mutex);
                 if ret != 0 {
-                    libc::pthread_mutex_unlock(&mut (*ptr).mutex);
-                    return Err(anyhow!("Failed to wait on condition variable: {}", ret));
+                    return Err(anyhow!("Failed to reacquire mutex: {}", ret));
                 }
             }
 
@@ -652,6 +744,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
 
             // Clear ready flag and signal sender
             (*ptr).ready = 0;
+
             let ret = libc::pthread_cond_signal(&mut (*ptr).cond);
             if ret != 0 {
                 libc::pthread_mutex_unlock(&mut (*ptr).mutex);
