@@ -124,10 +124,15 @@ impl HostBenchmarkRunner {
         let mut config = TransportConfig::default();
 
         // Set buffer size
+        // For SHM, buffer must be large enough to hold at least one message with overhead.
+        // Message overhead is approximately 40 bytes (serialization + ring buffer prefix).
+        const MESSAGE_OVERHEAD: usize = 64; // Conservative estimate
         config.buffer_size = self.config.buffer_size.unwrap_or_else(|| {
-            // SHM needs larger buffer for warmup iterations
             if self.mechanism == IpcMechanism::SharedMemory {
-                65536 // 64KB for SHM
+                // SHM buffer must hold at least one message plus some headroom.
+                // Use max of 64KB default or 2x message size + overhead.
+                let min_for_message = (self.config.message_size + MESSAGE_OVERHEAD) * 2;
+                std::cmp::max(65536, min_for_message)
             } else {
                 // For other mechanisms, use 2x message size or minimum 4KB
                 std::cmp::max(self.config.message_size * 2, 4096)

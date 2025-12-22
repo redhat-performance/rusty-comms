@@ -137,11 +137,8 @@ impl ContainerConfig {
         Self {
             name: String::new(),
             mechanism: IpcMechanism::SharedMemory,
-            // Mount shared directory for file-backed shared memory AND host's /dev/shm
-            volume_mounts: vec![
-                format!("{}:{}:z", UDS_SOCKET_DIR, UDS_SOCKET_DIR),
-                "/dev/shm:/dev/shm".to_string(),
-            ],
+            // Mount host's /dev/shm for POSIX shared memory access
+            volume_mounts: vec!["/dev/shm:/dev/shm".to_string()],
             extra_args: vec![
                 "--ipc=host".to_string(),
                 "--security-opt".to_string(),
