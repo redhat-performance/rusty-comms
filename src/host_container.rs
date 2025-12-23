@@ -738,6 +738,9 @@ impl HostBenchmarkRunner {
             self.set_affinity(core)?;
         }
 
+        // Reset metrics collector to exclude container setup time from throughput duration
+        metrics_collector.reset();
+
         // Send messages and collect latencies
         let payload = vec![0u8; self.config.message_size];
         let start_time = Instant::now();
@@ -747,6 +750,9 @@ impl HostBenchmarkRunner {
         if let Some(duration) = self.config.duration {
             let mut i = 0u64;
             while start_time.elapsed() < duration {
+                // Capture send timestamp for streaming record (wall clock)
+                let send_timestamp_ns = MessageLatencyRecord::current_timestamp_ns();
+
                 #[cfg(unix)]
                 let send_time = get_monotonic_time_ns();
                 #[cfg(not(unix))]
@@ -785,6 +791,7 @@ impl HostBenchmarkRunner {
                     self.config.message_size,
                     LatencyType::OneWay,
                     latency,
+                    send_timestamp_ns,
                 ));
 
                 if let Some(delay) = self.config.send_delay {
@@ -795,6 +802,9 @@ impl HostBenchmarkRunner {
         } else {
             let msg_count = self.config.msg_count.unwrap_or(1000);
             for i in 0..msg_count {
+                // Capture send timestamp for streaming record (wall clock)
+                let send_timestamp_ns = MessageLatencyRecord::current_timestamp_ns();
+
                 #[cfg(unix)]
                 let send_time = get_monotonic_time_ns();
                 #[cfg(not(unix))]
@@ -831,6 +841,7 @@ impl HostBenchmarkRunner {
                     self.config.message_size,
                     LatencyType::OneWay,
                     latency,
+                    send_timestamp_ns,
                 ));
 
                 if let Some(delay) = self.config.send_delay {
@@ -839,6 +850,9 @@ impl HostBenchmarkRunner {
             }
         }
 
+        // Capture metrics BEFORE cleanup (to exclude container shutdown time from duration)
+        let final_metrics = metrics_collector.get_metrics();
+
         // Send shutdown message
         self.send_shutdown_via(client_transport.as_mut())?;
 
@@ -846,7 +860,7 @@ impl HostBenchmarkRunner {
         client_transport.close_blocking()?;
         let _ = container.wait();
 
-        Ok((metrics_collector.get_metrics(), streaming_records))
+        Ok((final_metrics, streaming_records))
     }
 
     /// Run round-trip latency test with container server.
@@ -881,6 +895,9 @@ impl HostBenchmarkRunner {
             self.set_affinity(core)?;
         }
 
+        // Reset metrics collector to exclude container setup time from throughput duration
+        metrics_collector.reset();
+
         // Send messages and measure round-trip latency
         let payload = vec![0u8; self.config.message_size];
         let start_time = Instant::now();
@@ -890,6 +907,9 @@ impl HostBenchmarkRunner {
         if let Some(duration) = self.config.duration {
             let mut i = 0u64;
             while start_time.elapsed() < duration {
+                // Capture send timestamp for streaming record (wall clock)
+                let send_timestamp_ns = MessageLatencyRecord::current_timestamp_ns();
+
                 #[cfg(unix)]
                 let send_time = get_monotonic_time_ns();
                 #[cfg(not(unix))]
@@ -925,6 +945,7 @@ impl HostBenchmarkRunner {
                     self.config.message_size,
                     LatencyType::RoundTrip,
                     latency,
+                    send_timestamp_ns,
                 ));
 
                 if let Some(delay) = self.config.send_delay {
@@ -935,6 +956,9 @@ impl HostBenchmarkRunner {
         } else {
             let msg_count = self.config.msg_count.unwrap_or(1000);
             for i in 0..msg_count {
+                // Capture send timestamp for streaming record (wall clock)
+                let send_timestamp_ns = MessageLatencyRecord::current_timestamp_ns();
+
                 #[cfg(unix)]
                 let send_time = get_monotonic_time_ns();
                 #[cfg(not(unix))]
@@ -967,6 +991,7 @@ impl HostBenchmarkRunner {
                     self.config.message_size,
                     LatencyType::RoundTrip,
                     latency,
+                    send_timestamp_ns,
                 ));
 
                 if let Some(delay) = self.config.send_delay {
@@ -975,6 +1000,9 @@ impl HostBenchmarkRunner {
             }
         }
 
+        // Capture metrics BEFORE cleanup (to exclude container shutdown time from duration)
+        let final_metrics = metrics_collector.get_metrics();
+
         // Send shutdown message
         self.send_shutdown_via(client_transport.as_mut())?;
 
@@ -982,7 +1010,7 @@ impl HostBenchmarkRunner {
         client_transport.close_blocking()?;
         let _ = container.wait();
 
-        Ok((metrics_collector.get_metrics(), streaming_records))
+        Ok((final_metrics, streaming_records))
     }
 
     /// Run combined one-way and round-trip test with container server.
@@ -1024,6 +1052,10 @@ impl HostBenchmarkRunner {
             self.set_affinity(core)?;
         }
 
+        // Reset metrics collectors to exclude container setup time from throughput duration
+        one_way_metrics.reset();
+        round_trip_metrics.reset();
+
         // Send messages and measure BOTH latencies for each message
         let payload = vec![0u8; self.config.message_size];
         let start_time = Instant::now();
@@ -1036,6 +1068,9 @@ impl HostBenchmarkRunner {
         if let Some(duration) = self.config.duration {
             let mut i = 0u64;
             while start_time.elapsed() < duration {
+                // Capture send timestamp for streaming record (wall clock)
+                let send_timestamp_ns = MessageLatencyRecord::current_timestamp_ns();
+
                 #[cfg(unix)]
                 let send_time = get_monotonic_time_ns();
                 #[cfg(not(unix))]
@@ -1083,6 +1118,7 @@ impl HostBenchmarkRunner {
                     self.config.message_size,
                     one_way_latency,
                     round_trip_latency,
+                    send_timestamp_ns,
                 ));
 
                 if let Some(delay) = self.config.send_delay {
@@ -1093,6 +1129,9 @@ impl HostBenchmarkRunner {
         } else {
             let msg_count = self.config.msg_count.unwrap_or(1000);
             for i in 0..msg_count {
+                // Capture send timestamp for streaming record (wall clock)
+                let send_timestamp_ns = MessageLatencyRecord::current_timestamp_ns();
+
                 #[cfg(unix)]
                 let send_time = get_monotonic_time_ns();
                 #[cfg(not(unix))]
@@ -1137,6 +1176,7 @@ impl HostBenchmarkRunner {
                     self.config.message_size,
                     one_way_latency,
                     round_trip_latency,
+                    send_timestamp_ns,
                 ));
 
                 if let Some(delay) = self.config.send_delay {
@@ -1144,6 +1184,10 @@ impl HostBenchmarkRunner {
                 }
             }
         }
+
+        // Capture metrics BEFORE cleanup (to exclude container shutdown time from duration)
+        let final_one_way_metrics = one_way_metrics.get_metrics();
+        let final_round_trip_metrics = round_trip_metrics.get_metrics();
 
         // Send shutdown message
         self.send_shutdown_via(client_transport.as_mut())?;
@@ -1159,7 +1203,7 @@ impl HostBenchmarkRunner {
             }
         }
 
-        Ok((one_way_metrics.get_metrics(), round_trip_metrics.get_metrics()))
+        Ok((final_one_way_metrics, final_round_trip_metrics))
     }
 
     /// Send shutdown message to server via the provided transport.
@@ -1308,6 +1352,9 @@ impl HostBenchmarkRunner {
             self.set_affinity(core)?;
         }
 
+        // Reset metrics collector to exclude container setup time from throughput duration
+        metrics_collector.reset();
+
         // Send messages and collect latencies
         let payload = vec![0u8; self.config.message_size];
         let start_time = Instant::now();
@@ -1317,6 +1364,8 @@ impl HostBenchmarkRunner {
         if let Some(duration) = self.config.duration {
             let mut i = 0u64;
             while start_time.elapsed() < duration {
+                // Capture send timestamp for streaming record (wall clock)
+                let send_timestamp_ns = MessageLatencyRecord::current_timestamp_ns();
                 let send_time = Instant::now();
                 let message = Message::new(i, payload.clone(), MessageType::OneWay);
 
@@ -1340,6 +1389,7 @@ impl HostBenchmarkRunner {
                     self.config.message_size,
                     LatencyType::OneWay,
                     latency,
+                    send_timestamp_ns,
                 ));
 
                 if let Some(delay) = self.config.send_delay {
@@ -1350,6 +1400,8 @@ impl HostBenchmarkRunner {
         } else {
             let msg_count = self.config.msg_count.unwrap_or(1000);
             for i in 0..msg_count {
+                // Capture send timestamp for streaming record (wall clock)
+                let send_timestamp_ns = MessageLatencyRecord::current_timestamp_ns();
                 let send_time = Instant::now();
                 let message = Message::new(i as u64, payload.clone(), MessageType::OneWay);
 
@@ -1369,6 +1421,7 @@ impl HostBenchmarkRunner {
                     self.config.message_size,
                     LatencyType::OneWay,
                     latency,
+                    send_timestamp_ns,
                 ));
 
                 if let Some(delay) = self.config.send_delay {
@@ -1377,11 +1430,14 @@ impl HostBenchmarkRunner {
             }
         }
 
+        // Capture metrics BEFORE cleanup (to exclude container shutdown time from duration)
+        let final_metrics = metrics_collector.get_metrics();
+
         // Cleanup
         client_transport.close().await?;
         let _ = container.wait();
 
-        Ok((metrics_collector.get_metrics(), streaming_records))
+        Ok((final_metrics, streaming_records))
     }
 
     /// Run round-trip latency test with container server (async version).
@@ -1421,6 +1477,9 @@ impl HostBenchmarkRunner {
             self.set_affinity(core)?;
         }
 
+        // Reset metrics collector to exclude container setup time from throughput duration
+        metrics_collector.reset();
+
         // Send messages and measure round-trip latency
         let payload = vec![0u8; self.config.message_size];
         let start_time = Instant::now();
@@ -1430,6 +1489,8 @@ impl HostBenchmarkRunner {
         if let Some(duration) = self.config.duration {
             let mut i = 0u64;
             while start_time.elapsed() < duration {
+                // Capture send timestamp for streaming record (wall clock)
+                let send_timestamp_ns = MessageLatencyRecord::current_timestamp_ns();
                 let send_time = Instant::now();
                 let message = Message::new(i, payload.clone(), MessageType::Request);
 
@@ -1458,6 +1519,7 @@ impl HostBenchmarkRunner {
                     self.config.message_size,
                     LatencyType::RoundTrip,
                     latency,
+                    send_timestamp_ns,
                 ));
 
                 if let Some(delay) = self.config.send_delay {
@@ -1468,6 +1530,8 @@ impl HostBenchmarkRunner {
         } else {
             let msg_count = self.config.msg_count.unwrap_or(1000);
             for i in 0..msg_count {
+                // Capture send timestamp for streaming record (wall clock)
+                let send_timestamp_ns = MessageLatencyRecord::current_timestamp_ns();
                 let send_time = Instant::now();
                 let message = Message::new(i as u64, payload.clone(), MessageType::Request);
 
@@ -1488,6 +1552,7 @@ impl HostBenchmarkRunner {
                     self.config.message_size,
                     LatencyType::RoundTrip,
                     latency,
+                    send_timestamp_ns,
                 ));
 
                 if let Some(delay) = self.config.send_delay {
@@ -1496,11 +1561,14 @@ impl HostBenchmarkRunner {
             }
         }
 
+        // Capture metrics BEFORE cleanup (to exclude container shutdown time from duration)
+        let final_metrics = metrics_collector.get_metrics();
+
         // Cleanup
         client_transport.close().await?;
         let _ = container.wait();
 
-        Ok((metrics_collector.get_metrics(), streaming_records))
+        Ok((final_metrics, streaming_records))
     }
 
     /// Run combined one-way and round-trip test with container server (async).
@@ -1543,6 +1611,10 @@ impl HostBenchmarkRunner {
         let mut client_transport = TransportFactory::create(&self.mechanism)?;
         client_transport.start_client(transport_config).await?;
 
+        // Reset metrics collectors to exclude container setup time from throughput duration
+        one_way_metrics.reset();
+        round_trip_metrics.reset();
+
         // Send messages and measure BOTH latencies for each message
         let payload = vec![0u8; self.config.message_size];
         let start_time = Instant::now();
@@ -1555,6 +1627,8 @@ impl HostBenchmarkRunner {
         if let Some(duration) = self.config.duration {
             let mut i = 0u64;
             while start_time.elapsed() < duration {
+                // Capture send timestamp for streaming record (wall clock)
+                let send_timestamp_ns = MessageLatencyRecord::current_timestamp_ns();
                 let send_start = Instant::now();
                 let message = Message::new(i, payload.clone(), MessageType::Request);
 
@@ -1590,6 +1664,7 @@ impl HostBenchmarkRunner {
                     self.config.message_size,
                     one_way_latency,
                     round_trip_latency,
+                    send_timestamp_ns,
                 ));
 
                 if let Some(delay) = self.config.send_delay {
@@ -1600,6 +1675,8 @@ impl HostBenchmarkRunner {
         } else {
             let msg_count = self.config.msg_count.unwrap_or(1000);
             for i in 0..msg_count {
+                // Capture send timestamp for streaming record (wall clock)
+                let send_timestamp_ns = MessageLatencyRecord::current_timestamp_ns();
                 let send_start = Instant::now();
                 let message = Message::new(i as u64, payload.clone(), MessageType::Request);
 
@@ -1634,6 +1711,7 @@ impl HostBenchmarkRunner {
                     self.config.message_size,
                     one_way_latency,
                     round_trip_latency,
+                    send_timestamp_ns,
                 ));
 
                 if let Some(delay) = self.config.send_delay {
@@ -1641,6 +1719,10 @@ impl HostBenchmarkRunner {
                 }
             }
         }
+
+        // Capture metrics BEFORE cleanup (to exclude container shutdown time from duration)
+        let final_one_way_metrics = one_way_metrics.get_metrics();
+        let final_round_trip_metrics = round_trip_metrics.get_metrics();
 
         // Cleanup
         client_transport.close().await?;
@@ -1653,7 +1735,7 @@ impl HostBenchmarkRunner {
             }
         }
 
-        Ok((one_way_metrics.get_metrics(), round_trip_metrics.get_metrics()))
+        Ok((final_one_way_metrics, final_round_trip_metrics))
     }
 
     /// Wrapper to call blocking combined test from async context.
