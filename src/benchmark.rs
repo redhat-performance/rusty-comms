@@ -1122,12 +1122,15 @@ port={}",
 
             // Stream latency if enabled
             if let Some(ref mut manager) = results_manager {
+                // Use current timestamp since this is server-measured latency read from file
+                let send_timestamp_ns = crate::results::MessageLatencyRecord::current_timestamp_ns();
                 let record = crate::results::MessageLatencyRecord::new(
                     line_num,
                     self.mechanism,
                     self.config.message_size,
                     crate::metrics::LatencyType::OneWay,
                     latency,
+                    send_timestamp_ns,
                 );
                 manager.stream_latency_record(&record).await?;
             }
@@ -1260,12 +1263,15 @@ port={}",
         for (i, latency) in latencies.iter().enumerate() {
             metrics_collector.record_message(self.config.message_size, Some(*latency))?;
             if let Some(ref mut manager) = results_manager {
+                // Use current timestamp since latencies are recorded after collection
+                let send_timestamp_ns = crate::results::MessageLatencyRecord::current_timestamp_ns();
                 let record = crate::results::MessageLatencyRecord::new(
                     i as u64,
                     self.mechanism,
                     self.config.message_size,
                     crate::metrics::LatencyType::RoundTrip,
                     *latency,
+                    send_timestamp_ns,
                 );
                 manager.stream_latency_record(&record).await?;
             }
@@ -1552,12 +1558,15 @@ port={}",
         for (i, &one_way_latency) in one_way_latencies.iter().enumerate() {
             one_way_metrics.record_message(self.config.message_size, Some(one_way_latency))?;
             if let Some(ref mut manager) = results_manager {
+                // Use current timestamp since latencies are recorded after collection
+                let send_timestamp_ns = crate::results::MessageLatencyRecord::current_timestamp_ns();
                 let record = crate::results::MessageLatencyRecord::new_combined(
                     i as u64,
                     self.mechanism,
                     self.config.message_size,
                     one_way_latency,
                     round_trip_latencies[i],
+                    send_timestamp_ns,
                 );
                 manager.write_streaming_record_direct(&record).await?;
             }
