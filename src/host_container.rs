@@ -220,67 +220,59 @@ impl HostBenchmarkRunner {
             self.run_warmup_blocking(&transport_config)?;
         }
 
-        // Collect streaming records from both tests to merge by message ID
-        let mut one_way_records: HashMap<u64, MessageLatencyRecord> = HashMap::new();
-        let mut round_trip_records: HashMap<u64, MessageLatencyRecord> = HashMap::new();
+        // Check if we should run combined test (both one-way and round-trip enabled)
+        // Combined test measures both latencies for the SAME message
+        let can_do_combined = self.config.one_way
+            && self.config.round_trip
+            && self.mechanism != IpcMechanism::SharedMemory; // SHM doesn't support bidirectional
 
-        // Run one-way latency test if enabled
-        if self.config.one_way {
-            info!("Running one-way latency test (host-container)");
-            let (one_way_results, records) = self.run_one_way_test_blocking(&transport_config)?;
+        if can_do_combined {
+            // Run combined test - both latencies measured for same message
+            info!("Running combined one-way and round-trip test (host-container)");
+            let (one_way_results, round_trip_results) =
+                self.run_combined_test_blocking(&transport_config, results_manager.as_deref_mut())?;
             results.add_one_way_results(one_way_results);
-            for record in records {
-                one_way_records.insert(record.message_id, record);
-            }
-        }
+            results.add_round_trip_results(round_trip_results);
+        } else {
+            // Run tests separately (original behavior for single test type or SHM)
+            let mut one_way_records: HashMap<u64, MessageLatencyRecord> = HashMap::new();
+            let mut round_trip_records: HashMap<u64, MessageLatencyRecord> = HashMap::new();
 
-        // Run round-trip latency test if enabled
-        if self.config.round_trip {
-            if self.mechanism == IpcMechanism::SharedMemory {
-                warn!(
-                    "Shared memory in blocking mode does not support bidirectional \
-                     communication. Skipping round-trip test."
-                );
-            } else {
-                info!("Running round-trip latency test (host-container)");
-                let (round_trip_results, records) =
-                    self.run_round_trip_test_blocking(&transport_config)?;
-                results.add_round_trip_results(round_trip_results);
+            // Run one-way latency test if enabled
+            if self.config.one_way {
+                info!("Running one-way latency test (host-container)");
+                let (one_way_results, records) = self.run_one_way_test_blocking(&transport_config)?;
+                results.add_one_way_results(one_way_results);
                 for record in records {
-                    round_trip_records.insert(record.message_id, record);
+                    one_way_records.insert(record.message_id, record);
                 }
             }
-        }
 
-        // Merge and stream records if streaming is enabled
-        if let Some(ref mut rm) = results_manager {
-            // Collect all message IDs from both tests
-            let mut all_ids: Vec<u64> = one_way_records
-                .keys()
-                .chain(round_trip_records.keys())
-                .copied()
-                .collect();
-            all_ids.sort();
-            all_ids.dedup();
+            // Run round-trip latency test if enabled
+            if self.config.round_trip {
+                if self.mechanism == IpcMechanism::SharedMemory {
+                    warn!(
+                        "Shared memory in blocking mode does not support bidirectional \
+                         communication. Skipping round-trip test."
+                    );
+                } else {
+                    info!("Running round-trip latency test (host-container)");
+                    let (round_trip_results, records) =
+                        self.run_round_trip_test_blocking(&transport_config)?;
+                    results.add_round_trip_results(round_trip_results);
+                    for record in records {
+                        round_trip_records.insert(record.message_id, record);
+                    }
+                }
+            }
 
-            for id in all_ids {
-                let one_way = one_way_records.get(&id);
-                let round_trip = round_trip_records.get(&id);
-
-                match (one_way, round_trip) {
-                    (Some(ow), Some(rt)) => {
-                        // Merge both latencies into one record
-                        let mut merged = ow.clone();
-                        merged.merge(rt);
-                        rm.stream_latency_record(&merged)?;
-                    }
-                    (Some(ow), None) => {
-                        rm.stream_latency_record(ow)?;
-                    }
-                    (None, Some(rt)) => {
-                        rm.stream_latency_record(rt)?;
-                    }
-                    (None, None) => {}
+            // Stream records if streaming is enabled (for single test mode)
+            if let Some(ref mut rm) = results_manager {
+                for (_, record) in one_way_records {
+                    rm.stream_latency_record(&record)?;
+                }
+                for (_, record) in round_trip_records {
+                    rm.stream_latency_record(&record)?;
                 }
             }
         }
@@ -349,67 +341,59 @@ impl HostBenchmarkRunner {
             self.run_warmup_async(&transport_config).await?;
         }
 
-        // Collect streaming records from both tests to merge by message ID
-        let mut one_way_records: HashMap<u64, MessageLatencyRecord> = HashMap::new();
-        let mut round_trip_records: HashMap<u64, MessageLatencyRecord> = HashMap::new();
+        // Check if we should run combined test (both one-way and round-trip enabled)
+        // Combined test measures both latencies for the SAME message
+        let can_do_combined = self.config.one_way
+            && self.config.round_trip
+            && self.mechanism != IpcMechanism::SharedMemory; // SHM doesn't support bidirectional
 
-        // Run one-way latency test if enabled
-        if self.config.one_way {
-            info!("Running one-way latency test (async host-container)");
-            let (one_way_results, records) = self.run_one_way_test_async(&transport_config).await?;
+        if can_do_combined {
+            // Run combined test - both latencies measured for same message
+            info!("Running combined one-way and round-trip test (async host-container)");
+            let (one_way_results, round_trip_results) =
+                self.run_combined_test_async(&transport_config, results_manager.as_deref_mut()).await?;
             results.add_one_way_results(one_way_results);
-            for record in records {
-                one_way_records.insert(record.message_id, record);
-            }
-        }
+            results.add_round_trip_results(round_trip_results);
+        } else {
+            // Run tests separately (original behavior for single test type or SHM)
+            let mut one_way_records: HashMap<u64, MessageLatencyRecord> = HashMap::new();
+            let mut round_trip_records: HashMap<u64, MessageLatencyRecord> = HashMap::new();
 
-        // Run round-trip latency test if enabled
-        if self.config.round_trip {
-            if self.mechanism == IpcMechanism::SharedMemory {
-                warn!(
-                    "Shared memory does not support bidirectional communication. \
-                     Skipping round-trip test."
-                );
-            } else {
-                info!("Running round-trip latency test (async host-container)");
-                let (round_trip_results, records) =
-                    self.run_round_trip_test_async(&transport_config).await?;
-                results.add_round_trip_results(round_trip_results);
+            // Run one-way latency test if enabled
+            if self.config.one_way {
+                info!("Running one-way latency test (async host-container)");
+                let (one_way_results, records) = self.run_one_way_test_async(&transport_config).await?;
+                results.add_one_way_results(one_way_results);
                 for record in records {
-                    round_trip_records.insert(record.message_id, record);
+                    one_way_records.insert(record.message_id, record);
                 }
             }
-        }
 
-        // Merge and stream records if streaming is enabled
-        if let Some(ref mut rm) = results_manager {
-            // Collect all message IDs from both tests
-            let mut all_ids: Vec<u64> = one_way_records
-                .keys()
-                .chain(round_trip_records.keys())
-                .copied()
-                .collect();
-            all_ids.sort();
-            all_ids.dedup();
+            // Run round-trip latency test if enabled
+            if self.config.round_trip {
+                if self.mechanism == IpcMechanism::SharedMemory {
+                    warn!(
+                        "Shared memory does not support bidirectional communication. \
+                         Skipping round-trip test."
+                    );
+                } else {
+                    info!("Running round-trip latency test (async host-container)");
+                    let (round_trip_results, records) =
+                        self.run_round_trip_test_async(&transport_config).await?;
+                    results.add_round_trip_results(round_trip_results);
+                    for record in records {
+                        round_trip_records.insert(record.message_id, record);
+                    }
+                }
+            }
 
-            for id in all_ids {
-                let one_way = one_way_records.get(&id);
-                let round_trip = round_trip_records.get(&id);
-
-                match (one_way, round_trip) {
-                    (Some(ow), Some(rt)) => {
-                        // Merge both latencies into one record
-                        let mut merged = ow.clone();
-                        merged.merge(rt);
-                        rm.stream_latency_record(&merged).await?;
-                    }
-                    (Some(ow), None) => {
-                        rm.stream_latency_record(ow).await?;
-                    }
-                    (None, Some(rt)) => {
-                        rm.stream_latency_record(rt).await?;
-                    }
-                    (None, None) => {}
+            // Stream records if streaming is enabled (for single test mode)
+            if let Some(ref mut rm) = results_manager {
+                for (_, record) in one_way_records {
+                    rm.stream_latency_record(&record).await?;
+                }
+                for (_, record) in round_trip_records {
+                    rm.stream_latency_record(&record).await?;
                 }
             }
         }
@@ -1001,6 +985,183 @@ impl HostBenchmarkRunner {
         Ok((metrics_collector.get_metrics(), streaming_records))
     }
 
+    /// Run combined one-way and round-trip test with container server.
+    ///
+    /// This method measures BOTH one-way and round-trip latencies for the SAME message,
+    /// ensuring that streaming output has correct paired latencies. For each message:
+    /// 1. Record send start time
+    /// 2. Send message → one-way latency = time to send
+    /// 3. Receive response → round-trip latency = total time
+    ///
+    /// Returns tuple of (one_way_metrics, round_trip_metrics) and streams records directly.
+    fn run_combined_test_blocking(
+        &self,
+        transport_config: &TransportConfig,
+        results_manager: Option<&mut crate::results_blocking::BlockingResultsManager>,
+    ) -> Result<(PerformanceMetrics, PerformanceMetrics)> {
+        use crate::results::MessageLatencyRecord;
+
+        let mut one_way_metrics = MetricsCollector::new(
+            Some(LatencyType::OneWay),
+            self.config.percentiles.clone(),
+        )?;
+        let mut round_trip_metrics = MetricsCollector::new(
+            Some(LatencyType::RoundTrip),
+            self.config.percentiles.clone(),
+        )?;
+
+        // Spawn container as server
+        let (mut container, mut reader) = self.spawn_container_server(transport_config)?;
+        self.wait_for_container_ready(&mut reader)?;
+
+        // Create client transport and connect
+        let mut client_transport =
+            BlockingTransportFactory::create(&self.mechanism, self.args.shm_direct)?;
+        client_transport.start_client_blocking(transport_config)?;
+
+        // Set client CPU affinity if specified
+        if let Some(core) = self.config.client_affinity {
+            self.set_affinity(core)?;
+        }
+
+        // Send messages and measure BOTH latencies for each message
+        let payload = vec![0u8; self.config.message_size];
+        let start_time = Instant::now();
+        let mut skip_first = !self.config.include_first_message;
+
+        // Collect records to stream after test completes
+        let mut streaming_records: Vec<MessageLatencyRecord> = Vec::new();
+
+        // Duration mode vs message count mode
+        if let Some(duration) = self.config.duration {
+            let mut i = 0u64;
+            while start_time.elapsed() < duration {
+                #[cfg(unix)]
+                let send_time = get_monotonic_time_ns();
+                #[cfg(not(unix))]
+                let send_time = std::time::Instant::now();
+
+                let message = Message::new(i, payload.clone(), MessageType::Request);
+                match client_transport.send_blocking(&message) {
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+
+                // Capture one-way latency (time to send)
+                #[cfg(unix)]
+                let one_way_latency_ns = get_monotonic_time_ns() - send_time;
+                #[cfg(not(unix))]
+                let one_way_latency_ns = send_time.elapsed().as_nanos() as u64;
+
+                match client_transport.receive_blocking() {
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+
+                // Capture round-trip latency (total time)
+                #[cfg(unix)]
+                let round_trip_latency_ns = get_monotonic_time_ns() - send_time;
+                #[cfg(not(unix))]
+                let round_trip_latency_ns = send_time.elapsed().as_nanos() as u64;
+
+                if skip_first && i == 0 {
+                    skip_first = false;
+                    i += 1;
+                    continue;
+                }
+
+                let one_way_latency = Duration::from_nanos(one_way_latency_ns);
+                let round_trip_latency = Duration::from_nanos(round_trip_latency_ns);
+
+                one_way_metrics.record_message(self.config.message_size, Some(one_way_latency))?;
+                round_trip_metrics.record_message(self.config.message_size, Some(round_trip_latency))?;
+
+                // Create combined record with both latencies
+                streaming_records.push(MessageLatencyRecord::new_combined(
+                    i,
+                    self.mechanism,
+                    self.config.message_size,
+                    one_way_latency,
+                    round_trip_latency,
+                ));
+
+                if let Some(delay) = self.config.send_delay {
+                    std::thread::sleep(delay);
+                }
+                i += 1;
+            }
+        } else {
+            let msg_count = self.config.msg_count.unwrap_or(1000);
+            for i in 0..msg_count {
+                #[cfg(unix)]
+                let send_time = get_monotonic_time_ns();
+                #[cfg(not(unix))]
+                let send_time = std::time::Instant::now();
+
+                let message = Message::new(i as u64, payload.clone(), MessageType::Request);
+                client_transport
+                    .send_blocking(&message)
+                    .with_context(|| format!("Failed to send request {}", i))?;
+
+                // Capture one-way latency (time to send)
+                #[cfg(unix)]
+                let one_way_latency_ns = get_monotonic_time_ns() - send_time;
+                #[cfg(not(unix))]
+                let one_way_latency_ns = send_time.elapsed().as_nanos() as u64;
+
+                let _response = client_transport
+                    .receive_blocking()
+                    .with_context(|| format!("Failed to receive response for request {}", i))?;
+
+                // Capture round-trip latency (total time)
+                #[cfg(unix)]
+                let round_trip_latency_ns = get_monotonic_time_ns() - send_time;
+                #[cfg(not(unix))]
+                let round_trip_latency_ns = send_time.elapsed().as_nanos() as u64;
+
+                if skip_first && i == 0 {
+                    skip_first = false;
+                    continue;
+                }
+
+                let one_way_latency = Duration::from_nanos(one_way_latency_ns);
+                let round_trip_latency = Duration::from_nanos(round_trip_latency_ns);
+
+                one_way_metrics.record_message(self.config.message_size, Some(one_way_latency))?;
+                round_trip_metrics.record_message(self.config.message_size, Some(round_trip_latency))?;
+
+                // Create combined record with both latencies
+                streaming_records.push(MessageLatencyRecord::new_combined(
+                    i as u64,
+                    self.mechanism,
+                    self.config.message_size,
+                    one_way_latency,
+                    round_trip_latency,
+                ));
+
+                if let Some(delay) = self.config.send_delay {
+                    std::thread::sleep(delay);
+                }
+            }
+        }
+
+        // Send shutdown message
+        self.send_shutdown_via(client_transport.as_mut())?;
+
+        // Cleanup
+        client_transport.close_blocking()?;
+        let _ = container.wait();
+
+        // Stream records if manager provided
+        if let Some(rm) = results_manager {
+            for record in &streaming_records {
+                rm.stream_latency_record(record)?;
+            }
+        }
+
+        Ok((one_way_metrics.get_metrics(), round_trip_metrics.get_metrics()))
+    }
+
     /// Send shutdown message to server via the provided transport.
     fn send_shutdown_via<T: BlockingTransport + ?Sized>(&self, transport: &mut T) -> Result<()> {
         // Send shutdown for queue-based transports
@@ -1340,6 +1501,173 @@ impl HostBenchmarkRunner {
         let _ = container.wait();
 
         Ok((metrics_collector.get_metrics(), streaming_records))
+    }
+
+    /// Run combined one-way and round-trip test with container server (async).
+    ///
+    /// This method measures BOTH one-way and round-trip latencies for the SAME message,
+    /// ensuring that streaming output has correct paired latencies. For each message:
+    /// 1. Record send start time
+    /// 2. Send message → one-way latency = time to send
+    /// 3. Receive response → round-trip latency = total time
+    ///
+    /// Returns tuple of (one_way_metrics, round_trip_metrics) and streams records directly.
+    async fn run_combined_test_async(
+        &self,
+        transport_config: &TransportConfig,
+        results_manager: Option<&mut crate::results::ResultsManager>,
+    ) -> Result<(PerformanceMetrics, PerformanceMetrics)> {
+        use crate::results::MessageLatencyRecord;
+
+        // For PMQ and SHM, use blocking transport for compatibility
+        if self.needs_blocking_transport() {
+            // SHM doesn't support combined test anyway (no bidirectional)
+            // PMQ needs blocking - fall back to blocking combined test
+            return self.run_combined_test_blocking_wrapper(transport_config, results_manager);
+        }
+
+        let mut one_way_metrics = MetricsCollector::new(
+            Some(LatencyType::OneWay),
+            self.config.percentiles.clone(),
+        )?;
+        let mut round_trip_metrics = MetricsCollector::new(
+            Some(LatencyType::RoundTrip),
+            self.config.percentiles.clone(),
+        )?;
+
+        // Spawn container as server
+        let (mut container, mut reader) = self.spawn_container_server(transport_config)?;
+        self.wait_for_container_ready(&mut reader)?;
+
+        // Create async client transport and connect
+        let mut client_transport = TransportFactory::create(&self.mechanism)?;
+        client_transport.start_client(transport_config).await?;
+
+        // Send messages and measure BOTH latencies for each message
+        let payload = vec![0u8; self.config.message_size];
+        let start_time = Instant::now();
+        let mut skip_first = !self.config.include_first_message;
+
+        // Collect records to stream after test completes
+        let mut streaming_records: Vec<MessageLatencyRecord> = Vec::new();
+
+        // Duration mode vs message count mode
+        if let Some(duration) = self.config.duration {
+            let mut i = 0u64;
+            while start_time.elapsed() < duration {
+                let send_start = Instant::now();
+                let message = Message::new(i, payload.clone(), MessageType::Request);
+
+                match client_transport.send(&message).await {
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+
+                // Capture one-way latency (time to send)
+                let one_way_latency = send_start.elapsed();
+
+                match client_transport.receive().await {
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+
+                // Capture round-trip latency (total time)
+                let round_trip_latency = send_start.elapsed();
+
+                if skip_first && i == 0 {
+                    skip_first = false;
+                    i += 1;
+                    continue;
+                }
+
+                one_way_metrics.record_message(self.config.message_size, Some(one_way_latency))?;
+                round_trip_metrics.record_message(self.config.message_size, Some(round_trip_latency))?;
+
+                // Create combined record with both latencies
+                streaming_records.push(MessageLatencyRecord::new_combined(
+                    i,
+                    self.mechanism,
+                    self.config.message_size,
+                    one_way_latency,
+                    round_trip_latency,
+                ));
+
+                if let Some(delay) = self.config.send_delay {
+                    tokio::time::sleep(delay).await;
+                }
+                i += 1;
+            }
+        } else {
+            let msg_count = self.config.msg_count.unwrap_or(1000);
+            for i in 0..msg_count {
+                let send_start = Instant::now();
+                let message = Message::new(i as u64, payload.clone(), MessageType::Request);
+
+                client_transport
+                    .send(&message)
+                    .await
+                    .with_context(|| format!("Failed to send request {}", i))?;
+
+                // Capture one-way latency (time to send)
+                let one_way_latency = send_start.elapsed();
+
+                let _response = client_transport
+                    .receive()
+                    .await
+                    .with_context(|| format!("Failed to receive response for request {}", i))?;
+
+                // Capture round-trip latency (total time)
+                let round_trip_latency = send_start.elapsed();
+
+                if skip_first && i == 0 {
+                    skip_first = false;
+                    continue;
+                }
+
+                one_way_metrics.record_message(self.config.message_size, Some(one_way_latency))?;
+                round_trip_metrics.record_message(self.config.message_size, Some(round_trip_latency))?;
+
+                // Create combined record with both latencies
+                streaming_records.push(MessageLatencyRecord::new_combined(
+                    i as u64,
+                    self.mechanism,
+                    self.config.message_size,
+                    one_way_latency,
+                    round_trip_latency,
+                ));
+
+                if let Some(delay) = self.config.send_delay {
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        }
+
+        // Cleanup
+        client_transport.close().await?;
+        let _ = container.wait();
+
+        // Stream records if manager provided
+        if let Some(rm) = results_manager {
+            for record in &streaming_records {
+                rm.write_streaming_record_direct(record).await?;
+            }
+        }
+
+        Ok((one_way_metrics.get_metrics(), round_trip_metrics.get_metrics()))
+    }
+
+    /// Wrapper to call blocking combined test from async context.
+    ///
+    /// Used for PMQ which needs blocking transport even in async mode.
+    fn run_combined_test_blocking_wrapper(
+        &self,
+        transport_config: &TransportConfig,
+        _results_manager: Option<&mut crate::results::ResultsManager>,
+    ) -> Result<(PerformanceMetrics, PerformanceMetrics)> {
+        // For PMQ, we need to run the blocking version
+        // Note: We can't easily pass the async ResultsManager to blocking code,
+        // so streaming will be handled separately for PMQ
+        self.run_combined_test_blocking(transport_config, None)
     }
 }
 
