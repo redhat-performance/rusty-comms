@@ -51,7 +51,68 @@ use crate::ipc::{BlockingTransport, Message, MessageType, TransportConfig};
 use anyhow::{anyhow, Context, Result};
 use libc;
 use shared_memory::{Shmem, ShmemConf};
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::time::{Duration, Instant};
 use tracing::{debug, trace};
+
+/// Futex operations for Linux.
+/// Futex works at the kernel level using raw memory addresses, so it works
+/// reliably across container boundaries regardless of glibc version differences.
+#[cfg(target_os = "linux")]
+mod futex {
+    use libc::{c_int, c_long, syscall, timespec, SYS_futex};
+    use std::ptr;
+    use std::sync::atomic::AtomicI32;
+
+    const FUTEX_WAIT: c_int = 0;
+    const FUTEX_WAKE: c_int = 1;
+    const FUTEX_PRIVATE_FLAG: c_int = 0; // Not private - shared across processes
+
+    /// Wait on a futex until the value changes from `expected`.
+    /// Returns true if woken by FUTEX_WAKE, false if timed out or value changed.
+    ///
+    /// # Safety
+    /// The futex pointer must be in shared memory accessible to all processes.
+    #[inline]
+    pub unsafe fn futex_wait(futex: *const AtomicI32, expected: i32, timeout_ns: u64) -> bool {
+        let timeout = timespec {
+            tv_sec: (timeout_ns / 1_000_000_000) as i64,
+            tv_nsec: (timeout_ns % 1_000_000_000) as i64,
+        };
+
+        let ret = syscall(
+            SYS_futex,
+            futex as *const i32,
+            FUTEX_WAIT | FUTEX_PRIVATE_FLAG,
+            expected,
+            &timeout as *const timespec,
+            ptr::null::<i32>(),
+            0i32,
+        );
+
+        // ret == 0: woken normally
+        // ret == -1, errno == ETIMEDOUT: timed out
+        // ret == -1, errno == EAGAIN: value already changed (spurious wakeup OK)
+        ret == 0 || (ret == -1 && *libc::__errno_location() == libc::EAGAIN)
+    }
+
+    /// Wake one waiter on a futex.
+    ///
+    /// # Safety
+    /// The futex pointer must be in shared memory accessible to all processes.
+    #[inline]
+    pub unsafe fn futex_wake(futex: *const AtomicI32, num_to_wake: i32) -> c_long {
+        syscall(
+            SYS_futex,
+            futex as *const i32,
+            FUTEX_WAKE | FUTEX_PRIVATE_FLAG,
+            num_to_wake,
+            ptr::null::<timespec>(),
+            ptr::null::<i32>(),
+            0i32,
+        )
+    }
+}
 
 /// Maximum payload size in bytes.
 ///
@@ -139,22 +200,23 @@ struct RawSharedMessage {
     /// Stored as u32 for stable memory layout.
     message_type: u32,
 
-    /// Coordination flag.
+    /// Coordination flag (used as futex on Linux).
     ///
     /// - `0`: No message ready (receiver should wait)
     /// - `1`: Message ready (receiver can read)
     ///
-    /// This mimics C's simple flag-based protocol.
-    ready: i32,
+    /// Uses AtomicI32 for futex compatibility. Futex operates at kernel level,
+    /// working reliably across container boundaries regardless of glibc version.
+    ready: AtomicI32,
 
-    /// Client ready flag.
+    /// Client ready flag (used as futex on Linux).
     ///
     /// - `0`: Client not connected yet (server should wait)
     /// - `1`: Client connected and ready (server can proceed)
     ///
     /// This provides the handshake that prevents the server from entering
     /// receive loop before the client has opened the shared memory segment.
-    client_ready: i32,
+    client_ready: AtomicI32,
 }
 
 impl RawSharedMessage {
@@ -212,8 +274,9 @@ impl RawSharedMessage {
         self.cond = cond.assume_init();
 
         // Initialize coordination flags and payload length
-        self.ready = 0;
-        self.client_ready = 0;
+        // Use ptr::write to initialize AtomicI32 in shared memory
+        std::ptr::write(&mut self.ready, AtomicI32::new(0));
+        std::ptr::write(&mut self.client_ready, AtomicI32::new(0));
         self.payload_len = 0;
 
         debug!("RawSharedMessage initialized successfully (mutex + cond var)");
@@ -441,10 +504,10 @@ impl BlockingSharedMemoryDirect {
         unsafe {
             let ptr = self.get_raw_message_ptr();
 
-            // Poll client_ready flag with short sleeps
+            // Wait for client_ready flag using futex on Linux, polling otherwise
             loop {
-                // Check if client is ready (no mutex needed for reading this flag)
-                if (*ptr).client_ready == 1 {
+                // Check if client is ready
+                if (*ptr).client_ready.load(Ordering::Acquire) == 1 {
                     return Ok(());
                 }
 
@@ -457,8 +520,16 @@ impl BlockingSharedMemoryDirect {
                     ));
                 }
 
-                // Sleep briefly before checking again
-                std::thread::sleep(std::time::Duration::from_millis(10));
+                // Wait using futex on Linux for efficient wakeup
+                #[cfg(target_os = "linux")]
+                {
+                    futex::futex_wait(&(*ptr).client_ready, 0, 10_000_000); // 10ms
+                }
+
+                #[cfg(not(target_os = "linux"))]
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
             }
         }
     }
@@ -614,7 +685,18 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
         // Signal to server that client is ready
         unsafe {
             let ptr = self.get_raw_message_ptr();
-            (*ptr).client_ready = 1;
+            (*ptr).client_ready.store(1, Ordering::Release);
+
+            // Wake server if waiting on futex (Linux) or condvar (other)
+            #[cfg(target_os = "linux")]
+            {
+                futex::futex_wake(&(*ptr).client_ready, 1);
+            }
+
+            #[cfg(not(target_os = "linux"))]
+            {
+                libc::pthread_cond_broadcast(&mut (*ptr).cond);
+            }
         }
 
         debug!("Direct memory SHM client started successfully");
@@ -627,24 +709,48 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
         unsafe {
             let ptr = self.get_raw_message_ptr();
 
-            // Lock mutex
-            let ret = libc::pthread_mutex_lock(&mut (*ptr).mutex);
-            if ret != 0 {
-                return Err(anyhow!("Failed to lock mutex: {}", ret));
+            // Backpressure: Wait if previous message hasn't been consumed yet.
+            // Use futex on Linux for efficient cross-container synchronization.
+            let loop_start = Instant::now();
+            let timeout = Duration::from_secs(30);
+
+            #[cfg(target_os = "linux")]
+            {
+                // Futex-based waiting: works reliably across container boundaries
+                while (*ptr).ready.load(Ordering::Acquire) == 1 {
+                    if loop_start.elapsed() > timeout {
+                        return Err(anyhow!("Timeout waiting for receiver to consume message"));
+                    }
+                    // Wait with 100µs timeout. Futex operates at kernel level,
+                    // so it works across container boundaries regardless of glibc.
+                    futex::futex_wait(&(*ptr).ready, 1, 100_000); // 100µs
+                }
             }
 
-            trace!("send_blocking: locked mutex, ready={}", (*ptr).ready);
-
-            // Backpressure: Wait if previous message hasn't been consumed yet
-            // This prevents overwriting unread data
-            // Use short polling intervals with mutex release to allow receiver to make progress
-            while (*ptr).ready == 1 {
-                // Release mutex, sleep briefly, then reacquire and check
-                libc::pthread_mutex_unlock(&mut (*ptr).mutex);
-                std::thread::sleep(std::time::Duration::from_micros(100)); // 100us polling
+            #[cfg(not(target_os = "linux"))]
+            {
+                // Non-Linux: use pthread condvar with mutex
                 let ret = libc::pthread_mutex_lock(&mut (*ptr).mutex);
                 if ret != 0 {
-                    return Err(anyhow!("Failed to reacquire mutex: {}", ret));
+                    return Err(anyhow!("Failed to lock mutex: {}", ret));
+                }
+
+                while (*ptr).ready.load(Ordering::Acquire) == 1 {
+                    if loop_start.elapsed() > timeout {
+                        libc::pthread_mutex_unlock(&mut (*ptr).mutex);
+                        return Err(anyhow!("Timeout waiting for receiver to consume message"));
+                    }
+                    let mut ts = libc::timespec {
+                        tv_sec: 0,
+                        tv_nsec: 0,
+                    };
+                    libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts);
+                    ts.tv_nsec += 100_000; // 100µs
+                    if ts.tv_nsec >= 1_000_000_000 {
+                        ts.tv_sec += 1;
+                        ts.tv_nsec -= 1_000_000_000;
+                    }
+                    libc::pthread_cond_timedwait(&mut (*ptr).cond, &mut (*ptr).mutex, &ts);
                 }
             }
 
@@ -652,12 +758,21 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
             let timestamp_ns = crate::ipc::get_monotonic_time_ns();
 
             // Write message data directly to shared memory (no serialization!)
+            // Validate message size - return error instead of silent truncation
+            if message.payload.len() > MAX_PAYLOAD_SIZE {
+                return Err(anyhow!(
+                    "Message payload size {} exceeds MAX_PAYLOAD_SIZE {} for --shm-direct mode.                     Use -m shm without --shm-direct for larger messages, or reduce message size.",
+                    message.payload.len(),
+                    MAX_PAYLOAD_SIZE
+                ));
+            }
+
             (*ptr).id = message.id;
             (*ptr).timestamp = timestamp_ns;
             (*ptr).message_type = message.message_type as u32;
 
-            // Copy only the actual payload bytes (variable length)
-            let len = message.payload.len().min(MAX_PAYLOAD_SIZE);
+            // Copy the payload bytes
+            let len = message.payload.len();
             (*ptr).payload_len = len;
             std::ptr::copy_nonoverlapping(
                 message.payload.as_ptr(),
@@ -665,25 +780,19 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 len,
             );
 
-            // Set ready flag and signal (fire-and-forget for one-way messaging)
-            (*ptr).ready = 1;
+            // Set ready flag with release ordering to ensure all writes are visible
+            (*ptr).ready.store(1, Ordering::Release);
 
-            let ret = libc::pthread_cond_signal(&mut (*ptr).cond);
-            if ret != 0 {
-                libc::pthread_mutex_unlock(&mut (*ptr).mutex);
-                return Err(anyhow!("Failed to signal condition variable: {}", ret));
+            // Wake receiver
+            #[cfg(target_os = "linux")]
+            {
+                futex::futex_wake(&(*ptr).ready, 1);
             }
 
-            // Note: We don't wait for acknowledgment here (unlike strict ping-pong C pattern).
-            // This makes the implementation more forgiving for benchmark architecture where
-            // the receiver may not be waiting yet when the first message is sent.
-            // The receiver will block until ready==1 when it enters receive_blocking().
-            // For backpressure control, we could check ready==1 at the START of next send.
-
-            // Unlock mutex
-            let ret = libc::pthread_mutex_unlock(&mut (*ptr).mutex);
-            if ret != 0 {
-                return Err(anyhow!("Failed to unlock mutex: {}", ret));
+            #[cfg(not(target_os = "linux"))]
+            {
+                libc::pthread_cond_signal(&mut (*ptr).cond);
+                libc::pthread_mutex_unlock(&mut (*ptr).mutex);
             }
         }
 
@@ -698,7 +807,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
         if self.is_server {
             unsafe {
                 let ptr = self.get_raw_message_ptr();
-                if (*ptr).client_ready == 0 {
+                if (*ptr).client_ready.load(Ordering::Acquire) == 0 {
                     debug!("Waiting for client to connect to shared memory");
                     self.wait_for_client_ready(std::time::Duration::from_secs(30))?;
                     debug!("Client connected to shared memory");
@@ -709,21 +818,48 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
         let message = unsafe {
             let ptr = self.get_raw_message_ptr();
 
-            // Lock mutex
-            let ret = libc::pthread_mutex_lock(&mut (*ptr).mutex);
-            if ret != 0 {
-                return Err(anyhow!("Failed to lock mutex: {}", ret));
+            // Wait for data to be ready.
+            // Use futex on Linux for efficient cross-container synchronization.
+            let loop_start = Instant::now();
+            let timeout = Duration::from_secs(30);
+
+            #[cfg(target_os = "linux")]
+            {
+                // Futex-based waiting: works reliably across container boundaries
+                while (*ptr).ready.load(Ordering::Acquire) == 0 {
+                    if loop_start.elapsed() > timeout {
+                        return Err(anyhow!("Timeout waiting for message"));
+                    }
+                    // Wait with 100µs timeout. Futex operates at kernel level,
+                    // so it works across container boundaries regardless of glibc.
+                    futex::futex_wait(&(*ptr).ready, 0, 100_000); // 100µs
+                }
             }
 
-            // Wait for data to be ready
-            // Use polling with mutex release to allow sender to make progress
-            while (*ptr).ready == 0 {
-                // Release mutex, sleep briefly, then reacquire and check
-                libc::pthread_mutex_unlock(&mut (*ptr).mutex);
-                std::thread::sleep(std::time::Duration::from_micros(100)); // 100us polling
+            #[cfg(not(target_os = "linux"))]
+            {
+                // Non-Linux: use pthread condvar with mutex
                 let ret = libc::pthread_mutex_lock(&mut (*ptr).mutex);
                 if ret != 0 {
-                    return Err(anyhow!("Failed to reacquire mutex: {}", ret));
+                    return Err(anyhow!("Failed to lock mutex: {}", ret));
+                }
+
+                while (*ptr).ready.load(Ordering::Acquire) == 0 {
+                    if loop_start.elapsed() > timeout {
+                        libc::pthread_mutex_unlock(&mut (*ptr).mutex);
+                        return Err(anyhow!("Timeout waiting for message"));
+                    }
+                    let mut ts = libc::timespec {
+                        tv_sec: 0,
+                        tv_nsec: 0,
+                    };
+                    libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts);
+                    ts.tv_nsec += 100_000; // 100µs
+                    if ts.tv_nsec >= 1_000_000_000 {
+                        ts.tv_sec += 1;
+                        ts.tv_nsec -= 1_000_000_000;
+                    }
+                    libc::pthread_cond_timedwait(&mut (*ptr).cond, &mut (*ptr).mutex, &ts);
                 }
             }
 
@@ -742,19 +878,19 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 payload_len,
             );
 
-            // Clear ready flag and signal sender
-            (*ptr).ready = 0;
+            // Clear ready flag with release ordering
+            (*ptr).ready.store(0, Ordering::Release);
 
-            let ret = libc::pthread_cond_signal(&mut (*ptr).cond);
-            if ret != 0 {
-                libc::pthread_mutex_unlock(&mut (*ptr).mutex);
-                return Err(anyhow!("Failed to signal condition variable: {}", ret));
+            // Wake sender (in case of backpressure)
+            #[cfg(target_os = "linux")]
+            {
+                futex::futex_wake(&(*ptr).ready, 1);
             }
 
-            // Unlock mutex
-            let ret = libc::pthread_mutex_unlock(&mut (*ptr).mutex);
-            if ret != 0 {
-                return Err(anyhow!("Failed to unlock mutex: {}", ret));
+            #[cfg(not(target_os = "linux"))]
+            {
+                libc::pthread_cond_signal(&mut (*ptr).cond);
+                libc::pthread_mutex_unlock(&mut (*ptr).mutex);
             }
 
             // Construct Message from raw data

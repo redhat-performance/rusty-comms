@@ -396,18 +396,21 @@ impl BlockingTransport for BlockingPosixMessageQueue {
             ));
         }
 
-        // Capture timestamp immediately before send and update bytes in buffer
-        message_with_timestamp.set_timestamp_now();
-        let timestamp_bytes = message_with_timestamp.timestamp.to_le_bytes();
+        // Pre-compute the timestamp offset for efficient in-place updates
         let ts_offset = Message::timestamp_offset();
-        serialized[ts_offset].copy_from_slice(&timestamp_bytes);
 
-        // Send immediately - no intervening work
+        // Send with retry loop - update timestamp on each attempt
         // Use a retry loop with timeouts since mq_send can fail with EAGAIN
         let start = std::time::Instant::now();
         let timeout = Duration::from_secs(5);
 
         loop {
+            // CRITICAL: Capture timestamp immediately before each send attempt
+            // This ensures accurate latency measurement even under backpressure
+            let ts_now = crate::ipc::get_monotonic_time_ns();
+            let timestamp_bytes = ts_now.to_le_bytes();
+            serialized[ts_offset.clone()].copy_from_slice(&timestamp_bytes);
+
             match mq_send(fd, &serialized, self.priority) {
                 Ok(()) => {
                     trace!("Message ID {} sent successfully", message.id);
@@ -420,7 +423,7 @@ impl BlockingTransport for BlockingPosixMessageQueue {
                             "Timeout: message queue full, possible backpressure"
                         ));
                     }
-                    // Yield and retry
+                    // Yield and retry - timestamp will be updated on next iteration
                     std::thread::yield_now();
                     std::thread::sleep(Duration::from_millis(10));
                 }
