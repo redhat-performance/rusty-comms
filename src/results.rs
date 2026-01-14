@@ -1571,6 +1571,8 @@ impl BenchmarkResults {
         msg_count: Option<usize>,
         duration: Option<Duration>,
         warmup_iterations: usize,
+        one_way: bool,
+        round_trip: bool,
     ) -> Self {
         let test_config = TestConfiguration {
             message_size,
@@ -1578,8 +1580,8 @@ impl BenchmarkResults {
             concurrency,
             msg_count,
             duration,
-            one_way_enabled: false,
-            round_trip_enabled: false,
+            one_way_enabled: one_way,
+            round_trip_enabled: round_trip,
             warmup_iterations,
             percentiles: vec![50.0, 95.0, 99.0, 99.9],
         };
