@@ -75,6 +75,10 @@ pub enum RunMode {
     Host,
     /// Client mode - run inside container, connect back to host
     Client,
+    /// Sender mode - connect to existing server and run benchmark as sender
+    /// Use this for container-to-container IPC where one container runs as
+    /// Client (server/receiver) and another runs as Sender (client/sender)
+    Sender,
 }
 
 impl fmt::Display for RunMode {
@@ -83,6 +87,7 @@ impl fmt::Display for RunMode {
             RunMode::Standalone => write!(f, "standalone"),
             RunMode::Host => write!(f, "host"),
             RunMode::Client => write!(f, "client"),
+            RunMode::Sender => write!(f, "sender"),
         }
     }
 }

@@ -137,6 +137,15 @@ fn main() -> Result<()> {
                 run_client_mode_async(args)
             }
         }
+        RunMode::Sender => {
+            // Sender mode - connect to existing server, run benchmark as sender
+            // Used for container-to-container IPC
+            if args.blocking {
+                run_sender_mode_blocking(args)
+            } else {
+                run_sender_mode_async(args)
+            }
+        }
     }
 }
 
@@ -764,6 +773,374 @@ fn run_client_mode_blocking(args: Args) -> Result<()> {
     transport.close_blocking()?;
     info!("Client mode server exiting cleanly.");
     Ok(())
+}
+
+/// Run the benchmark in sender mode (blocking).
+///
+/// Sender mode connects to an existing server and runs the benchmark as the
+/// sender/client. This is used for container-to-container IPC where:
+/// - Container A runs in Client mode (acts as IPC server/receiver)
+/// - Container B runs in Sender mode (acts as IPC client/sender)
+///
+/// The sender collects metrics and outputs results.
+///
+/// # Arguments
+///
+/// * `args` - Parsed command-line arguments
+///
+/// # Returns
+///
+/// * `Ok(())` - Benchmark completed successfully
+/// * `Err(anyhow::Error)` - Benchmark failed with error
+fn run_sender_mode_blocking(args: Args) -> Result<()> {
+    use ipc_benchmark::ipc::BlockingTransportFactory;
+    use ipc_benchmark::metrics::{LatencyType, MetricsCollector};
+    use ipc_benchmark::results::MessageLatencyRecord;
+    use std::time::{Duration, Instant};
+
+    // Configure logging
+    let log_level = match args.verbose {
+        0 => tracing_subscriber::filter::LevelFilter::INFO,
+        1 => tracing_subscriber::filter::LevelFilter::DEBUG,
+        _ => tracing_subscriber::filter::LevelFilter::TRACE,
+    };
+
+    let guard;
+    let detailed_log_layer;
+
+    if let Some("stderr") = args.log_file.as_deref() {
+        detailed_log_layer = tracing_subscriber::fmt::layer()
+            .with_writer(std::io::stderr)
+            .with_filter(log_level)
+            .boxed();
+        guard = None;
+    } else {
+        let file_appender = match args.log_file.as_deref() {
+            Some(path_str) => {
+                let log_path = std::path::Path::new(path_str);
+                let log_dir = log_path
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."));
+                let log_filename = log_path
+                    .file_name()
+                    .unwrap_or_else(|| std::ffi::OsStr::new("ipc_benchmark.log"));
+                tracing_appender::rolling::daily(log_dir, log_filename)
+            }
+            None => tracing_appender::rolling::daily(".", "ipc_benchmark.log"),
+        };
+        let (non_blocking_writer, file_guard) = tracing_appender::non_blocking(file_appender);
+        detailed_log_layer = tracing_subscriber::fmt::layer()
+            .with_writer(non_blocking_writer)
+            .with_ansi(false)
+            .with_filter(log_level)
+            .boxed();
+        guard = Some(file_guard);
+    }
+
+    let stdout_log = if !args.quiet {
+        Some(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stdout)
+                .event_format(ColorizedFormatter)
+                .with_filter(log_level),
+        )
+    } else {
+        None
+    };
+
+    tracing_subscriber::registry()
+        .with(detailed_log_layer)
+        .with(stdout_log)
+        .init();
+
+    let _log_guard = guard;
+
+    info!("Starting IPC Benchmark (Sender Mode, Blocking)");
+
+    // Get the mechanism
+    let mechanism = match args.mechanisms.first() {
+        Some(&m) => m,
+        None => {
+            return Err(anyhow::anyhow!(
+                "No IPC mechanism specified for sender mode"
+            ))
+        }
+    };
+
+    // Set CPU affinity if specified
+    if let Some(core) = args.client_affinity {
+        if let Err(e) = set_affinity(core) {
+            error!("Failed to set CPU affinity to core {}: {}", core, e);
+        } else {
+            info!("Successfully set CPU affinity to core {}", core);
+        }
+    }
+
+    let config = ipc_benchmark::benchmark::BenchmarkConfig::from_args(&args)?;
+
+    // Build transport config
+    #[allow(clippy::field_reassign_with_default)]
+    let mut transport_config = {
+        let mut tc = ipc_benchmark::ipc::TransportConfig::default();
+        tc.buffer_size = config
+            .buffer_size
+            .unwrap_or_else(|| std::cmp::max(config.message_size * 2, 4096));
+        tc
+    };
+
+    // Set mechanism-specific configuration
+    match mechanism {
+        #[cfg(unix)]
+        IpcMechanism::UnixDomainSocket => {
+            if let Some(ref p) = args.socket_path {
+                transport_config.socket_path = p.clone();
+            }
+        }
+        IpcMechanism::TcpSocket => {
+            transport_config.host = args.host.clone();
+            transport_config.port = args.port;
+        }
+        IpcMechanism::SharedMemory => {
+            if let Some(ref n) = args.shared_memory_name {
+                transport_config.shared_memory_name = n.clone();
+            }
+            // For SHM, set env var to open existing segment
+            std::env::set_var("IPC_SHM_OPEN_EXISTING", "1");
+        }
+        #[cfg(target_os = "linux")]
+        IpcMechanism::PosixMessageQueue => {
+            if let Some(ref n) = args.message_queue_name {
+                transport_config.message_queue_name = n.clone();
+            }
+        }
+        IpcMechanism::All => {
+            return Err(anyhow::anyhow!(
+                "Cannot use 'all' mechanism in sender mode"
+            ))
+        }
+        #[allow(unreachable_patterns)]
+        _ => {}
+    }
+
+    info!(
+        "Sender connecting to {} server at {:?}",
+        mechanism, transport_config
+    );
+
+    // Create client transport and connect
+    let mut transport = BlockingTransportFactory::create(&mechanism, args.shm_direct)?;
+    transport
+        .start_client_blocking(&transport_config)
+        .context("Failed to connect to server")?;
+
+    info!("Connected to server, starting benchmark");
+
+    // Initialize results manager for output
+    let mut results_manager = BlockingResultsManager::new(
+        args.output_file.as_deref(),
+        args.log_file.as_deref(),
+    )?;
+
+    // Enable streaming if specified
+    let both_tests = config.one_way && config.round_trip;
+    if let Some(ref streaming_file) = args.streaming_output_json {
+        if both_tests {
+            results_manager.enable_combined_streaming(streaming_file, true)?;
+        } else {
+            results_manager.enable_per_message_streaming(streaming_file)?;
+        }
+    }
+    if let Some(ref streaming_file) = args.streaming_output_csv {
+        results_manager.enable_csv_streaming(streaming_file)?;
+        if both_tests {
+            results_manager.set_combined_mode(true);
+        }
+    }
+
+    // Create metrics collectors
+    // For sender mode, we track either one-way or round-trip latency (not combined)
+    // Default to round-trip if both are enabled, one-way if only one-way is enabled
+    let latency_type = if config.one_way && !config.round_trip {
+        LatencyType::OneWay
+    } else {
+        LatencyType::RoundTrip
+    };
+    let mut metrics = MetricsCollector::new(
+        Some(latency_type),
+        config.percentiles.clone(),
+    )?;
+
+    // Prepare payload
+    let payload = vec![0u8; config.message_size];
+    let mut streaming_records: Vec<MessageLatencyRecord> = Vec::new();
+
+    // Run the benchmark
+    let start_time = Instant::now();
+    let mut skip_first = !config.include_first_message;
+
+    if let Some(duration) = config.duration {
+        // Duration-based mode
+        let mut i: u64 = 0;
+        while start_time.elapsed() < duration {
+            let send_timestamp_ns = MessageLatencyRecord::current_timestamp_ns();
+            let send_time = get_monotonic_time_ns();
+
+            let msg_type = if config.round_trip {
+                MessageType::Request
+            } else {
+                MessageType::OneWay
+            };
+            let mut message = Message::new(i, payload.clone(), msg_type);
+            message.timestamp = send_time;
+
+            transport
+                .send_blocking(&message)
+                .with_context(|| format!("Failed to send message {}", i))?;
+
+            let latency_ns = if config.round_trip {
+                let _response = transport
+                    .receive_blocking()
+                    .with_context(|| format!("Failed to receive response {}", i))?;
+                get_monotonic_time_ns() - send_time
+            } else {
+                get_monotonic_time_ns() - send_time
+            };
+
+            if skip_first && i == 0 {
+                skip_first = false;
+                i += 1;
+                continue;
+            }
+
+            let latency = Duration::from_nanos(latency_ns);
+            metrics.record_message(config.message_size, Some(latency))?;
+            streaming_records.push(MessageLatencyRecord::new(
+                i,
+                mechanism,
+                config.message_size,
+                if config.round_trip {
+                    LatencyType::RoundTrip
+                } else {
+                    LatencyType::OneWay
+                },
+                latency,
+                send_timestamp_ns,
+            ));
+
+            if let Some(delay) = config.send_delay {
+                std::thread::sleep(delay);
+            }
+            i += 1;
+        }
+    } else {
+        // Message count mode
+        let msg_count = config.msg_count.unwrap_or(1000);
+        for i in 0..msg_count {
+            let send_timestamp_ns = MessageLatencyRecord::current_timestamp_ns();
+            let send_time = get_monotonic_time_ns();
+
+            let msg_type = if config.round_trip {
+                MessageType::Request
+            } else {
+                MessageType::OneWay
+            };
+            let mut message = Message::new(i as u64, payload.clone(), msg_type);
+            message.timestamp = send_time;
+
+            transport
+                .send_blocking(&message)
+                .with_context(|| format!("Failed to send message {}", i))?;
+
+            let latency_ns = if config.round_trip {
+                let _response = transport
+                    .receive_blocking()
+                    .with_context(|| format!("Failed to receive response {}", i))?;
+                get_monotonic_time_ns() - send_time
+            } else {
+                get_monotonic_time_ns() - send_time
+            };
+
+            if skip_first && i == 0 {
+                skip_first = false;
+                continue;
+            }
+
+            let latency = Duration::from_nanos(latency_ns);
+            metrics.record_message(config.message_size, Some(latency))?;
+            streaming_records.push(MessageLatencyRecord::new(
+                i as u64,
+                mechanism,
+                config.message_size,
+                if config.round_trip {
+                    LatencyType::RoundTrip
+                } else {
+                    LatencyType::OneWay
+                },
+                latency,
+                send_timestamp_ns,
+            ));
+
+            if let Some(delay) = config.send_delay {
+                std::thread::sleep(delay);
+            }
+        }
+    }
+
+    // Capture final metrics
+    let final_metrics = metrics.get_metrics();
+
+    // Send shutdown message
+    let shutdown_msg = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+    if let Err(e) = transport.send_blocking(&shutdown_msg) {
+        warn!("Failed to send shutdown message: {}", e);
+    }
+
+    transport.close_blocking()?;
+
+    // Stream results
+    for record in &streaming_records {
+        results_manager.stream_latency_record(record)?;
+    }
+
+    // Build and output results
+    let mut results = BenchmarkResults::new(
+        mechanism,
+        config.message_size,
+        0, // buffer_size
+        config.concurrency,
+        config.msg_count,
+        config.duration,
+        config.warmup_iterations,
+        config.one_way,
+        config.round_trip,
+    );
+
+    // Store results based on latency type used
+    // Use the add_*_results methods to trigger summary update
+    if config.one_way && !config.round_trip {
+        results.add_one_way_results(final_metrics);
+    } else {
+        results.add_round_trip_results(final_metrics);
+    }
+
+    results_manager.add_results(results)?;
+    results_manager.finalize()?;
+
+    info!("Sender mode benchmark completed successfully");
+    Ok(())
+}
+
+/// Run the benchmark in sender mode (async).
+///
+/// Async version of sender mode for non-blocking I/O.
+#[tokio::main]
+async fn run_sender_mode_async(args: Args) -> Result<()> {
+    // For now, just redirect to blocking mode with a warning
+    // Full async implementation can be added later if needed
+    warn!(
+        "Async sender mode not yet implemented, falling back to blocking"
+    );
+    run_sender_mode_blocking(args)
 }
 
 /// Run the benchmark in async mode using Tokio runtime.

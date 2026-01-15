@@ -111,7 +111,8 @@ podman build -t localhost/ipc-benchmark:latest .
 |------|-------------|
 | `standalone` | Default. Both client and server run on host |
 | `host` | Host drives benchmark, container is responder |
-| `client` | Runs inside container (auto-invoked by host mode) |
+| `client` | Runs as IPC server/receiver (used in container) |
+| `sender` | Runs as IPC client/sender (used for C2C) |
 
 ### Supported Mechanisms
 
@@ -138,6 +139,102 @@ All IPC mechanisms work in host-container mode with appropriate container config
 
 - **Setup**: See [docs/PODMAN_SETUP.md](docs/PODMAN_SETUP.md)
 - **Usage**: See [docs/HOST_CONTAINER_USAGE.md](docs/HOST_CONTAINER_USAGE.md)
+
+## Container-to-Container Mode
+
+The benchmark suite also supports running IPC benchmarks between two containers. This enables performance measurement across container isolation boundaries without involving the host.
+
+### Architecture
+
+```
+Container A (Server)                 Container B (Sender)
+┌─────────────────────┐             ┌─────────────────────┐
+│ --run-mode client   │             │ --run-mode sender   │
+│ (IPC server role)   │◄───────────►│ (IPC client role)   │
+│                     │   shared    │                     │
+│ Creates IPC         │   /dev/shm  │ Connects to server  │
+│ resources & waits   │   or volume │ Sends messages      │
+└─────────────────────┘             └─────────────────────┘
+```
+
+### Run Modes for C2C
+
+| Mode | Description |
+|------|-------------|
+| `client` | Runs as IPC server/receiver - creates resources and waits |
+| `sender` | Runs as IPC client/sender - connects and sends messages |
+
+### Quick Start
+
+```bash
+# Build container image
+podman build -t localhost/ipc-benchmark:latest .
+
+# Run the orchestration script
+python3 run_container_to_container_tests.py --all -i 10000
+```
+
+### Manual Container Launch
+
+```bash
+# Create shared directories
+mkdir -p /tmp/c2c_shm /tmp/c2c_output
+chmod 1777 /tmp/c2c_shm /tmp/c2c_output
+
+# Start server container (receiver)
+podman run -d --name c2c-server \
+    --network host \
+    -v /tmp/c2c_shm:/dev/shm:z \
+    -v /tmp/c2c_output:/app/output:z \
+    localhost/ipc-benchmark:latest \
+    -m shm --run-mode client --blocking -s 1024
+
+# Wait for server to be ready, then start sender container
+podman run -d --name c2c-sender \
+    --network host \
+    -v /tmp/c2c_shm:/dev/shm:z \
+    -v /tmp/c2c_output:/app/output:z \
+    localhost/ipc-benchmark:latest \
+    -m shm --run-mode sender --blocking -s 1024 \
+    -i 10000 --one-way \
+    --streaming-output-json /app/output/shm_results.json \
+    --log-file stderr --quiet
+```
+
+### Supported Mechanisms
+
+| Mechanism | Container Setup | Notes |
+|-----------|-----------------|-------|
+| TCP | `--network host` | Full round-trip support |
+| UDS | Shared volume for socket | Full round-trip support |
+| SHM | Shared `/dev/shm` mount | One-way recommended |
+| SHM-Direct | Shared `/dev/shm` mount | One-way, lowest latency |
+
+### Performance Results (Container-to-Container)
+
+| Mechanism | Size | Latency Type | Mean Latency |
+|-----------|------|--------------|--------------|
+| SharedMemory | 64B | one-way | ~1.3 µs |
+| SharedMemory (direct) | 64B | one-way | ~6.6 µs |
+| Unix Domain Socket | 64B | round-trip | ~31 µs |
+| TCP Socket | 64B | round-trip | ~63 µs |
+
+### Orchestration Script
+
+The `run_container_to_container_tests.py` script automates the full C2C benchmark process:
+
+```bash
+# Test all mechanisms with default sizes
+python3 run_container_to_container_tests.py --all
+
+# Test specific mechanism
+python3 run_container_to_container_tests.py -m tcp -s 64,1024,4096 -i 10000
+
+# Run duration-based tests
+python3 run_container_to_container_tests.py -m shm-direct --duration 10s
+```
+
+Results are written to `/tmp/c2c_output/` as JSON files.
 
 ## Shared Memory Implementations
 
