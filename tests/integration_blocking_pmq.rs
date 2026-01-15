@@ -21,6 +21,7 @@ fn pmq_round_trip_blocking_smoke() -> Result<()> {
         concurrency: 1,
         msg_count: 32,
         message_size: 128,
+        buffer_size: Some(1024), // Use small buffer to fit in ulimit
         message_queue_name: Some("/ipc_test_blocking_pmq_rt".to_string()),
         ..Default::default()
     };
@@ -46,6 +47,7 @@ fn pmq_one_way_blocking_smoke() -> Result<()> {
         blocking: true,
         msg_count: 16,
         message_size: 64,
+        buffer_size: Some(1024),
         message_queue_name: Some("/ipc_test_blocking_pmq_ow".to_string()),
         include_first_message: true,
         ..Default::default()
@@ -74,6 +76,7 @@ fn pmq_blocking_various_sizes() -> Result<()> {
             blocking: true,
             msg_count: 8,
             message_size: *size,
+            buffer_size: Some(1024),
             message_queue_name: Some(queue_name),
             ..Default::default()
         };
@@ -98,6 +101,7 @@ fn pmq_blocking_with_priority() -> Result<()> {
         blocking: true,
         msg_count: 16,
         message_size: 128,
+        buffer_size: Some(1024),
         message_queue_name: Some("/ipc_test_blocking_pmq_prio".to_string()),
         pmq_priority: 5, // Non-zero priority
         ..Default::default()
@@ -122,6 +126,7 @@ fn pmq_blocking_server_ready_smoke() -> Result<()> {
         blocking: true,
         msg_count: 1,
         message_size: 64,
+        buffer_size: Some(1024),
         message_queue_name: Some("/ipc_test_blocking_pmq_srv".to_string()),
         include_first_message: true,
         ..Default::default()

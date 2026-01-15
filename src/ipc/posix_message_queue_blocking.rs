@@ -277,6 +277,14 @@ impl BlockingTransport for BlockingPosixMessageQueue {
         self.queue_name_base = base_name;
         self.priority = config.pmq_priority;
 
+        // Apply configuration limits
+        if config.buffer_size > 0 {
+            self.max_msg_size = config.buffer_size;
+        }
+        if config.message_queue_depth > 0 {
+            self.max_msg_count = config.message_queue_depth;
+        }
+
         let req_name = self.request_queue_name();
         let resp_name = self.response_queue_name();
 
@@ -319,6 +327,14 @@ impl BlockingTransport for BlockingPosixMessageQueue {
 
         self.queue_name_base = base_name;
         self.priority = config.pmq_priority;
+
+        // Apply configuration limits to match server
+        if config.buffer_size > 0 {
+            self.max_msg_size = config.buffer_size;
+        }
+        if config.message_queue_depth > 0 {
+            self.max_msg_count = config.message_queue_depth;
+        }
 
         let req_name = self.request_queue_name();
         let resp_name = self.response_queue_name();
@@ -474,16 +490,17 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    /// Clean up any leftover test queues from previous runs.
+    /// Clean up any leftover test queues from previous runs for a specific test.
     /// This prevents "too many open files" errors when tests fail and leave queues behind.
-    fn cleanup_leftover_test_queues() {
+    fn cleanup_leftover_test_queues(test_name: &str) {
         use std::fs;
+        let prefix = format!("test_pmq_blocking_{}_", test_name);
         if let Ok(entries) = fs::read_dir("/dev/mqueue") {
             for entry in entries.flatten() {
                 let name = entry.file_name();
                 let name_str = name.to_string_lossy();
-                // Clean up any test queues (they start with "test_pmq_blocking_")
-                if name_str.starts_with("test_pmq_blocking_") {
+                // Clean up any test queues for this specific test
+                if name_str.starts_with(&prefix) {
                     let queue_path = format!("/{}", name_str);
                     let _ = mq_unlink(queue_path.as_str());
                 }
@@ -513,12 +530,13 @@ mod tests {
 
     #[test]
     fn test_server_creates_queue_successfully() {
-        cleanup_leftover_test_queues();
+        cleanup_leftover_test_queues("server");
         let queue_name = make_unique_queue_name("server");
 
         let mut server = BlockingPosixMessageQueue::new();
         let config = TransportConfig {
             message_queue_name: queue_name.clone(),
+            buffer_size: 1024, // Use smaller buffer to avoid ulimit exhaustion
             ..Default::default()
         };
 
@@ -533,12 +551,13 @@ mod tests {
 
     #[test]
     fn test_client_fails_if_server_not_running() {
-        cleanup_leftover_test_queues();
+        cleanup_leftover_test_queues("no_server");
         let queue_name = make_unique_queue_name("no_server");
 
         let mut client = BlockingPosixMessageQueue::new();
         let config = TransportConfig {
             message_queue_name: queue_name,
+            buffer_size: 1024,
             ..Default::default()
         };
 
@@ -550,7 +569,7 @@ mod tests {
 
     #[test]
     fn test_send_and_receive_message() {
-        cleanup_leftover_test_queues();
+        cleanup_leftover_test_queues("send_recv");
         let queue_name = make_unique_queue_name("send_recv");
 
         // Start server in thread
@@ -559,6 +578,7 @@ mod tests {
             let mut server = BlockingPosixMessageQueue::new();
             let config = TransportConfig {
                 message_queue_name: server_queue,
+                buffer_size: 1024,
                 ..Default::default()
             };
             server.start_server_blocking(&config).unwrap();
@@ -578,6 +598,7 @@ mod tests {
         let mut client = BlockingPosixMessageQueue::new();
         let config = TransportConfig {
             message_queue_name: queue_name,
+            buffer_size: 1024,
             ..Default::default()
         };
         client.start_client_blocking(&config).unwrap();
@@ -592,7 +613,7 @@ mod tests {
 
     #[test]
     fn test_round_trip_communication() {
-        cleanup_leftover_test_queues();
+        cleanup_leftover_test_queues("round_trip");
         let queue_name = make_unique_queue_name("round_trip");
 
         // Start server
@@ -601,6 +622,7 @@ mod tests {
             let mut server = BlockingPosixMessageQueue::new();
             let config = TransportConfig {
                 message_queue_name: server_queue,
+                buffer_size: 1024,
                 ..Default::default()
             };
             server.start_server_blocking(&config).unwrap();
@@ -622,6 +644,7 @@ mod tests {
         let mut client = BlockingPosixMessageQueue::new();
         let config = TransportConfig {
             message_queue_name: queue_name,
+            buffer_size: 1024,
             ..Default::default()
         };
         client.start_client_blocking(&config).unwrap();
@@ -641,7 +664,7 @@ mod tests {
 
     #[test]
     fn test_multiple_round_trips() {
-        cleanup_leftover_test_queues();
+        cleanup_leftover_test_queues("multi_rt");
         // Test that multiple rapid round-trips work without race conditions
         let queue_name = make_unique_queue_name("multi_rt");
 
@@ -650,6 +673,7 @@ mod tests {
             let mut server = BlockingPosixMessageQueue::new();
             let config = TransportConfig {
                 message_queue_name: server_queue,
+                buffer_size: 1024,
                 ..Default::default()
             };
             server.start_server_blocking(&config).unwrap();
@@ -669,6 +693,7 @@ mod tests {
         let mut client = BlockingPosixMessageQueue::new();
         let config = TransportConfig {
             message_queue_name: queue_name,
+            buffer_size: 1024,
             ..Default::default()
         };
         client.start_client_blocking(&config).unwrap();
@@ -688,12 +713,13 @@ mod tests {
 
     #[test]
     fn test_close_cleanup() {
-        cleanup_leftover_test_queues();
+        cleanup_leftover_test_queues("close");
         let queue_name = make_unique_queue_name("close");
 
         let mut server = BlockingPosixMessageQueue::new();
         let config = TransportConfig {
             message_queue_name: queue_name,
+            buffer_size: 1024,
             ..Default::default()
         };
         server.start_server_blocking(&config).unwrap();
@@ -717,7 +743,7 @@ mod tests {
 
     #[test]
     fn test_with_custom_buffer_size() {
-        cleanup_leftover_test_queues();
+        cleanup_leftover_test_queues("custom_limits");
         let queue_name = make_unique_queue_name("custom_limits");
 
         let mut server = BlockingPosixMessageQueue::new();
@@ -737,7 +763,7 @@ mod tests {
 
     #[test]
     fn test_multiple_messages_one_way() {
-        cleanup_leftover_test_queues();
+        cleanup_leftover_test_queues("multi_oneway");
         let queue_name = make_unique_queue_name("multi_oneway");
 
         let server_queue = queue_name.clone();
@@ -745,6 +771,7 @@ mod tests {
             let mut server = BlockingPosixMessageQueue::new();
             let config = TransportConfig {
                 message_queue_name: server_queue,
+                buffer_size: 1024,
                 ..Default::default()
             };
             server.start_server_blocking(&config).unwrap();
@@ -764,6 +791,7 @@ mod tests {
         let mut client = BlockingPosixMessageQueue::new();
         let config = TransportConfig {
             message_queue_name: queue_name,
+            buffer_size: 1024,
             ..Default::default()
         };
         client.start_client_blocking(&config).unwrap();
