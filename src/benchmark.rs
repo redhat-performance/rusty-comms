@@ -40,6 +40,7 @@ use crate::{
     ipc::{Message, MessageType, TransportConfig, TransportFactory},
     metrics::{LatencyType, MetricsCollector, PerformanceMetrics},
     results::BenchmarkResults,
+    utils::get_temp_dir,
 };
 use anyhow::{Context, Result};
 use clap::ValueEnum;
@@ -345,10 +346,13 @@ impl BenchmarkConfig {
 /// #     send_delay: None,
 /// #     pmq_priority: 0,
 /// #     include_first_message: false,
+/// #     blocking: false,
 /// #     internal_run_as_server: false,
 /// #     socket_path: None,
 /// #     shared_memory_name: None,
 /// #     message_queue_name: None,
+/// #     internal_latency_file: None,
+/// #     shm_direct: false,
 /// # };
 /// let config = BenchmarkConfig::from_args(&args)?;
 /// #[cfg(unix)]
@@ -485,6 +489,7 @@ impl BenchmarkRunner {
             self.config.concurrency,
             self.config.msg_count,
             self.config.duration,
+            self.config.warmup_iterations,
         );
 
         // Run warmup if configured
@@ -608,6 +613,28 @@ impl BenchmarkRunner {
     pub fn spawn_server_process(
         &self,
         transport_config: &TransportConfig,
+    ) -> Result<(std::process::Child, PipeReader)> {
+        self.spawn_server_process_with_latency_file(transport_config, None)
+    }
+
+    /// Spawn the server process with optional latency file for true IPC measurement
+    ///
+    /// This variant allows passing a latency file path to the server, enabling
+    /// server-side latency calculation.
+    ///
+    /// ## Parameters
+    ///
+    /// - `transport_config`: Transport configuration
+    /// - `latency_file_path`: Optional path for server to write measured latencies
+    ///
+    /// ## Returns
+    ///
+    /// - `Ok((Child, PipeReader))`: Spawned process and ready signal pipe
+    /// - `Err(anyhow::Error)`: Spawn failure
+    pub fn spawn_server_process_with_latency_file(
+        &self,
+        transport_config: &TransportConfig,
+        latency_file_path: Option<&str>,
     ) -> Result<(std::process::Child, PipeReader)> {
         let (reader, writer) =
             os_pipe::pipe().context("Failed to create OS pipe for server signaling")?;
@@ -748,6 +775,11 @@ impl BenchmarkRunner {
                 );
             }
             IpcMechanism::All => {} // 'All' is expanded in the main process
+        }
+
+        // Add latency file path if provided (for true IPC measurement)
+        if let Some(path) = latency_file_path {
+            cmd.arg("--internal-latency-file").arg(path);
         }
 
         let child = cmd.spawn().context("Failed to spawn server process")?;
@@ -929,24 +961,25 @@ impl BenchmarkRunner {
     ///
     /// ## Execution Flow
     ///
-    /// 1. **Server Setup**: The server is spawned in a background task, optionally pinned
-    ///    to a specific CPU core if `server_affinity` is set. It signals readiness via a
-    ///    `oneshot` channel.
+    /// 1. **Server Setup**: The server is spawned in a background process, optionally pinned
+    ///    to a specific CPU core if `server_affinity` is set. It signals readiness via a pipe.
     /// 2. **Client Setup**: The client logic is encapsulated in a future, which is then
     ///    spawned in a separate background task. If `client_affinity` is set, this task
     ///    runs on a dedicated thread pinned to the specified CPU core.
-    /// 3. **Data Collection**: The client task collects raw latency measurements and
-    ///    returns them in a `Vec`.
-    /// 4. **Metrics Processing**: The main task awaits the client's results and then
-    //     records the latencies into the `MetricsCollector` and streams them to the
-    ///    `ResultsManager`.
+    /// 3. **Data Collection**: The client sends messages (server measures latencies).
+    /// 4. **Metrics Processing**: After server completes, read server-measured latencies
+    ///    from file and record them into the `MetricsCollector` and stream to `ResultsManager`.
     /// 5. **Cleanup**: Both client and server tasks are awaited to ensure graceful shutdown.
     ///
     /// ## Timing Methodology
     ///
-    /// Each message transmission is timed individually using high-precision
-    /// timestamps. The latency is measured from just before the send call
-    /// to just after it completes, capturing the actual transmission time.
+    /// TRUE IPC latency measurement:
+    /// - Client embeds timestamp in message when sending
+    /// - Server calculates latency = receive_time - message.timestamp
+    /// - Server writes latencies to file
+    /// - Client reads latencies from file after server completes
+    ///
+    /// This measures actual IPC transit time, not just buffer copy time.
     ///
     /// ## Duration vs Iteration Modes
     ///
@@ -960,8 +993,18 @@ impl BenchmarkRunner {
     ) -> Result<()> {
         let mut client_transport = TransportFactory::create(&self.mechanism)?;
 
+        // Create a temporary file for server to write latencies
+        let latency_file_path = std::env::temp_dir()
+            .join(format!(
+                "ipc_benchmark_latencies_async_{}.txt",
+                Uuid::new_v4()
+            ))
+            .to_string_lossy()
+            .to_string();
+
         // --- Server Process Spawning ---
-        let (mut server_process, mut pipe_reader) = self.spawn_server_process(transport_config)?;
+        let (mut server_process, mut pipe_reader) = self
+            .spawn_server_process_with_latency_file(transport_config, Some(&latency_file_path))?;
 
         // Wait for the server to signal that it's ready by reading one byte from the pipe.
         let mut buf = [0; 1];
@@ -976,7 +1019,6 @@ impl BenchmarkRunner {
 
         let mechanism_for_err = self.mechanism;
         let client_future = async move {
-            let mut latencies = Vec::new();
             client_transport
                 .start_client(&transport_config_clone)
                 .await
@@ -994,6 +1036,7 @@ port={}",
             let payload = vec![0u8; client_config.message_size];
             let start_time = Instant::now();
 
+            // Client just sends messages - server measures and records latencies
             if let Some(duration) = client_config.duration {
                 let mut i = 0u64;
                 if !client_config.include_first_message {
@@ -1001,7 +1044,6 @@ port={}",
                     let _ = client_transport.send(&canary).await;
                 }
                 while start_time.elapsed() < duration {
-                    let send_time = Instant::now();
                     let message = Message::new(i, payload.clone(), MessageType::OneWay);
                     match tokio::time::timeout(
                         Duration::from_millis(50),
@@ -1010,7 +1052,6 @@ port={}",
                     .await
                     {
                         Ok(Ok(_)) => {
-                            latencies.push(send_time.elapsed());
                             i += 1;
                             if let Some(delay) = client_config.send_delay {
                                 sleep(delay).await;
@@ -1025,49 +1066,79 @@ port={}",
                 }
             } else {
                 let msg_count = client_config.msg_count.unwrap_or_default();
-                let iterations = if client_config.include_first_message {
-                    msg_count
-                } else {
-                    msg_count + 1
-                };
-                for i in 0..iterations {
-                    let send_time = Instant::now();
+
+                // Send canary message if first message should not be included
+                if !client_config.include_first_message {
+                    let canary = Message::new(u64::MAX, payload.clone(), MessageType::OneWay);
+                    let _ = client_transport.send(&canary).await;
+                }
+
+                for i in 0..msg_count {
                     let message = Message::new(i as u64, payload.clone(), MessageType::OneWay);
                     let _ = client_transport.send(&message).await?;
-                    if i > 0 || client_config.include_first_message {
-                        latencies.push(send_time.elapsed());
-                    }
                     if let Some(delay) = client_config.send_delay {
                         sleep(delay).await;
                     }
                 }
             }
             client_transport.close().await?;
-            Ok::<Vec<Duration>, anyhow::Error>(latencies)
+            Ok::<(), anyhow::Error>(())
         };
 
         // Execute client work with proper affinity using spawn_with_affinity
-        let latencies =
-            crate::utils::spawn_with_affinity(client_future, self.config.client_affinity).await?;
-
-        for (i, latency) in latencies.iter().enumerate() {
-            metrics_collector.record_message(self.config.message_size, Some(*latency))?;
-            if let Some(ref mut manager) = results_manager {
-                let record = crate::results::MessageLatencyRecord::new(
-                    i as u64,
-                    self.mechanism,
-                    self.config.message_size,
-                    crate::metrics::LatencyType::OneWay,
-                    *latency,
-                );
-                manager.stream_latency_record(&record).await?;
-            }
-        }
+        crate::utils::spawn_with_affinity(client_future, self.config.client_affinity).await?;
 
         // --- Cleanup ---
         server_process
             .wait()
             .context("Server process exited with an error")?;
+
+        // --- Read server-measured latencies from file ---
+        debug!(
+            "Reading server-measured latencies from: {}",
+            latency_file_path
+        );
+        let file = tokio::fs::File::open(&latency_file_path)
+            .await
+            .context("Failed to open latency file")?;
+        let reader = tokio::io::BufReader::new(file);
+        use tokio::io::AsyncBufReadExt;
+        let mut lines = reader.lines();
+        let mut line_num = 0;
+
+        while let Some(line) = lines
+            .next_line()
+            .await
+            .context("Failed to read line from latency file")?
+        {
+            let latency_ns: u64 = line
+                .parse()
+                .with_context(|| format!("Failed to parse latency from line: {}", line))?;
+
+            let latency = Duration::from_nanos(latency_ns);
+
+            // Record in metrics collector
+            metrics_collector.record_message(self.config.message_size, Some(latency))?;
+
+            // Stream latency if enabled
+            if let Some(ref mut manager) = results_manager {
+                let record = crate::results::MessageLatencyRecord::new(
+                    line_num,
+                    self.mechanism,
+                    self.config.message_size,
+                    crate::metrics::LatencyType::OneWay,
+                    latency,
+                );
+                manager.stream_latency_record(&record).await?;
+            }
+            line_num += 1;
+        }
+
+        debug!("Successfully read and recorded server-measured latencies");
+
+        // Clean up temporary latency file
+        let _ = tokio::fs::remove_file(&latency_file_path).await;
+
         Ok(())
     }
 
@@ -1529,6 +1600,8 @@ port={}",
         const PMQ_SAFE_DEFAULT_BUFFER_SIZE: usize = 8192;
 
         let unique_id = Uuid::new_v4();
+        // Use shortened UUID for socket paths to stay within macOS SUN_LEN limit (104 bytes)
+        let short_id = &unique_id.to_string()[..8];
         let unique_port = self.config.port + (unique_id.as_u128() as u16 % 1000);
 
         // Determine if the current mechanism is PMQ
@@ -1622,10 +1695,12 @@ port={}",
             buffer_size,
             host: self.config.host.clone(),
             port: unique_port,
-            socket_path: args
-                .socket_path
-                .clone()
-                .unwrap_or_else(|| format!("/tmp/ipc_benchmark_{}.sock", unique_id)),
+            socket_path: args.socket_path.clone().unwrap_or_else(|| {
+                get_temp_dir()
+                    .join(format!("ipc_{}.sock", short_id))
+                    .to_string_lossy()
+                    .into_owned()
+            }),
             shared_memory_name: args
                 .shared_memory_name
                 .clone()
@@ -1659,13 +1734,14 @@ mod tests {
     use super::*;
     use crate::cli::IpcMechanism;
     use crate::ipc::TransportConfig;
+    use crate::utils::get_temp_dir;
     use std::path::PathBuf;
 
     #[test]
     fn candidate_includes_current_exe_name_match_unix() {
         #[cfg(unix)]
         {
-            let current = PathBuf::from("/tmp/ipc-benchmark");
+            let current = get_temp_dir().join("ipc-benchmark");
             let cands = BenchmarkRunner::candidate_server_binaries_for_test(&current, |_| None);
             assert!(cands.iter().any(|p| p == &current));
         }
@@ -1674,17 +1750,27 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn candidate_includes_current_exe_name_match_windows() {
-        let current = PathBuf::from("C:\\tmp\\ipc-benchmark.exe");
+        let current = get_temp_dir().join("ipc-benchmark.exe");
         let cands = BenchmarkRunner::candidate_server_binaries_for_test(&current, |_| None);
         assert!(cands.iter().any(|p| p == &current));
     }
 
     #[test]
     fn candidate_includes_env_hints() {
+        let temp_dir = get_temp_dir();
+        let dash_var_path = temp_dir
+            .join("from-dash-var")
+            .to_string_lossy()
+            .into_owned();
+        let underscore_var_path = temp_dir
+            .join("from-underscore-var")
+            .to_string_lossy()
+            .into_owned();
+
         let current = PathBuf::from("/not/matching/name");
-        let env = |k: &str| match k {
-            "CARGO_BIN_EXE_ipc-benchmark" => Some(String::from("/tmp/from-dash-var")),
-            "CARGO_BIN_EXE_ipc_benchmark" => Some(String::from("/tmp/from-underscore-var")),
+        let env = move |k: &str| match k {
+            "CARGO_BIN_EXE_ipc-benchmark" => Some(dash_var_path.clone()),
+            "CARGO_BIN_EXE_ipc_benchmark" => Some(underscore_var_path.clone()),
             _ => None,
         };
         let cands = BenchmarkRunner::candidate_server_binaries_for_test(&current, env);
@@ -1692,10 +1778,8 @@ mod tests {
             .iter()
             .map(|p| p.to_string_lossy().to_string())
             .collect();
-        assert!(cand_strs.iter().any(|s| s.ends_with("/tmp/from-dash-var")));
-        assert!(cand_strs
-            .iter()
-            .any(|s| s.ends_with("/tmp/from-underscore-var")));
+        assert!(cand_strs.iter().any(|s| s.ends_with("from-dash-var")));
+        assert!(cand_strs.iter().any(|s| s.ends_with("from-underscore-var")));
     }
 
     #[test]
@@ -1765,7 +1849,7 @@ mod tests {
             buffer_size: 4096,
             host: "127.0.0.1".to_string(),
             port: 9001,
-            socket_path: "/tmp/x".into(),
+            socket_path: get_temp_dir().join("x.sock").to_string_lossy().into_owned(),
             shared_memory_name: "shm-x".into(),
             max_connections: 16,
             message_queue_depth: 10,

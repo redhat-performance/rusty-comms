@@ -25,6 +25,9 @@ target
 *.json*
 *.log*
 *.test*
+*.swp*
+*.swo*
+*.gz
 
 # Python
 venv/

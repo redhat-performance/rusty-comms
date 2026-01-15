@@ -1,0 +1,86 @@
+IPC Benchmark with Direct Memory Shared Memory - Setup Instructions
+====================================================================
+
+## What's Included
+
+This archive contains the complete IPC benchmark suite with the new
+experimental direct memory shared memory implementation.
+
+## System Requirements
+
+- Rust toolchain (1.70+)
+- Linux system (for full functionality including PMQ)
+- Build essentials (gcc, make, etc.)
+
+## Quick Start
+
+1. Extract the archive:
+   tar -xzf ipc-benchmark-shm-direct.tar.gz
+   cd rusty-comms
+
+2. Build the project:
+   cargo build --release
+
+3. Run tests:
+   cargo test --lib
+
+4. Test the direct memory SHM implementation:
+   ./target/release/ipc-benchmark -m shm --blocking --shm-direct -i 100
+
+5. Compare with ring buffer SHM:
+   ./target/release/ipc-benchmark -m shm --blocking -i 100
+
+## New Features
+
+### Direct Memory Shared Memory (--shm-direct flag)
+
+A high-performance C-style IPC implementation using:
+- Direct memcpy (no serialization overhead)
+- pthread mutex + condition variable synchronization
+- #[repr(C)] memory layout
+- ~3x faster than ring buffer implementation
+
+**Usage:**
+  ipc-benchmark -m shm --blocking --shm-direct [OPTIONS]
+
+**Performance:**
+  Mean latency: ~7 μs (vs ring buffer: ~20 μs)
+  Max latency:  ~22 μs (vs ring buffer: ~10 ms)
+
+## Documentation
+
+- README.md - Full project documentation
+- METHODOLOGY_CHANGE.md - Details on the timestamp methodology
+- src/ipc/shared_memory_direct.rs - Direct memory implementation
+
+## Testing
+
+Run all tests:
+  cargo test --lib
+
+Run specific direct memory SHM tests:
+  cargo test shared_memory_direct::tests --lib
+
+## Benchmarking
+
+One-way latency test:
+  ./target/release/ipc-benchmark -m shm --blocking --shm-direct \
+    -i 1000 -s 1024 --one-way
+
+Compare all mechanisms:
+  ./target/release/ipc-benchmark -m all --blocking -i 100
+
+## Recent Bug Fixes
+
+Commit c990079: Fixed MessageType serialization bug
+- Added From<u32> trait for MessageType enum
+- Fixed server not recognizing Shutdown messages
+- Eliminated benchmark hangs
+
+## License
+
+Apache 2.0 - See LICENSE file
+
+## Support
+
+For issues or questions, refer to the README.md or CONTRIBUTING.md

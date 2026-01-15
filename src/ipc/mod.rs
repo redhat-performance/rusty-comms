@@ -53,21 +53,76 @@ use thiserror::Error;
 use time::OffsetDateTime;
 use tokio::sync::mpsc;
 
+use crate::utils::get_temp_socket_path;
+
 // Public module exports for specific transport implementations
 #[cfg(target_os = "linux")]
 pub mod posix_message_queue;
+#[cfg(target_os = "linux")]
+pub mod posix_message_queue_blocking;
 pub mod shared_memory;
+pub mod shared_memory_blocking;
+#[cfg(unix)]
+pub mod shared_memory_direct;
 pub mod tcp_socket;
+pub mod tcp_socket_blocking;
 #[cfg(unix)]
 pub mod unix_domain_socket;
+#[cfg(unix)]
+pub mod unix_domain_socket_blocking;
 
 // Re-export transport implementations for convenient access
 pub use self::shared_memory::SharedMemoryTransport;
 #[cfg(target_os = "linux")]
 pub use posix_message_queue::PosixMessageQueueTransport;
+#[cfg(target_os = "linux")]
+pub use posix_message_queue_blocking::BlockingPosixMessageQueue;
+pub use shared_memory_blocking::BlockingSharedMemory;
+#[cfg(unix)]
+pub use shared_memory_direct::BlockingSharedMemoryDirect;
 pub use tcp_socket::TcpSocketTransport;
+pub use tcp_socket_blocking::BlockingTcpSocket;
 #[cfg(unix)]
 pub use unix_domain_socket::UnixDomainSocketTransport;
+#[cfg(unix)]
+pub use unix_domain_socket_blocking::BlockingUnixDomainSocket;
+
+/// Get current monotonic time in nanoseconds.
+///
+/// This function provides access to a monotonic clock (CLOCK_MONOTONIC on Linux)
+/// which is not affected by NTP adjustments or system time changes.
+///
+/// Monotonic clocks measure time from an arbitrary starting point (typically system
+/// boot) and only move forward, making them ideal for measuring intervals and
+/// latencies without worrying about time adjustments.
+///
+/// ## Returns
+/// Current monotonic time in nanoseconds since an unspecified epoch
+///
+/// ## Platform Support
+/// - **Linux/Unix**: Uses CLOCK_MONOTONIC via nix crate
+/// - **Other platforms**: Falls back to system time (less accurate)
+pub fn get_monotonic_time_ns() -> u64 {
+    #[cfg(unix)]
+    {
+        use nix::time::{clock_gettime, ClockId};
+        match clock_gettime(ClockId::CLOCK_MONOTONIC) {
+            Ok(timespec) => {
+                (timespec.tv_sec() as u64) * 1_000_000_000 + (timespec.tv_nsec() as u64)
+            }
+            Err(_) => {
+                // Fallback to system time if monotonic clock fails
+                OffsetDateTime::now_utc().unix_timestamp_nanos() as u64
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // Non-Unix platforms: fallback to system time
+        // Note: This is less accurate for latency measurement
+        OffsetDateTime::now_utc().unix_timestamp_nanos() as u64
+    }
+}
 
 /// Custom error types for IPC operations.
 #[derive(Error, Debug)]
@@ -200,6 +255,47 @@ pub enum MessageType {
     /// Used for pure round-trip latency measurement with minimal
     /// processing overhead.
     Pong,
+
+    /// Shutdown message (signals client completion)
+    ///
+    /// Special control message sent by the client to signal that
+    /// all test messages have been sent and the server should
+    /// terminate gracefully. Only used by mechanisms that lack
+    /// connection-based semantics (e.g., POSIX Message Queues).
+    Shutdown,
+}
+
+impl From<u32> for MessageType {
+    /// Convert u32 discriminant back to MessageType enum.
+    ///
+    /// This is used by direct memory shared memory implementation to
+    /// deserialize message types from raw memory without serde overhead.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The u32 discriminant value
+    ///
+    /// # Returns
+    ///
+    /// The corresponding MessageType variant, defaulting to OneWay for unknown values
+    fn from(value: u32) -> Self {
+        match value {
+            0 => MessageType::OneWay,
+            1 => MessageType::Request,
+            2 => MessageType::Response,
+            3 => MessageType::Ping,
+            4 => MessageType::Pong,
+            5 => MessageType::Shutdown,
+            _ => {
+                // Default to OneWay for unknown values (shouldn't happen in practice)
+                tracing::warn!(
+                    "Unknown MessageType discriminant: {}, defaulting to OneWay",
+                    value
+                );
+                MessageType::OneWay
+            }
+        }
+    }
 }
 
 impl Message {
@@ -220,13 +316,92 @@ impl Message {
     ///
     /// The timestamp is captured at creation time using high-precision
     /// system timing, providing the baseline for latency calculations.
+    ///
+    /// ## Note for Blocking Mode
+    ///
+    /// For accurate IPC latency measurement in blocking mode, use
+    /// `new_for_blocking()` instead which captures the timestamp using
+    /// a monotonic clock right before serialization.
     pub fn new(id: u64, payload: Vec<u8>, message_type: MessageType) -> Self {
         Self {
             id,
-            timestamp: OffsetDateTime::now_utc().unix_timestamp_nanos() as u64,
+            timestamp: get_monotonic_time_ns(), // Use monotonic clock for both async and blocking
             payload,
             message_type,
         }
+    }
+
+    /// Create a new message for blocking mode with monotonic timestamp
+    ///
+    /// This method creates a message and captures the timestamp using a
+    /// monotonic clock (CLOCK_MONOTONIC on Linux). The monotonic clock is
+    /// not affected by NTP adjustments or system time changes.
+    ///
+    /// ## Parameters
+    /// - `id`: Unique identifier for the message
+    /// - `payload`: Message content as byte vector
+    /// - `message_type`: Type classification for the message
+    ///
+    /// ## Returns
+    /// Message with monotonic timestamp captured at creation time
+    ///
+    /// ## Use Case
+    ///
+    /// This method should be used by blocking transport implementations
+    /// to capture timestamps right before serialization, providing accurate
+    /// IPC latency measurements that exclude serialization overhead from
+    /// the measurement.
+    pub fn new_for_blocking(id: u64, payload: Vec<u8>, message_type: MessageType) -> Self {
+        Self {
+            id,
+            timestamp: get_monotonic_time_ns(),
+            payload,
+            message_type,
+        }
+    }
+
+    /// Update the message timestamp to current monotonic time
+    ///
+    /// This method updates the timestamp field to the current monotonic
+    /// time, which is useful for capturing the timestamp right before
+    /// serialization in blocking transport implementations.
+    ///
+    /// ## Use Case
+    ///
+    /// Used in blocking mode to capture timestamp after message creation
+    /// but right before serialization and transmission, ensuring accurate
+    /// IPC latency measurement.
+    pub fn set_timestamp_now(&mut self) {
+        self.timestamp = get_monotonic_time_ns();
+    }
+
+    /// Get the byte offset of the timestamp field in bincode-serialized buffer
+    ///
+    /// Returns the offset range where the timestamp (u64) is located in
+    /// a bincode-serialized Message. This enables updating the timestamp
+    /// in-place after serialization, minimizing work between timestamp
+    /// capture and IPC syscall.
+    ///
+    /// ## Bincode Serialization Layout
+    ///
+    /// ```text
+    /// Offset  Size  Field
+    /// 0       8     id (u64)
+    /// 8       8     timestamp (u64)  ← This is what we return
+    /// 16      N     payload (Vec<u8> with length prefix)
+    /// 16+N    1     message_type (enum as u8)
+    /// ```
+    ///
+    /// ## Returns
+    ///
+    /// Range (8..16) representing the timestamp location in serialized buffer
+    ///
+    /// ## Use Case
+    ///
+    /// Used in blocking transport send_blocking() methods to update timestamp
+    /// immediately before IPC syscall without re-serializing entire message.
+    pub fn timestamp_offset() -> std::ops::Range<usize> {
+        8..16
     }
 
     /// Get the message size in bytes
@@ -396,7 +571,7 @@ impl Default for TransportConfig {
     /// - Buffer size: 8KB (good balance of memory usage and performance)
     /// - Host: localhost (127.0.0.1) for local testing
     /// - Port: 8080 (commonly available port above privileged range)
-    /// - Socket path: /tmp/ipc_benchmark.sock (writable temporary location)
+    /// - Socket path: System temp directory + ipc_benchmark.sock (cross-platform)
     /// - Shared memory: ipc_benchmark_shm (descriptive unique name)
     /// - Max connections: 16 (reasonable concurrency for most systems)
     /// - Queue depth: 10 (typical system default for message queues)
@@ -406,7 +581,7 @@ impl Default for TransportConfig {
             buffer_size: 8192,
             host: "127.0.0.1".to_string(),
             port: 8080,
-            socket_path: "/tmp/ipc_benchmark.sock".to_string(),
+            socket_path: get_temp_socket_path("ipc_benchmark.sock"),
             shared_memory_name: "ipc_benchmark_shm".to_string(),
             max_connections: 16, // Default to support up to 16 concurrent connections
             message_queue_depth: 10, // Default POSIX Message Queue depth
@@ -837,9 +1012,440 @@ impl TransportFactory {
     }
 }
 
+/// Blocking/synchronous transport interface.
+///
+/// This trait defines the interface for IPC transports that use traditional
+/// blocking I/O operations from the standard library. It parallels the async
+/// `IpcTransport` trait but uses synchronous operations instead of async/await.
+///
+/// # Differences from IpcTransport Trait
+///
+/// - All methods are synchronous (no `async fn`)
+/// - Operations block the calling thread until complete
+/// - No Tokio runtime required
+/// - Uses std::net, std::os::unix::net, and similar std types
+///
+/// # Blocking Behavior
+///
+/// Methods in this trait will block the current thread:
+/// - `send_blocking()` blocks until message is fully sent
+/// - `receive_blocking()` blocks until message is available
+/// - `start_server_blocking()` blocks during initial setup
+/// - `start_client_blocking()` blocks during connection establishment
+///
+/// # Error Handling
+///
+/// All methods return `Result<T>` and should propagate errors using `?`.
+/// Common error conditions include:
+/// - Connection failures (network unreachable, refused, timeout)
+/// - I/O errors (broken pipe, connection reset)
+/// - Serialization errors (invalid message format)
+/// - Resource errors (out of memory, file descriptor limits)
+///
+/// # Thread Safety
+///
+/// Implementers must be `Send` to allow transfer between threads, but
+/// are not required to be `Sync` as blocking transports are typically
+/// not shared across threads simultaneously.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use ipc_benchmark::ipc::{BlockingTransport, TransportConfig, Message, MessageType};
+/// use ipc_benchmark::ipc::BlockingTransportFactory;
+/// use ipc_benchmark::cli::IpcMechanism;
+///
+/// # fn example() -> anyhow::Result<()> {
+/// // Create a blocking transport (use false for ring buffer mode)
+/// let mut transport = BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false)?;
+///
+/// // Configure transport
+/// let config = TransportConfig::default();
+///
+/// // Start client (blocks until connected)
+/// transport.start_client_blocking(&config)?;
+///
+/// // Send message (blocks until sent)
+/// let msg = Message::new(1, vec![0u8; 1024], MessageType::OneWay);
+/// transport.send_blocking(&msg)?;
+///
+/// // Close connection
+/// transport.close_blocking()?;
+/// # Ok(())
+/// # }
+/// ```
+pub trait BlockingTransport: Send {
+    /// Start the transport in server mode.
+    ///
+    /// This method initializes the transport to accept incoming connections.
+    /// It performs all necessary setup including:
+    /// - Binding to sockets/ports/paths
+    /// - Creating shared memory regions
+    /// - Opening message queues
+    /// - Accepting initial connections
+    ///
+    /// This method blocks until the server is ready to receive messages.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Transport-specific configuration (ports, paths, buffer sizes)
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - Server started and ready to receive
+    /// * `Err(anyhow::Error)` - Server setup failed
+    ///
+    /// # Errors
+    ///
+    /// Common errors include:
+    /// - Address already in use (port/socket conflict)
+    /// - Permission denied (insufficient privileges)
+    /// - Invalid configuration (malformed paths, invalid ports)
+    fn start_server_blocking(&mut self, config: &TransportConfig) -> Result<()>;
+
+    /// Start the transport in client mode.
+    ///
+    /// This method initializes the transport to connect to an existing server.
+    /// It performs connection establishment and any necessary handshaking.
+    ///
+    /// This method blocks until the connection is established.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Transport-specific configuration (ports, paths, buffer sizes)
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - Connected and ready to send/receive
+    /// * `Err(anyhow::Error)` - Connection failed
+    ///
+    /// # Errors
+    ///
+    /// Common errors include:
+    /// - Connection refused (server not running)
+    /// - Connection timeout (server not responding)
+    /// - Network unreachable (routing issues)
+    fn start_client_blocking(&mut self, config: &TransportConfig) -> Result<()>;
+
+    /// Send a message through the transport.
+    ///
+    /// This method serializes the message and transmits it to the peer.
+    /// It blocks until the message is fully sent (written to OS buffers).
+    ///
+    /// # Arguments
+    ///
+    /// * `message` - The message to send (will be serialized)
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - Message sent successfully
+    /// * `Err(anyhow::Error)` - Send failed
+    ///
+    /// # Errors
+    ///
+    /// Common errors include:
+    /// - Broken pipe (peer disconnected)
+    /// - Connection reset (peer crashed)
+    /// - Serialization failure (invalid message data)
+    /// - Buffer full (backpressure, should retry or fail)
+    ///
+    /// # Performance
+    ///
+    /// This method blocks until the send completes. For large messages,
+    /// this may take significant time. The actual blocking behavior depends
+    /// on the underlying transport (TCP buffering, shared memory availability, etc).
+    fn send_blocking(&mut self, message: &Message) -> Result<()>;
+
+    /// Receive a message from the transport.
+    ///
+    /// This method blocks until a complete message is available, then
+    /// deserializes and returns it.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Message)` - Message received and deserialized
+    /// * `Err(anyhow::Error)` - Receive failed
+    ///
+    /// # Errors
+    ///
+    /// Common errors include:
+    /// - Connection reset (peer disconnected)
+    /// - Deserialization failure (corrupted data)
+    /// - Timeout (if configured)
+    /// - Peer shutdown gracefully (returns EOF)
+    ///
+    /// # Blocking Behavior
+    ///
+    /// This method blocks indefinitely until:
+    /// - A message arrives and is successfully deserialized
+    /// - The connection is closed by peer
+    /// - An error occurs
+    ///
+    /// There is no built-in timeout. Callers should use platform-specific
+    /// timeout mechanisms if needed (SO_RCVTIMEO on sockets, etc).
+    fn receive_blocking(&mut self) -> Result<Message>;
+
+    /// Close the transport and release resources.
+    ///
+    /// This method cleanly shuts down the transport, closing connections
+    /// and releasing any allocated resources (file descriptors, memory, etc).
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - Transport closed successfully
+    /// * `Err(anyhow::Error)` - Cleanup failed (resources may be leaked)
+    ///
+    /// # Errors
+    ///
+    /// Errors during close are typically non-fatal and can often be ignored,
+    /// but may indicate resource leaks or incomplete cleanup.
+    ///
+    /// # Note
+    ///
+    /// After calling `close_blocking()`, the transport should not be used.
+    /// Attempting further operations may panic or return errors.
+    fn close_blocking(&mut self) -> Result<()>;
+}
+
+/// Factory for creating blocking transport instances.
+///
+/// This factory provides a centralized way to instantiate the appropriate
+/// blocking transport implementation based on the IPC mechanism. It mirrors
+/// the `TransportFactory` pattern used for async transports.
+///
+/// # Design Pattern
+///
+/// This uses the Factory pattern to:
+/// - Abstract away concrete transport types
+/// - Provide a consistent instantiation interface
+/// - Enable easy addition of new transport types
+/// - Support dynamic dispatch via trait objects
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use ipc_benchmark::ipc::BlockingTransportFactory;
+/// use ipc_benchmark::cli::IpcMechanism;
+///
+/// # fn example() -> anyhow::Result<()> {
+/// // Create a Unix Domain Socket transport (ring buffer mode)
+/// # #[cfg(unix)]
+/// let transport = BlockingTransportFactory::create(&IpcMechanism::UnixDomainSocket, false)?;
+///
+/// // Create a TCP transport (not applicable for direct memory)
+/// let transport = BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false)?;
+///
+/// // The returned Box<dyn BlockingTransport> can be used polymorphically
+/// # Ok(())
+/// # }
+/// ```
+pub struct BlockingTransportFactory;
+
+impl BlockingTransportFactory {
+    /// Create a blocking transport for the specified IPC mechanism.
+    ///
+    /// This method instantiates the appropriate blocking transport implementation
+    /// based on the mechanism type. The transport is returned as a boxed trait
+    /// object to enable polymorphic usage.
+    ///
+    /// # Arguments
+    ///
+    /// * `mechanism` - The IPC mechanism to create a transport for
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Box<dyn BlockingTransport>)` - Successfully created transport
+    /// * `Err(anyhow::Error)` - Mechanism not supported or creation failed
+    ///
+    /// # Supported Mechanisms
+    ///
+    /// - `UnixDomainSocket` (Unix/Linux only) - Available in Stage 3
+    /// - `TcpSocket` - Available in Stage 3
+    /// - `SharedMemory` - Available in Stage 3
+    /// - `PosixMessageQueue` (Linux only) - Available in Stage 3
+    ///
+    /// # Platform Support
+    ///
+    /// Some mechanisms are platform-specific:
+    /// - Unix Domain Sockets: Unix/Linux/macOS only
+    /// - POSIX Message Queues: Linux only
+    /// - TCP and Shared Memory: All platforms
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The mechanism is `All` (must be expanded first)
+    /// - The mechanism is not supported on this platform
+    /// - The implementation is not yet available (staged rollout)
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use ipc_benchmark::ipc::BlockingTransportFactory;
+    /// use ipc_benchmark::cli::IpcMechanism;
+    ///
+    /// # fn example() -> anyhow::Result<()> {
+    /// // Create transport for TCP
+    /// let mut tcp_transport = BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false)?;
+    ///
+    /// // Platform-specific: Unix Domain Socket
+    /// #[cfg(unix)]
+    /// let mut uds_transport = BlockingTransportFactory::create(&IpcMechanism::UnixDomainSocket, false)?;
+    ///
+    /// // Create direct memory SHM transport
+    /// let mut shm_direct = BlockingTransportFactory::create(&IpcMechanism::SharedMemory, true)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn create(
+        mechanism: &crate::cli::IpcMechanism,
+        use_direct_memory: bool,
+    ) -> Result<Box<dyn BlockingTransport>> {
+        match mechanism {
+            #[cfg(unix)]
+            crate::cli::IpcMechanism::UnixDomainSocket => {
+                Ok(Box::new(BlockingUnixDomainSocket::new()))
+            }
+            crate::cli::IpcMechanism::TcpSocket => Ok(Box::new(BlockingTcpSocket::new())),
+            crate::cli::IpcMechanism::SharedMemory => {
+                if use_direct_memory {
+                    // Direct memory implementation (high performance)
+                    #[cfg(unix)]
+                    {
+                        Ok(Box::new(BlockingSharedMemoryDirect::new()))
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        anyhow::bail!(
+                            "Direct memory shared memory (--shm-direct) is only available on Unix platforms. \
+                             Use the default ring buffer implementation (omit --shm-direct) on Windows."
+                        )
+                    }
+                } else {
+                    // Ring buffer implementation (reliable, default)
+                    Ok(Box::new(BlockingSharedMemory::new()))
+                }
+            }
+            #[cfg(target_os = "linux")]
+            crate::cli::IpcMechanism::PosixMessageQueue => {
+                Ok(Box::new(BlockingPosixMessageQueue::new()))
+            }
+            crate::cli::IpcMechanism::All => {
+                // 'All' should be expanded before calling factory
+                Err(anyhow::anyhow!(
+                    "Cannot create transport for 'All' mechanism. \
+                     Use IpcMechanism::expand_all() first."
+                ))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ===== BlockingTransport Tests =====
+
+    #[test]
+    fn test_blocking_transport_trait_exists() {
+        // This test verifies the trait compiles and is usable
+        // Actual implementations will be tested in Stage 3
+        #[allow(dead_code)]
+        fn assert_is_blocking_transport<T: BlockingTransport>() {}
+
+        // No assertion needed - compilation is the test
+    }
+
+    // ===== BlockingTransportFactory Tests =====
+
+    #[test]
+    fn test_factory_rejects_all_mechanism() {
+        // The 'All' mechanism should return an error
+        let result = BlockingTransportFactory::create(&crate::cli::IpcMechanism::All, false);
+        assert!(result.is_err());
+        if let Err(e) = result {
+            let err_msg = e.to_string();
+            assert!(err_msg.contains("All") || err_msg.contains("expand"));
+        }
+    }
+
+    #[test]
+    fn test_factory_creates_uds_transport() {
+        // Stage 3.1: UDS implementation is now available
+        #[cfg(unix)]
+        {
+            let result = BlockingTransportFactory::create(
+                &crate::cli::IpcMechanism::UnixDomainSocket,
+                false,
+            );
+            assert!(
+                result.is_ok(),
+                "Factory should successfully create UDS transport"
+            );
+        }
+    }
+
+    #[test]
+    fn test_factory_creates_tcp_transport() {
+        // Stage 3.2: TCP implementation is now available
+        let result = BlockingTransportFactory::create(&crate::cli::IpcMechanism::TcpSocket, false);
+        assert!(
+            result.is_ok(),
+            "Factory should successfully create TCP transport"
+        );
+    }
+
+    #[test]
+    fn test_factory_creates_shm_transport() {
+        // Stage 3.3: Shared Memory implementation is now available (ring buffer)
+        let result =
+            BlockingTransportFactory::create(&crate::cli::IpcMechanism::SharedMemory, false);
+        assert!(
+            result.is_ok(),
+            "Factory should successfully create Shared Memory transport"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_factory_creates_shm_direct_transport() {
+        // Direct memory implementation (Unix-only)
+        let result =
+            BlockingTransportFactory::create(&crate::cli::IpcMechanism::SharedMemory, true);
+        assert!(
+            result.is_ok(),
+            "Factory should successfully create Direct Memory Shared Memory transport"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_factory_creates_pmq_transport() {
+        // Stage 3.4: POSIX Message Queue implementation is now available
+        let result =
+            BlockingTransportFactory::create(&crate::cli::IpcMechanism::PosixMessageQueue, false);
+        assert!(
+            result.is_ok(),
+            "Factory should successfully create POSIX Message Queue transport"
+        );
+    }
+
+    // ===== Existing Tests =====
+
+    /// Test message size analysis
+    #[test]
+    fn test_message_size_analysis() {
+        // Test with 100 bytes payload (typical benchmark size)
+        let payload = vec![0u8; 100];
+        let msg = Message::new(1, payload, MessageType::OneWay);
+
+        let serialized = bincode::serialize(&msg).unwrap();
+
+        println!("\n=== Message Size Analysis ===");
+        println!("Payload size: 100 bytes");
+        println!("Bincode serialized size: {} bytes", serialized.len());
+    }
 
     /// Test message creation and basic functionality
     #[test]
@@ -876,10 +1482,95 @@ mod tests {
         assert_eq!(config.buffer_size, 8192);
         assert_eq!(config.host, "127.0.0.1");
         assert_eq!(config.port, 8080);
-        assert_eq!(config.socket_path, "/tmp/ipc_benchmark.sock");
+        // Socket path should be in system temp directory
+        assert!(
+            config.socket_path.ends_with("ipc_benchmark.sock"),
+            "socket_path should end with 'ipc_benchmark.sock', got: {}",
+            config.socket_path
+        );
         assert_eq!(config.shared_memory_name, "ipc_benchmark_shm");
         assert_eq!(config.max_connections, 16);
         assert_eq!(config.message_queue_depth, 10);
         assert_eq!(config.message_queue_name, "ipc_benchmark_pmq");
+    }
+
+    // ===== MessageType Tests =====
+
+    #[test]
+    fn test_message_type_from_known_values() {
+        assert_eq!(MessageType::from(0), MessageType::OneWay);
+        assert_eq!(MessageType::from(1), MessageType::Request);
+        assert_eq!(MessageType::from(2), MessageType::Response);
+        assert_eq!(MessageType::from(3), MessageType::Ping);
+        assert_eq!(MessageType::from(4), MessageType::Pong);
+        assert_eq!(MessageType::from(5), MessageType::Shutdown);
+    }
+
+    #[test]
+    fn test_message_type_from_unknown_defaults_to_oneway() {
+        // Unknown values should default to OneWay
+        assert_eq!(MessageType::from(6), MessageType::OneWay);
+        assert_eq!(MessageType::from(100), MessageType::OneWay);
+        assert_eq!(MessageType::from(u32::MAX), MessageType::OneWay);
+    }
+
+    // ===== Message Tests =====
+
+    #[test]
+    fn test_message_new_for_blocking() {
+        let payload = vec![1, 2, 3, 4, 5];
+        let msg = Message::new_for_blocking(42, payload.clone(), MessageType::Request);
+
+        assert_eq!(msg.id, 42);
+        assert_eq!(msg.payload, payload);
+        assert_eq!(msg.message_type, MessageType::Request);
+        // Timestamp should be set (non-zero)
+        assert!(msg.timestamp > 0);
+    }
+
+    #[test]
+    fn test_message_set_timestamp_now() {
+        let mut msg = Message::new(1, vec![], MessageType::OneWay);
+        let original_ts = msg.timestamp;
+
+        // Wait a tiny bit to ensure time advances
+        std::thread::sleep(std::time::Duration::from_micros(10));
+
+        msg.set_timestamp_now();
+
+        // New timestamp should be different (and greater)
+        assert!(msg.timestamp >= original_ts);
+    }
+
+    // ===== get_monotonic_time_ns Tests =====
+
+    #[test]
+    fn test_get_monotonic_time_ns_returns_value() {
+        let t1 = get_monotonic_time_ns();
+        assert!(t1 > 0, "Monotonic time should be positive");
+
+        // Two calls should return increasing values (or same if very fast)
+        let t2 = get_monotonic_time_ns();
+        assert!(t2 >= t1, "Time should not go backwards");
+    }
+
+    #[test]
+    fn test_get_monotonic_time_ns_advances() {
+        let t1 = get_monotonic_time_ns();
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        let t2 = get_monotonic_time_ns();
+
+        // After 1ms, time should have advanced by at least ~500,000 ns
+        assert!(
+            t2 > t1,
+            "Time should advance after sleep: t1={}, t2={}",
+            t1,
+            t2
+        );
+        assert!(
+            t2 - t1 >= 500_000,
+            "Should advance by at least 0.5ms: diff={}",
+            t2 - t1
+        );
     }
 }

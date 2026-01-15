@@ -36,6 +36,262 @@ This benchmark suite provides a systematic way to evaluate the performance of va
 - **Console Output**: User-friendly, color-coded summaries on `stdout`. Includes a configuration summary at startup and a detailed results summary upon completion.
 - **Detailed Logs**: Structured, timestamped logs written to a file or `stderr` for diagnostics.
 
+## Execution Modes: Async vs. Blocking
+
+This benchmark suite supports **two distinct execution modes**: **async** (default) and **blocking**. Both modes coexist in the same binary, enabling direct performance comparison between asynchronous and synchronous I/O approaches.
+
+### Async Mode (Default)
+
+**Technology:** Tokio runtime with async/await  
+**Best For:** Production-grade async systems, high-concurrency scenarios
+
+Async mode uses Rust's async/await syntax with the Tokio runtime. This is the default behavior and matches most modern Rust networking applications.
+
+```bash
+# Run in async mode (default)
+./target/release/ipc-benchmark -m uds --message-size 1024 --msg-count 10000
+```
+
+**Characteristics:**
+- Uses `tokio::spawn` for tasks
+- Non-blocking I/O operations
+- Efficient for high-concurrency workloads
+- Matches real-world async application behavior
+
+### Blocking Mode
+
+**Technology:** Pure standard library with blocking I/O  
+**Best For:** Synchronous systems, baseline performance comparison
+
+Blocking mode uses only the Rust standard library (`std::net`, `std::thread`, `std::fs`) without any async runtime overhead. Enable it with the `--blocking` flag.
+
+```bash
+# Run in blocking mode
+./target/release/ipc-benchmark -m uds --message-size 1024 --msg-count 10000 --blocking
+```
+
+**Characteristics:**
+- Uses `std::thread` for concurrency
+- Blocking I/O operations
+- No Tokio runtime overhead
+- Simpler execution model
+
+### When to Use Each Mode
+
+| Scenario | Recommended Mode | Reason |
+|----------|------------------|--------|
+| **Comparing I/O models** | Both | Direct performance comparison |
+| **Testing async systems** | Async | Matches your production code |
+| **Testing blocking systems** | Blocking | Matches your production code |
+| **Minimal overhead baseline** | Blocking | No runtime complexity |
+| **High concurrency (>100 connections)** | Async | More efficient resource usage |
+| **Simple request-response** | Either | Similar performance characteristics |
+
+## Shared Memory Implementations
+
+The benchmark suite provides **two shared memory implementations** for blocking mode, each optimized for different use cases:
+
+### Ring Buffer (Default)
+
+The default implementation uses a ring buffer with bincode serialization. It offers flexibility and cross-platform support.
+
+```bash
+# Ring buffer with blocking mode
+ipc-benchmark -m shm --blocking -i 10000
+
+# Ring buffer with async mode (default)
+ipc-benchmark -m shm -i 10000
+```
+
+**Characteristics:**
+- Works on all platforms (Linux, macOS, Windows, BSD)
+- Supports variable message sizes
+- Uses bincode serialization (~15-30 μs overhead)
+- Average latency: ~20 μs
+
+### Direct Memory (`--shm-direct`)
+
+The high-performance implementation uses direct memory access with no serialization overhead. The `--shm-direct` flag automatically enables blocking mode.
+
+```bash
+# Direct memory (auto-enables blocking mode)
+ipc-benchmark -m shm --shm-direct -i 10000
+
+# With CPU affinity for best results
+ipc-benchmark -m shm --shm-direct -i 10000 --server-affinity 0 --client-affinity 1
+```
+
+**Characteristics:**
+- Unix-only (Linux, macOS, BSD - not Windows)
+- Fixed message size (8KB maximum payload)
+- No serialization (direct memcpy)
+- Average latency: ~7 μs (3× faster)
+- Maximum latency: ~22 μs (450× better than ring buffer)
+
+### Implementation Comparison
+
+| Feature | Ring Buffer (Default) | Direct Memory (`--shm-direct`) |
+|---------|----------------------|-------------------------------|
+| **Average Latency** | ~20 μs | ~7 μs (3× faster) |
+| **Max Latency** | ~10 ms | ~22 μs (450× better) |
+| **Serialization** | bincode | None (memcpy) |
+| **Message Size** | Variable | Fixed (8KB max) |
+| **Platform Support** | All | Unix only |
+| **Best For** | Flexibility, cross-platform | Maximum performance |
+
+### When to Use Each Implementation
+
+**Use Direct Memory (`--shm-direct`) when:**
+- Maximum performance is critical
+- Fixed message sizes are acceptable
+- Running on Unix/Linux systems
+
+**Use Ring Buffer (default) when:**
+- Cross-platform support is needed
+- Variable message sizes are required
+- Flexibility is more important than raw speed
+- Windows support is required
+
+For detailed technical comparison, see [SHM_COMPARISON.md](SHM_COMPARISON.md).
+
+## Latency Measurement Methodology
+
+This benchmark suite uses **high-precision monotonic clocks** to measure true IPC latency, matching the methodology used in C-based benchmark programs. This ensures accurate, reproducible measurements that are immune to system clock adjustments.
+
+### Timing Architecture
+
+#### Clock Source
+
+- **Unix/Linux**: Uses `CLOCK_MONOTONIC` via the nix crate
+- **Windows**: Falls back to system time (less precise)
+- **Characteristics**: Monotonic clocks measure time from system boot and are unaffected by NTP adjustments, daylight saving time, or manual clock changes
+
+#### Timestamp Capture Points
+
+**For One-Way Latency Tests:**
+1. **Send Side**: Timestamp captured **immediately before serialization** in `send_blocking()`
+2. **Receive Side**: Timestamp captured **immediately after receiving** the message
+3. **Latency Calculation**: `receive_time - send_time` (both in nanoseconds)
+
+**For Round-Trip Latency Tests:**
+1. **Client Side**: Timestamp captured before `send_blocking()`
+2. **Server Side**: Receives request, sends response immediately
+3. **Client Side**: Timestamp captured after receiving response
+4. **Latency Calculation**: Total elapsed time from send to receive
+
+### What's Measured
+
+The latency measurements include:
+- ✅ **Pure IPC transit time** (message traveling through the IPC mechanism)
+- ✅ **Serialization overhead** (bincode encoding/decoding)
+- ✅ **Kernel context switches** (for mechanisms like Unix domain sockets)
+- ✅ **Queue/buffer operations** (for message queues and shared memory)
+
+The latency measurements exclude:
+- ❌ Message construction time (before timestamp capture)
+- ❌ Application processing logic
+- ❌ Memory allocation for payloads
+
+### Timing Methodology
+
+The benchmark captures timestamps immediately before the IPC syscall:
+
+```rust
+// Create message with monotonic timestamp right before serialization
+let mut message = message.clone();
+message.set_timestamp_now();  // Uses get_monotonic_time_ns()
+let serialized = bincode::serialize(&message)?;
+stream.write_all(&serialized)?;
+
+// On receive side
+let receive_time_ns = get_monotonic_time_ns();
+let latency_ns = receive_time_ns.saturating_sub(message.timestamp);
+```
+
+### Accuracy Considerations
+
+**Why This Matters:**
+- Previous implementations that captured timestamps during `Message::new()` included unnecessary overhead before IPC operations
+- Using monotonic clocks prevents anomalies from system time adjustments during long-running benchmarks
+- Capturing timestamps right before serialization ensures measurements reflect actual IPC performance
+
+**Expected Latency Ranges** (on modern hardware):
+- Unix Domain Sockets: 2-10 µs
+- TCP Localhost: 5-20 µs  
+- Shared Memory: 1-5 µs
+- POSIX Message Queues: 5-15 µs
+
+### Performance Comparison Methodology
+
+To fairly compare async vs. blocking performance:
+
+1. **Use identical test parameters:**
+```bash
+# Async test
+./target/release/ipc-benchmark -m tcp --message-size 1024 --msg-count 50000 \
+  --output-file async_results.json
+
+# Blocking test
+./target/release/ipc-benchmark -m tcp --message-size 1024 --msg-count 50000 \
+  --blocking --output-file blocking_results.json
+```
+
+2. **Control for system variability:**
+   - Run tests on an idle system
+   - Use CPU affinity (`--server-affinity` for receiver, `--client-affinity` for sender)
+   - Run multiple iterations and average results
+   - Use warmup iterations (`--warmup-iterations 1000`)
+
+3. **Analyze the results:**
+```bash
+# Compare latency distributions
+cat async_results.json | jq '.results[0].one_way_results.latency'
+cat blocking_results.json | jq '.results[0].one_way_results.latency'
+
+# Compare throughput
+cat async_results.json | jq '.results[0].one_way_results.throughput'
+cat blocking_results.json | jq '.results[0].one_way_results.throughput'
+```
+
+### Example: Side-by-Side Comparison
+
+```bash
+# Test all mechanisms in both modes
+for mode in "" "--blocking"; do
+  mode_name=$([ -z "$mode" ] && echo "async" || echo "blocking")
+  
+  ./target/release/ipc-benchmark \
+    -m uds tcp shm \
+    --message-size 1024 \
+    --msg-count 50000 \
+    --warmup-iterations 1000 \
+    --percentiles 50 95 99 99.9 \
+    $mode \
+    --output-file ${mode_name}_comparison.json
+done
+
+# Results in: async_comparison.json and blocking_comparison.json
+```
+
+### Implementation Details
+
+**Async Mode (`src/benchmark.rs`):**
+- Uses `tokio::spawn` for concurrent tasks
+- `async fn` with `.await` points
+- `tokio::net::TcpListener`, `tokio::fs::File`
+- Non-blocking operations throughout
+
+**Blocking Mode (`src/benchmark_blocking.rs`):**
+- Uses `std::thread::spawn` for concurrency
+- Pure synchronous functions (no `async`)
+- `std::net::TcpListener`, `std::fs::File`
+- Blocking operations throughout
+- No Tokio dependency in execution path
+
+### Backward Compatibility
+
+**The `--blocking` flag is completely optional.** If omitted, the benchmark runs in async mode exactly as before. This ensures no breaking changes for existing users and scripts.
+
 ## Installation
 
 ### Prerequisites
@@ -73,11 +329,17 @@ The optimized binary will be available at `target/release/ipc-benchmark`.
 ### Basic Usage
 
 ```bash
-# Run benchmark with default settings (prints summary to console, no file output)
+# Run benchmark with default settings (async mode, prints summary to console)
 ipc-benchmark
+
+# Run in blocking mode
+ipc-benchmark --blocking
 
 # Run with specific mechanisms
 ipc-benchmark -m uds shm pmq
+
+# Run in blocking mode with specific mechanisms
+ipc-benchmark -m tcp uds --blocking
 
 # Run all mechanisms (including PMQ)
 ipc-benchmark -m all
@@ -167,14 +429,16 @@ cargo test --all-features
 
 ### CPU affinity controls
 
-You can pin the server and/or client workload to specific CPU cores to reduce jitter and improve reproducibility:
+You can pin the server (message receiver) and/or client (message sender) workload to specific CPU cores to reduce jitter and improve reproducibility:
 
 ```bash
-# Pin server to core 2 and client to core 5
+# Pin server (receiver) to core 2 and client (sender) to core 5
 ipc-benchmark --server-affinity 2 --client-affinity 5 -m uds --msg-count 20000
 ```
 
 Notes:
+- `--server-affinity`: Pins the message **receiver** process to the specified CPU core
+- `--client-affinity`: Pins the message **sender** process to the specified CPU core
 - Affinity is implemented via the `core_affinity` crate. The semantics are best-effort and depend on OS support.
 - On multi-core systems, pinning can reduce cross-core migration and improve latency consistency.
 

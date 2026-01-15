@@ -151,14 +151,14 @@ pub struct Args {
     #[arg(short = 'c', long, default_value_t = crate::defaults::CONCURRENCY, help_heading = CONCURRENCY)]
     pub concurrency: usize,
 
-    /// Pin the server process to a specific CPU core
+    /// Pin the server process to a specific CPU core - the message receiver process
     ///
     /// When provided, the server child process will attempt to set its CPU
     /// affinity to the given core index.
     #[arg(long, value_name = "CORE", help_heading = CONCURRENCY)]
     pub server_affinity: Option<usize>,
 
-    /// Pin the client workload (in the parent process) to a specific CPU core
+    /// Pin the client workload (in the parent process) to a specific CPU core - the message sender process
     ///
     /// When provided, client-side work will be executed in a dedicated thread
     /// bound to the given CPU core.
@@ -298,6 +298,74 @@ pub struct Args {
     #[arg(long, help_heading = ADVANCED)]
     pub include_first_message: bool,
 
+    /// Use synchronous/blocking I/O instead of async I/O.
+    ///
+    /// When this flag is set, the benchmark will use pure standard library
+    /// blocking I/O operations instead of Tokio async/await. This allows
+    /// performance comparison between the two execution models.
+    ///
+    /// Default: false (uses async mode with Tokio runtime)
+    /// Only one mode runs at a time - this flag switches from async to blocking
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Run in blocking mode
+    /// ipc-benchmark -m uds --blocking
+    ///
+    /// # Run in async mode (default)
+    /// ipc-benchmark -m uds
+    /// ```
+    #[arg(long, default_value_t = false, help_heading = ADVANCED)]
+    pub blocking: bool,
+
+    /// Use high-performance direct memory shared memory (auto-enables --blocking).
+    ///
+    /// This flag selects the direct memory implementation instead of the default
+    /// ring buffer. It automatically enables blocking mode since direct memory
+    /// SHM requires blocking I/O.
+    ///
+    /// ## Shared Memory Implementations
+    ///
+    /// | Implementation | Flag | Latency | Platform | Message Size |
+    /// |----------------|------|---------|----------|--------------|
+    /// | Ring buffer | (default) | ~20 μs | All | Variable |
+    /// | Direct memory | --shm-direct | ~7 μs | Unix only | Fixed (8KB) |
+    ///
+    /// ## When to Use Each
+    ///
+    /// **Use `--shm-direct` (direct memory) when:**
+    /// - Maximum performance is critical (3× faster average latency)
+    /// - Fixed message sizes are acceptable
+    /// - Running on Unix/Linux (not Windows)
+    ///
+    /// **Use default (ring buffer) when:**
+    /// - Cross-platform support needed (Windows, macOS, Linux)
+    /// - Variable message sizes required
+    /// - Flexibility is more important than raw speed
+    ///
+    /// ## Performance Benefits of Direct Memory
+    /// - **No serialization** - Direct memcpy with #[repr(C)] layout
+    /// - **3× faster average** - 7 μs vs 20 μs mean latency
+    /// - **450× better tail latency** - 22 μs vs 10 ms maximum
+    ///
+    /// Default: false (uses cross-platform ring buffer implementation)
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # High-performance direct memory (auto-enables blocking)
+    /// ipc-benchmark -m shm --shm-direct -i 10000
+    ///
+    /// # Ring buffer with blocking mode
+    /// ipc-benchmark -m shm --blocking -i 10000
+    ///
+    /// # Ring buffer with async mode (default)
+    /// ipc-benchmark -m shm -i 10000
+    /// ```
+    #[arg(long, default_value_t = false, help_heading = ADVANCED)]
+    pub shm_direct: bool,
+
     /// (Internal) Run the process in server-only mode.
     ///
     /// This is a hidden flag used by the benchmark runner to spawn a child
@@ -318,6 +386,15 @@ pub struct Args {
     /// (Internal) Specifies the exact name for the POSIX Message Queue.
     #[arg(long, hide = true)]
     pub message_queue_name: Option<String>,
+
+    /// (Internal) File path for server to write measured latencies.
+    ///
+    /// Used internally when spawning the server process to communicate
+    /// server-side latency measurements back to the client. The server calculates
+    /// true IPC latency by comparing receive time to the timestamp embedded in
+    /// each message.
+    #[arg(long, hide = true)]
+    pub internal_latency_file: Option<String>,
 }
 
 // Affinity parsing tests live in the tests module below
@@ -875,5 +952,37 @@ mod tests {
         let args = Args::parse_from(["ipc-benchmark"]);
         assert_eq!(args.client_affinity, None);
         assert_eq!(args.server_affinity, None);
+    }
+
+    #[test]
+    fn test_blocking_flag_default_false() {
+        // Verify blocking defaults to false (async mode)
+        let args = Args::parse_from(["ipc-benchmark", "-m", "tcp"]);
+        assert!(!args.blocking, "Blocking should default to false");
+    }
+
+    #[test]
+    fn test_blocking_flag_can_be_set() {
+        // Verify blocking flag can be enabled
+        let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "--blocking"]);
+        assert!(args.blocking, "Blocking flag should be set");
+    }
+
+    #[test]
+    fn test_blocking_flag_works_with_other_args() {
+        // Verify blocking flag works alongside other arguments
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "-m",
+            "tcp",
+            "--blocking",
+            "-s",
+            "1024",
+            "-i",
+            "1000",
+        ]);
+        assert!(args.blocking);
+        assert_eq!(args.message_size, 1024);
+        assert_eq!(args.msg_count, 1000);
     }
 }

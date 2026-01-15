@@ -82,6 +82,17 @@
 /// - Adaptive configuration based on mechanism capabilities
 pub mod benchmark;
 
+/// Blocking benchmarking functionality
+///
+/// Contains the `BlockingBenchmarkRunner` that provides synchronous/blocking
+/// execution of performance tests. This module mirrors the async benchmark
+/// module but uses standard library blocking I/O instead of Tokio. Features:
+/// - Pure standard library implementation (no async/await or Tokio)
+/// - Identical measurement methodology to async version for fair comparison
+/// - Uses `BlockingTransport` trait for blocking I/O operations
+/// - Supports all IPC mechanisms in blocking mode
+pub mod benchmark_blocking;
+
 /// Command-line interface and configuration
 ///
 /// Provides argument parsing using clap and converts user-friendly CLI options
@@ -91,6 +102,14 @@ pub mod benchmark;
 /// - Mechanism selection with "all" expansion capability
 /// - Output file and streaming configuration
 pub mod cli;
+
+/// Execution mode configuration
+///
+/// Defines the execution model (async vs blocking) for IPC operations.
+/// The benchmark supports both Tokio-based async I/O and standard library
+/// blocking I/O, allowing for direct performance comparison between the two
+/// approaches. The mode is selected at runtime via CLI flags.
+pub mod execution_mode;
 
 /// IPC transport implementations and abstractions
 ///
@@ -121,7 +140,24 @@ pub mod metrics;
 /// - System information collection for reproducibility
 pub mod results;
 
+/// Blocking results management module
+///
+/// This module provides result collection, aggregation, and output
+/// functionality using synchronous/blocking I/O operations. It mirrors
+/// the async `results` module but uses standard library blocking I/O.
+///
+/// ## Key Features
+///
+/// - JSON and CSV output formats
+/// - Real-time streaming results during execution (blocking I/O)
+/// - Cross-mechanism comparison and ranking
+/// - System information collection for reproducibility
+pub mod results_blocking;
+
 pub mod utils;
+
+// Re-export commonly used utilities for convenient access
+pub use utils::{get_temp_dir, get_temp_socket_path};
 
 // Re-export key types for convenient library usage
 // These are the primary types that library users will interact with
@@ -129,8 +165,10 @@ pub mod utils;
 /// Main benchmark execution engine
 ///
 /// Re-exported from the benchmark module for easy access. The `BenchmarkRunner`
-/// is the primary interface for executing performance tests.
+/// is the primary interface for executing performance tests in async mode.
+/// `BlockingBenchmarkRunner` provides the blocking/synchronous execution mode.
 pub use benchmark::{BenchmarkConfig, BenchmarkRunner};
+pub use benchmark_blocking::BlockingBenchmarkRunner;
 
 /// Command-line interface types
 ///
@@ -153,8 +191,10 @@ pub use metrics::{LatencyMetrics, ThroughputMetrics};
 /// Result collection and management
 ///
 /// Key types for handling benchmark results, including the main `BenchmarkResults`
-/// structure and the `ResultsManager` for output handling.
+/// structure and the `ResultsManager` for output handling (async mode) and
+/// `BlockingResultsManager` for blocking mode.
 pub use results::{BenchmarkResults, ResultsManager};
+pub use results_blocking::BlockingResultsManager;
 
 /// The current version of the IPC benchmark suite
 ///
