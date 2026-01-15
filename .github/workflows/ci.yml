@@ -91,11 +91,14 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+    - name: Get current date
+      id: date
+      run: echo "date=$(date +'%Y-%m')" >> $GITHUB_OUTPUT
     - name: Cache cargo-audit
       uses: actions/cache@v4
       with:
         path: /usr/local/cargo/bin/cargo-audit
-        key: ${{ runner.os }}-cargo-audit
+        key: ${{ runner.os }}-cargo-audit-${{ steps.date.outputs.date }}
     - name: Run security audit
       run: |
         if [ ! -f "/usr/local/cargo/bin/cargo-audit" ]; then
