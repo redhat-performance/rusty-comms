@@ -1150,4 +1150,152 @@ mod tests {
         // Size should include at least the payload capacity
         assert!(size >= 8192); // Minimum expected payload size
     }
+
+    /// Test that the synchronization flags are atomic and properly aligned.
+    /// On Linux, this uses futex-based synchronization; on other platforms,
+    /// it uses pthread condition variables.
+    #[test]
+    fn test_sync_flags_atomic() {
+        use std::sync::atomic::Ordering;
+        
+        // Create a mock shared message structure to test atomic operations
+        let ready = std::sync::atomic::AtomicI32::new(0);
+        let client_ready = std::sync::atomic::AtomicI32::new(0);
+        
+        // Verify initial state
+        assert_eq!(ready.load(Ordering::Acquire), 0);
+        assert_eq!(client_ready.load(Ordering::Acquire), 0);
+        
+        // Test compare_exchange for ready flag (simulating send)
+        ready.store(1, Ordering::Release);
+        assert_eq!(ready.load(Ordering::Acquire), 1);
+        
+        // Test compare_exchange for client_ready flag (simulating receive ack)
+        let result = client_ready.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire);
+        assert!(result.is_ok());
+        assert_eq!(client_ready.load(Ordering::Acquire), 1);
+        
+        // Reset flags (simulating next message cycle)
+        ready.store(0, Ordering::Release);
+        client_ready.store(0, Ordering::Release);
+        assert_eq!(ready.load(Ordering::Acquire), 0);
+        assert_eq!(client_ready.load(Ordering::Acquire), 0);
+    }
+
+    /// Test that futex syscalls are available on Linux.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_futex_syscall_available() {
+        use std::sync::atomic::{AtomicI32, Ordering};
+        
+        let futex_word = AtomicI32::new(0);
+        
+        // Test FUTEX_WAIT with immediate timeout (should return immediately
+        // since value doesn't match expected)
+        futex_word.store(1, Ordering::SeqCst);
+        
+        // futex_wait expects value 0 but we stored 1, so it should return
+        // immediately with EAGAIN (value mismatch) - this confirms the syscall works
+        let ptr = futex_word.as_ptr();
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_futex,
+                ptr,
+                libc::FUTEX_WAIT,
+                0i32,  // Expected value (doesn't match)
+                std::ptr::null::<libc::timespec>(),
+                std::ptr::null::<i32>(),
+                0i32,
+            )
+        };
+        
+        // Should fail with EAGAIN because value doesn't match
+        assert_eq!(result, -1);
+        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::EAGAIN));
+    }
+
+    /// Test that futex wake works correctly on Linux.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_futex_wake() {
+        use std::sync::atomic::AtomicI32;
+        
+        let futex_word = AtomicI32::new(0);
+        let ptr = futex_word.as_ptr();
+        
+        // Wake with no waiters should succeed (returns 0 waiters woken)
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_futex,
+                ptr,
+                libc::FUTEX_WAKE,
+                1i32,  // Wake at most 1 waiter
+                std::ptr::null::<libc::timespec>(),
+                std::ptr::null::<i32>(),
+                0i32,
+            )
+        };
+        
+        // Should return 0 (no waiters to wake)
+        assert_eq!(result, 0);
+    }
+
+    /// Test concurrent send/receive with explicit synchronization verification.
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn test_concurrent_sync_correctness() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+        use std::time::Duration;
+        use uuid::Uuid;
+
+        let barrier = Arc::new(Barrier::new(2));
+        let shm_name = format!("test_sync_{}", Uuid::new_v4());
+
+        let server_name = shm_name.clone();
+        let server_barrier = barrier.clone();
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingSharedMemoryDirect::new();
+            let config = TransportConfig {
+                shared_memory_name: server_name,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            // Signal ready
+            server_barrier.wait();
+
+            // Receive multiple messages and verify ordering
+            for expected_seq in 0u64..5 {
+                let msg = server.receive_blocking().unwrap();
+                // First 8 bytes contain sequence number
+                let seq = u64::from_le_bytes(msg.payload[0..8].try_into().unwrap());
+                assert_eq!(seq, expected_seq, "Message sequence mismatch");
+            }
+
+            server.close_blocking().unwrap();
+        });
+
+        // Wait for server
+        barrier.wait();
+        thread::sleep(Duration::from_millis(10));
+
+        let mut client = BlockingSharedMemoryDirect::new();
+        let config = TransportConfig {
+            shared_memory_name: shm_name,
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        // Send messages with sequence numbers
+        for seq in 0u64..5 {
+            let mut payload = vec![0u8; 64];
+            payload[0..8].copy_from_slice(&seq.to_le_bytes());
+            let msg = Message::new(seq, payload, MessageType::OneWay);
+            client.send_blocking(&msg).unwrap();
+        }
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
 }

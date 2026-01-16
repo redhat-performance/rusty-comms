@@ -191,6 +191,79 @@ fn host_container_shm_direct_one_way() -> Result<()> {
     Ok(())
 }
 
+/// Test SHM round-trip latency in host-container mode.
+#[test]
+#[ignore = "Requires Podman and container image"]
+fn host_container_shm_round_trip() -> Result<()> {
+    if !prerequisites_available() {
+        return Ok(());
+    }
+
+    let args = Args {
+        mechanisms: vec![IpcMechanism::SharedMemory],
+        one_way: false,
+        round_trip: true,
+        warmup_iterations: 0,
+        blocking: true,
+        msg_count: 10,
+        message_size: 128,
+        run_mode: RunMode::Host,
+        container_image: "localhost/ipc-benchmark:latest".to_string(),
+        container_prefix: "test-rusty-comms".to_string(),
+        include_first_message: true,
+        ..Default::default()
+    };
+
+    let config = BenchmarkConfig::from_args(&args)?;
+    let runner = HostBenchmarkRunner::new(config, IpcMechanism::SharedMemory, args);
+
+    let results = runner.run_blocking(None)?;
+
+    // Verify we got round-trip results
+    assert!(results.round_trip_results.is_some());
+    let round_trip = results.round_trip_results.as_ref().unwrap();
+    assert!(round_trip.throughput.total_messages > 0);
+
+    Ok(())
+}
+
+/// Test SHM-direct round-trip latency in host-container mode.
+#[test]
+#[ignore = "Requires Podman and container image"]
+fn host_container_shm_direct_round_trip() -> Result<()> {
+    if !prerequisites_available() {
+        return Ok(());
+    }
+
+    let args = Args {
+        mechanisms: vec![IpcMechanism::SharedMemory],
+        one_way: false,
+        round_trip: true,
+        warmup_iterations: 0,
+        blocking: true,
+        shm_direct: true, // Use direct memory access
+        msg_count: 10,
+        message_size: 128,
+        run_mode: RunMode::Host,
+        container_image: "localhost/ipc-benchmark:latest".to_string(),
+        container_prefix: "test-rusty-comms".to_string(),
+        include_first_message: true,
+        ..Default::default()
+    };
+
+    let config = BenchmarkConfig::from_args(&args)?;
+    let runner = HostBenchmarkRunner::new(config, IpcMechanism::SharedMemory, args);
+
+    let results = runner.run_blocking(None)?;
+
+    // Verify we got round-trip results
+    assert!(results.round_trip_results.is_some());
+    let round_trip = results.round_trip_results.as_ref().unwrap();
+    assert!(round_trip.throughput.total_messages > 0);
+
+    Ok(())
+}
+
 // =============================================================================
 // TCP Host-Container Tests
 // =============================================================================
@@ -304,6 +377,43 @@ fn host_container_pmq_one_way() -> Result<()> {
     assert!(results.one_way_results.is_some());
     let one_way = results.one_way_results.as_ref().unwrap();
     assert!(one_way.throughput.total_messages > 0);
+
+    Ok(())
+}
+
+/// Test PMQ round-trip latency in host-container mode.
+#[test]
+#[ignore = "Requires Podman and container image"]
+#[cfg(target_os = "linux")]
+fn host_container_pmq_round_trip() -> Result<()> {
+    if !prerequisites_available() {
+        return Ok(());
+    }
+
+    let args = Args {
+        mechanisms: vec![IpcMechanism::PosixMessageQueue],
+        one_way: false,
+        round_trip: true,
+        warmup_iterations: 0,
+        blocking: true,
+        msg_count: 5, // Keep small due to PMQ queue depth limits
+        message_size: 128,
+        run_mode: RunMode::Host,
+        container_image: "localhost/ipc-benchmark:latest".to_string(),
+        container_prefix: "test-rusty-comms".to_string(),
+        include_first_message: true,
+        ..Default::default()
+    };
+
+    let config = BenchmarkConfig::from_args(&args)?;
+    let runner = HostBenchmarkRunner::new(config, IpcMechanism::PosixMessageQueue, args);
+
+    let results = runner.run_blocking(None)?;
+
+    // Verify we got round-trip results
+    assert!(results.round_trip_results.is_some());
+    let round_trip = results.round_trip_results.as_ref().unwrap();
+    assert!(round_trip.throughput.total_messages > 0);
 
     Ok(())
 }

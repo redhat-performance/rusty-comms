@@ -1136,10 +1136,127 @@ mod tests {
     }
 
     #[test]
+    fn test_run_mode_client_with_socket_path() {
+        // Client mode (H2C receiver) with socket path for UDS
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "-m", "uds",
+            "--run-mode", "client",
+            "--socket-path", "/tmp/rusty-comms/uds.sock",
+            "--blocking",
+        ]);
+        assert_eq!(args.run_mode, RunMode::Client);
+        assert_eq!(args.socket_path, Some("/tmp/rusty-comms/uds.sock".to_string()));
+        assert!(args.blocking);
+    }
+
+    #[test]
+    fn test_run_mode_client_with_shm() {
+        // Client mode with shared memory for H2C
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "-m", "shm",
+            "--run-mode", "client",
+            "--shared-memory-name", "/ipc_benchmark_shm",
+            "--blocking",
+        ]);
+        assert_eq!(args.run_mode, RunMode::Client);
+        assert_eq!(args.shared_memory_name, Some("/ipc_benchmark_shm".to_string()));
+    }
+
+    #[test]
+    fn test_run_mode_client_with_shm_direct() {
+        // Client mode with SHM-direct for H2C
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "-m", "shm",
+            "--run-mode", "client",
+            "--shared-memory-name", "/ipc_direct",
+            "--shm-direct",
+        ]);
+        assert_eq!(args.run_mode, RunMode::Client);
+        assert!(args.shm_direct);
+        // shm_direct auto-enables blocking
+    }
+
+    #[test]
+    fn test_run_mode_client_with_pmq() {
+        // Client mode with PMQ for H2C
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "-m", "pmq",
+            "--run-mode", "client",
+            "--message-queue-name", "/ipc_benchmark_mq",
+            "--blocking",
+        ]);
+        assert_eq!(args.run_mode, RunMode::Client);
+        assert_eq!(args.message_queue_name, Some("/ipc_benchmark_mq".to_string()));
+    }
+
+    #[test]
+    fn test_run_mode_client_with_tcp() {
+        // Client mode with TCP for H2C
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "-m", "tcp",
+            "--run-mode", "client",
+            "--host", "172.17.0.1",
+            "--port", "18080",
+            "--blocking",
+        ]);
+        assert_eq!(args.run_mode, RunMode::Client);
+        assert_eq!(args.host, "172.17.0.1");
+        assert_eq!(args.port, 18080);
+    }
+
+    #[test]
     fn test_run_mode_display() {
         assert_eq!(format!("{}", RunMode::Standalone), "standalone");
         assert_eq!(format!("{}", RunMode::Host), "host");
         assert_eq!(format!("{}", RunMode::Client), "client");
+        assert_eq!(format!("{}", RunMode::Sender), "sender");
+    }
+
+    #[test]
+    fn test_run_mode_can_be_set_to_sender() {
+        let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "--run-mode", "sender"]);
+        assert_eq!(args.run_mode, RunMode::Sender);
+    }
+
+    #[test]
+    fn test_run_mode_sender_with_socket_path() {
+        // Sender mode with socket path for C2C UDS
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "-m",
+            "uds",
+            "--run-mode",
+            "sender",
+            "--socket-path",
+            "/tmp/test.sock",
+            "--blocking",
+        ]);
+        assert_eq!(args.run_mode, RunMode::Sender);
+        assert_eq!(args.socket_path, Some("/tmp/test.sock".to_string()));
+        assert!(args.blocking);
+    }
+
+    #[test]
+    fn test_run_mode_sender_with_shm_direct() {
+        // Sender mode with shared memory direct for C2C
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "-m",
+            "shm",
+            "--run-mode",
+            "sender",
+            "--shared-memory-name",
+            "/ipc_test_shm",
+            "--shm-direct",
+        ]);
+        assert_eq!(args.run_mode, RunMode::Sender);
+        assert_eq!(args.shared_memory_name, Some("/ipc_test_shm".to_string()));
+        assert!(args.shm_direct);
     }
 
     #[test]

@@ -1313,6 +1313,8 @@ mod tests {
             Some(1000), // msg_count
             None,       // duration
             0,          // warmup_iterations
+            true,       // one_way
+            true,       // round_trip
         )
     }
 
@@ -2171,6 +2173,8 @@ mod tests {
             Some(1000),
             None,
             0,
+            true,  // one_way
+            true,  // round_trip
         );
         results2.summary.average_latency_ns = Some(5000.0); // Lower
         manager.add_results(results2).unwrap();
@@ -2202,6 +2206,8 @@ mod tests {
             Some(1000),
             None,
             0,
+            true,  // one_way
+            true,  // round_trip
         );
         results2.summary.average_throughput_mbps = 200.0; // Higher
         manager.add_results(results2).unwrap();

@@ -1903,6 +1903,8 @@ mod tests {
             Some(1000),
             None,
             0,
+            true,  // one_way
+            true,  // round_trip
         );
 
         assert_eq!(results.mechanism, IpcMechanism::UnixDomainSocket);
@@ -2323,7 +2325,7 @@ mod tests {
         let mut mgr = ResultsManager::new(None, None).unwrap();
 
         let results =
-            BenchmarkResults::new(IpcMechanism::TcpSocket, 1024, 8192, 1, Some(100), None, 0);
+            BenchmarkResults::new(IpcMechanism::TcpSocket, 1024, 8192, 1, Some(100), None, 0, true, true);
 
         let rt = Runtime::new().unwrap();
         rt.block_on(mgr.add_results(results.clone())).unwrap();
@@ -2336,7 +2338,7 @@ mod tests {
     #[test]
     fn test_benchmark_results_new() {
         let results =
-            BenchmarkResults::new(IpcMechanism::TcpSocket, 1024, 8192, 1, Some(100), None, 0);
+            BenchmarkResults::new(IpcMechanism::TcpSocket, 1024, 8192, 1, Some(100), None, 0, true, true);
 
         assert!(results.one_way_results.is_none());
         assert!(results.round_trip_results.is_none());
@@ -2355,6 +2357,8 @@ mod tests {
             None,
             Some(Duration::from_secs(10)),
             100,
+            true,  // one_way
+            true,  // round_trip
         );
 
         assert_eq!(results.test_config.duration, Some(Duration::from_secs(10)));
