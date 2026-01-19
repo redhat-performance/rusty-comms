@@ -1624,18 +1624,31 @@ port={}",
             }
         };
 
-        // New buffer size logic:
+        // Buffer size logic:
         // 1. If user provides --buffer-size, use it directly.
         // 2. If the mechanism is PMQ, always use a safe, small default.
-        // 3. If in duration mode, use a large fixed size to avoid backpressure.
-        // 4. Otherwise, calculate based on message count.
+        // 3. If the mechanism is SHM, use a fixed 64KB buffer (or 2x message size if larger)
+        //    to enable proper streaming behavior. Previously, sizing to fit all messages
+        //    caused the writer to dump everything instantly while the reader slowly drained,
+        //    leading to huge accumulated latencies.
+        // 4. If in duration mode, use a large fixed size to avoid backpressure.
+        // 5. Otherwise, calculate based on message count (for UDS/TCP which handle backpressure well).
+        let is_shm = self.mechanism == IpcMechanism::SharedMemory;
+        const SHM_DEFAULT_BUFFER_SIZE: usize = 65536; // 64KB - matches H2C behavior
+        const MESSAGE_OVERHEAD: usize = 64;
+
         let buffer_size = self.config.buffer_size.unwrap_or_else(|| {
             if is_pmq {
                 PMQ_SAFE_DEFAULT_BUFFER_SIZE
+            } else if is_shm {
+                // Use fixed buffer for SHM to enable streaming, not batching
+                let min_for_message = (self.config.message_size + MESSAGE_OVERHEAD) * 2;
+                std::cmp::max(SHM_DEFAULT_BUFFER_SIZE, min_for_message)
             } else if self.config.duration.is_some() {
                 DURATION_MODE_BUFFER_SIZE
             } else {
-                // For message-count mode, size the buffer to fit all messages.
+                // For message-count mode with UDS/TCP, size buffer to fit all messages.
+                // These mechanisms handle backpressure via kernel buffers.
                 self.get_msg_count() * (self.config.message_size + 64)
             }
         });
@@ -1653,13 +1666,13 @@ port={}",
             }
         }
 
-        // Validate buffer size for shared memory to prevent EOF errors
+        // Log SHM buffer info - fixed buffer enables streaming, not batching
         if self.mechanism == IpcMechanism::SharedMemory && self.config.duration.is_none() {
             let total_message_data = self.get_msg_count() * (self.config.message_size + 32); // 32 bytes overhead per message
             if buffer_size < total_message_data {
-                warn!(
-                    "Buffer size ({} bytes) is smaller than the total data size ({} bytes). This may cause backpressure, which is a valid test scenario.",
-                    buffer_size,
+                debug!(
+                    "SHM using fixed {}KB buffer for {} bytes of data - streaming mode enabled",
+                    buffer_size / 1024,
                     total_message_data
                 );
             }
