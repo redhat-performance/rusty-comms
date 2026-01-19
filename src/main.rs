@@ -734,7 +734,7 @@ fn run_client_mode_blocking(args: Args) -> Result<()> {
             Ok(message) => {
                 // Calculate actual IPC latency for one-way measurements
                 let receive_time_ns = get_monotonic_time_ns();
-                let _latency_ns = receive_time_ns.saturating_sub(message.timestamp);
+                let latency_ns = receive_time_ns.saturating_sub(message.timestamp);
 
                 // Check for shutdown message
                 if message.message_type == MessageType::Shutdown {
@@ -745,8 +745,9 @@ fn run_client_mode_blocking(args: Args) -> Result<()> {
                 // Handle different message types
                 match message.message_type {
                     MessageType::Request => {
-                        // Echo response for round-trip tests
-                        let response = Message::new(message.id, Vec::new(), MessageType::Response);
+                        // Echo response for round-trip tests with one-way latency
+                        let mut response = Message::new(message.id, Vec::new(), MessageType::Response);
+                        response.one_way_latency_ns = latency_ns; // Include measured one-way latency
                         if let Err(e) = transport.send_blocking(&response) {
                             warn!("Failed to send response: {}. Exiting.", e);
                             break;
@@ -957,18 +958,23 @@ fn run_sender_mode_blocking(args: Args) -> Result<()> {
         }
     }
 
-    // Create metrics collectors
-    // For sender mode, we track either one-way or round-trip latency (not combined)
-    // Default to round-trip if both are enabled, one-way if only one-way is enabled
-    let latency_type = if config.one_way && !config.round_trip {
-        LatencyType::OneWay
+    // Create metrics collectors for both one-way and round-trip when both are enabled
+    let mut one_way_metrics = if config.one_way {
+        Some(MetricsCollector::new(
+            Some(LatencyType::OneWay),
+            config.percentiles.clone(),
+        )?)
     } else {
-        LatencyType::RoundTrip
+        None
     };
-    let mut metrics = MetricsCollector::new(
-        Some(latency_type),
-        config.percentiles.clone(),
-    )?;
+    let mut round_trip_metrics = if config.round_trip {
+        Some(MetricsCollector::new(
+            Some(LatencyType::RoundTrip),
+            config.percentiles.clone(),
+        )?)
+    } else {
+        None
+    };
 
     // Prepare payload
     let payload = vec![0u8; config.message_size];
@@ -985,6 +991,9 @@ fn run_sender_mode_blocking(args: Args) -> Result<()> {
             let send_timestamp_ns = MessageLatencyRecord::current_timestamp_ns();
             let send_time = get_monotonic_time_ns();
 
+            // Send Request only if round-trip is enabled (to get responses)
+            // For one-way only, send OneWay messages (no response expected)
+            // Note: For unidirectional transports like SHM ring buffer, round-trip isn't supported
             let msg_type = if config.round_trip {
                 MessageType::Request
             } else {
@@ -997,13 +1006,20 @@ fn run_sender_mode_blocking(args: Args) -> Result<()> {
                 .send_blocking(&message)
                 .with_context(|| format!("Failed to send message {}", i))?;
 
-            let latency_ns = if config.round_trip {
-                let _response = transport
+            // Get response and extract latencies
+            let (one_way_latency_ns, round_trip_latency_ns) = if config.round_trip {
+                let response = transport
                     .receive_blocking()
                     .with_context(|| format!("Failed to receive response {}", i))?;
-                get_monotonic_time_ns() - send_time
+                let rt_latency = get_monotonic_time_ns() - send_time;
+                // One-way latency comes from receiver's measurement in the response
+                let ow_latency = response.one_way_latency_ns;
+                (ow_latency, rt_latency)
             } else {
-                get_monotonic_time_ns() - send_time
+                // For one-way only (no round-trip), measure send time as approximation
+                // This is not true one-way latency but the best we can do without responses
+                let send_latency = get_monotonic_time_ns() - send_time;
+                (send_latency, 0)
             };
 
             if skip_first && i == 0 {
@@ -1012,18 +1028,30 @@ fn run_sender_mode_blocking(args: Args) -> Result<()> {
                 continue;
             }
 
-            let latency = Duration::from_nanos(latency_ns);
-            metrics.record_message(config.message_size, Some(latency))?;
+            // Record one-way latency if enabled
+            if let Some(ref mut ow_metrics) = one_way_metrics {
+                let latency = Duration::from_nanos(one_way_latency_ns);
+                ow_metrics.record_message(config.message_size, Some(latency))?;
+            }
+
+            // Record round-trip latency if enabled
+            if let Some(ref mut rt_metrics) = round_trip_metrics {
+                let latency = Duration::from_nanos(round_trip_latency_ns);
+                rt_metrics.record_message(config.message_size, Some(latency))?;
+            }
+
+            // For streaming, record the primary latency type
+            let primary_latency = if config.round_trip {
+                Duration::from_nanos(round_trip_latency_ns)
+            } else {
+                Duration::from_nanos(one_way_latency_ns)
+            };
             streaming_records.push(MessageLatencyRecord::new(
                 i,
                 mechanism,
                 config.message_size,
-                if config.round_trip {
-                    LatencyType::RoundTrip
-                } else {
-                    LatencyType::OneWay
-                },
-                latency,
+                if config.round_trip { LatencyType::RoundTrip } else { LatencyType::OneWay },
+                primary_latency,
                 send_timestamp_ns,
             ));
 
@@ -1039,6 +1067,9 @@ fn run_sender_mode_blocking(args: Args) -> Result<()> {
             let send_timestamp_ns = MessageLatencyRecord::current_timestamp_ns();
             let send_time = get_monotonic_time_ns();
 
+            // Send Request only if round-trip is enabled (to get responses)
+            // For one-way only, send OneWay messages (no response expected)
+            // Note: For unidirectional transports like SHM ring buffer, round-trip isn't supported
             let msg_type = if config.round_trip {
                 MessageType::Request
             } else {
@@ -1051,13 +1082,20 @@ fn run_sender_mode_blocking(args: Args) -> Result<()> {
                 .send_blocking(&message)
                 .with_context(|| format!("Failed to send message {}", i))?;
 
-            let latency_ns = if config.round_trip {
-                let _response = transport
+            // Get response and extract latencies
+            let (one_way_latency_ns, round_trip_latency_ns) = if config.round_trip {
+                let response = transport
                     .receive_blocking()
                     .with_context(|| format!("Failed to receive response {}", i))?;
-                get_monotonic_time_ns() - send_time
+                let rt_latency = get_monotonic_time_ns() - send_time;
+                // One-way latency comes from receiver's measurement in the response
+                let ow_latency = response.one_way_latency_ns;
+                (ow_latency, rt_latency)
             } else {
-                get_monotonic_time_ns() - send_time
+                // For one-way only (no round-trip), measure send time as approximation
+                // This is not true one-way latency but the best we can do without responses
+                let send_latency = get_monotonic_time_ns() - send_time;
+                (send_latency, 0)
             };
 
             if skip_first && i == 0 {
@@ -1065,18 +1103,30 @@ fn run_sender_mode_blocking(args: Args) -> Result<()> {
                 continue;
             }
 
-            let latency = Duration::from_nanos(latency_ns);
-            metrics.record_message(config.message_size, Some(latency))?;
+            // Record one-way latency if enabled
+            if let Some(ref mut ow_metrics) = one_way_metrics {
+                let latency = Duration::from_nanos(one_way_latency_ns);
+                ow_metrics.record_message(config.message_size, Some(latency))?;
+            }
+
+            // Record round-trip latency if enabled
+            if let Some(ref mut rt_metrics) = round_trip_metrics {
+                let latency = Duration::from_nanos(round_trip_latency_ns);
+                rt_metrics.record_message(config.message_size, Some(latency))?;
+            }
+
+            // For streaming, record the primary latency type
+            let primary_latency = if config.round_trip {
+                Duration::from_nanos(round_trip_latency_ns)
+            } else {
+                Duration::from_nanos(one_way_latency_ns)
+            };
             streaming_records.push(MessageLatencyRecord::new(
                 i as u64,
                 mechanism,
                 config.message_size,
-                if config.round_trip {
-                    LatencyType::RoundTrip
-                } else {
-                    LatencyType::OneWay
-                },
-                latency,
+                if config.round_trip { LatencyType::RoundTrip } else { LatencyType::OneWay },
+                primary_latency,
                 send_timestamp_ns,
             ));
 
@@ -1086,8 +1136,9 @@ fn run_sender_mode_blocking(args: Args) -> Result<()> {
         }
     }
 
-    // Capture final metrics
-    let final_metrics = metrics.get_metrics();
+    // Capture final metrics from both collectors
+    let one_way_final = one_way_metrics.as_ref().map(|m| m.get_metrics());
+    let round_trip_final = round_trip_metrics.as_ref().map(|m| m.get_metrics());
 
     // Send shutdown message
     let shutdown_msg = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
@@ -1115,12 +1166,12 @@ fn run_sender_mode_blocking(args: Args) -> Result<()> {
         config.round_trip,
     );
 
-    // Store results based on latency type used
-    // Use the add_*_results methods to trigger summary update
-    if config.one_way && !config.round_trip {
-        results.add_one_way_results(final_metrics);
-    } else {
-        results.add_round_trip_results(final_metrics);
+    // Store both one-way and round-trip results if available
+    if let Some(ow_metrics) = one_way_final {
+        results.add_one_way_results(ow_metrics);
+    }
+    if let Some(rt_metrics) = round_trip_final {
+        results.add_round_trip_results(rt_metrics);
     }
 
     results_manager.add_results(results)?;
@@ -1763,9 +1814,10 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
                     break;
                 }
 
-                // If it's a Request, send a Response back
+                // If it's a Request, send a Response back with one-way latency
                 if message.message_type == MessageType::Request {
-                    let response = Message::new(message.id, Vec::new(), MessageType::Response);
+                    let mut response = Message::new(message.id, Vec::new(), MessageType::Response);
+                    response.one_way_latency_ns = latency_ns; // Include measured one-way latency
                     if let Err(e) = transport.send_blocking(&response) {
                         warn!(
                             "Server failed to send response: {}. Exiting server loop.",
@@ -1960,8 +2012,9 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
                 // Message received
                 match msg.message_type {
                     MessageType::Request => {
-                        // Echo a response to complete round-trip flows.
-                        let resp = Message::new(msg.id, Vec::new(), MessageType::Response);
+                        // Echo a response with one-way latency to complete round-trip flows.
+                        let mut resp = Message::new(msg.id, Vec::new(), MessageType::Response);
+                        resp.one_way_latency_ns = latency_ns; // Include measured one-way latency
                         if transport.send(&resp).await.is_err() {
                             info!("Client disconnected during send, exiting server loop.");
                             break;

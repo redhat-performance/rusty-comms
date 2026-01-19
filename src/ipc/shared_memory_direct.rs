@@ -899,6 +899,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 timestamp,
                 payload,
                 message_type,
+                one_way_latency_ns: 0,
             }
         };
 

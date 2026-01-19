@@ -984,7 +984,162 @@ impl BenchmarkRunner {
     ///
     /// - **Iteration Mode**: Send exactly N messages regardless of time
     /// - **Duration Mode**: Send messages continuously for T seconds
+    ///
+    /// For bidirectional mechanisms (TCP, UDS, PMQ): Uses Request/Response pattern to get
+    /// server-measured one-way latency without TCP buffer pollution.
+    ///
+    /// For unidirectional mechanisms (SHM): Uses file-based approach where server writes
+    /// latencies to a temp file and client reads them after completion.
     async fn run_single_threaded_one_way(
+        &self,
+        transport_config: &TransportConfig,
+        metrics_collector: &mut MetricsCollector,
+        mut results_manager: Option<&mut crate::results::ResultsManager>,
+    ) -> Result<()> {
+        // SHM is unidirectional - use file-based latency collection
+        if self.mechanism == IpcMechanism::SharedMemory {
+            return self
+                .run_single_threaded_one_way_file_based(
+                    transport_config,
+                    metrics_collector,
+                    results_manager,
+                )
+                .await;
+        }
+
+        let mut client_transport = TransportFactory::create(&self.mechanism)?;
+
+        // --- Server Process Spawning ---
+        // No latency file needed - we get latency from Response messages
+        let (mut server_process, mut pipe_reader) = self.spawn_server_process(transport_config)?;
+
+        // Wait for the server to signal that it's ready by reading one byte from the pipe.
+        let mut buf = [0; 1];
+        pipe_reader
+            .read_exact(&mut buf)
+            .context("Failed to read server ready signal from pipe")?;
+        debug!("Client received server ready signal for one-way test");
+
+        // --- Client Logic ---
+        let client_config = self.config.clone();
+        let transport_config_clone = transport_config.clone();
+
+        let mechanism_for_err = self.mechanism;
+        let client_future = async move {
+            client_transport
+                .start_client(&transport_config_clone)
+                .await
+                .with_context(|| {
+                    format!(
+                        "start_client failed: mechanism={:?}, uds_path={}, host={}, \
+port={}",
+                        mechanism_for_err,
+                        transport_config_clone.socket_path,
+                        transport_config_clone.host,
+                        transport_config_clone.port
+                    )
+                })?;
+
+            let payload = vec![0u8; client_config.message_size];
+            let start_time = Instant::now();
+            let mut latencies = Vec::new();
+
+            // Use Request/Response pattern for accurate server-measured one-way latency
+            // Server calculates latency = receive_time - message.timestamp and returns in Response
+            if let Some(duration) = client_config.duration {
+                let mut i = 0u64;
+                // Skip warmup canary for first message if configured
+                if !client_config.include_first_message {
+                    let canary = Message::new(u64::MAX, payload.clone(), MessageType::Request);
+                    if client_transport.send(&canary).await.is_ok() {
+                        let _ = client_transport.receive().await; // Discard warmup response
+                    }
+                }
+                while start_time.elapsed() < duration {
+                    let message = Message::new(i, payload.clone(), MessageType::Request);
+                    match client_transport.send(&message).await {
+                        Ok(_) => {
+                            match client_transport.receive().await {
+                                Ok(response) => {
+                                    // Extract server-measured one-way latency from response
+                                    latencies.push(Duration::from_nanos(response.one_way_latency_ns));
+                                    i += 1;
+                                    if let Some(delay) = client_config.send_delay {
+                                        sleep(delay).await;
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            } else {
+                let msg_count = client_config.msg_count.unwrap_or_default();
+
+                // Skip warmup canary for first message if configured
+                if !client_config.include_first_message {
+                    let canary = Message::new(u64::MAX, payload.clone(), MessageType::Request);
+                    if client_transport.send(&canary).await.is_ok() {
+                        let _ = client_transport.receive().await; // Discard warmup response
+                    }
+                }
+
+                for i in 0..msg_count {
+                    let message = Message::new(i as u64, payload.clone(), MessageType::Request);
+                    client_transport.send(&message).await?;
+                    let response = client_transport.receive().await?;
+                    // Extract server-measured one-way latency from response
+                    latencies.push(Duration::from_nanos(response.one_way_latency_ns));
+                    if let Some(delay) = client_config.send_delay {
+                        sleep(delay).await;
+                    }
+                }
+            }
+            client_transport.close().await?;
+            Ok::<Vec<Duration>, anyhow::Error>(latencies)
+        };
+
+        // Execute client work with proper affinity using spawn_with_affinity
+        let latencies =
+            crate::utils::spawn_with_affinity(client_future, self.config.client_affinity).await?;
+
+        // Record all latencies
+        for (i, latency) in latencies.iter().enumerate() {
+            metrics_collector.record_message(self.config.message_size, Some(*latency))?;
+
+            // Stream latency if enabled
+            if let Some(ref mut manager) = results_manager {
+                let send_timestamp_ns = crate::results::MessageLatencyRecord::current_timestamp_ns();
+                let record = crate::results::MessageLatencyRecord::new(
+                    i as u64,
+                    self.mechanism,
+                    self.config.message_size,
+                    crate::metrics::LatencyType::OneWay,
+                    *latency,
+                    send_timestamp_ns,
+                );
+                manager.stream_latency_record(&record).await?;
+            }
+        }
+
+        debug!(
+            "Recorded {} server-measured one-way latencies",
+            latencies.len()
+        );
+
+        // --- Cleanup ---
+        server_process
+            .wait()
+            .context("Server process exited with an error")?;
+
+        Ok(())
+    }
+
+    /// File-based one-way test for unidirectional mechanisms like SHM
+    ///
+    /// Server writes latencies to a temp file, client reads after test completes.
+    async fn run_single_threaded_one_way_file_based(
         &self,
         transport_config: &TransportConfig,
         metrics_collector: &mut MetricsCollector,
@@ -1010,7 +1165,7 @@ impl BenchmarkRunner {
         pipe_reader
             .read_exact(&mut buf)
             .context("Failed to read server ready signal from pipe")?;
-        debug!("Client received server ready signal for one-way test");
+        debug!("Client received server ready signal for one-way test (file-based)");
 
         // --- Client Logic ---
         let client_config = self.config.clone();
@@ -1136,7 +1291,10 @@ port={}",
             line_num += 1;
         }
 
-        debug!("Successfully read and recorded server-measured latencies");
+        debug!(
+            "Successfully read {} server-measured latencies from file",
+            line_num
+        );
 
         // Clean up temporary latency file
         let _ = tokio::fs::remove_file(&latency_file_path).await;

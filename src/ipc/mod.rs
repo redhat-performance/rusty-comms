@@ -201,6 +201,14 @@ pub struct Message {
     /// Enables different test patterns like one-way messaging,
     /// request-response cycles, and ping-pong latency measurement.
     pub message_type: MessageType,
+
+    /// One-way latency measured by receiver (nanoseconds)
+    ///
+    /// When a receiver processes a message, it calculates the one-way latency
+    /// (receive_time - send_timestamp) and includes it in the response.
+    /// This enables accurate one-way latency measurement in C2C mode.
+    #[serde(default)]
+    pub one_way_latency_ns: u64,
 }
 
 /// Message types for different benchmark patterns
@@ -328,6 +336,7 @@ impl Message {
             timestamp: get_monotonic_time_ns(), // Use monotonic clock for both async and blocking
             payload,
             message_type,
+            one_way_latency_ns: 0,
         }
     }
 
@@ -357,6 +366,7 @@ impl Message {
             timestamp: get_monotonic_time_ns(),
             payload,
             message_type,
+            one_way_latency_ns: 0,
         }
     }
 
