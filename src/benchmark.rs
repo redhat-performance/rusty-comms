@@ -996,8 +996,11 @@ impl BenchmarkRunner {
         metrics_collector: &mut MetricsCollector,
         mut results_manager: Option<&mut crate::results::ResultsManager>,
     ) -> Result<()> {
-        // SHM is unidirectional - use file-based latency collection
-        if self.mechanism == IpcMechanism::SharedMemory {
+        // SHM is unidirectional and PMQ has timing issues with async non-blocking I/O
+        // Use file-based latency collection for these mechanisms
+        if self.mechanism == IpcMechanism::SharedMemory
+            || self.mechanism == IpcMechanism::PosixMessageQueue
+        {
             return self
                 .run_single_threaded_one_way_file_based(
                     transport_config,
