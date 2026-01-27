@@ -87,154 +87,41 @@ Blocking mode uses only the Rust standard library (`std::net`, `std::thread`, `s
 | **High concurrency (>100 connections)** | Async | More efficient resource usage |
 | **Simple request-response** | Either | Similar performance characteristics |
 
-## Host-Container Mode
+## Cross-Process Testing (Client/Sender Modes)
 
-The benchmark suite supports running IPC benchmarks between the host system and a Podman container. This enables realistic performance measurement across container isolation boundaries.
-
-### Quick Start
-
-```bash
-# Build container image
-podman build -t localhost/ipc-benchmark:latest .
-
-# Run UDS benchmark with container
-./target/release/ipc-benchmark \
-    -m uds \
-    --run-mode host \
-    --blocking \
-    --msg-count 1000
-```
+The benchmark suite supports running IPC benchmarks between separate processes, including across container boundaries (e.g., Host-to-QM container on RHIVOS). This enables realistic performance measurement across process isolation boundaries.
 
 ### Run Modes
 
 | Mode | Description |
 |------|-------------|
-| `standalone` | Default. Both client and server run on host |
-| `host` | Host drives benchmark, container is responder |
-| `client` | Runs as IPC server/receiver (used in container) |
-| `sender` | Runs as IPC client/sender (used for C2C) |
+| `standalone` | Default. Both client and server run as subprocesses on host |
+| `client` | Runs as IPC server/receiver (use inside container/QM) |
+| `sender` | Runs as IPC client/sender (use on host to connect to container) |
 
-### Supported Mechanisms
+### Manual Cross-Process Testing
 
-All IPC mechanisms work in host-container mode with appropriate container configuration:
+```bash
+# Terminal 1: Start receiver inside a container (e.g., QM)
+podman exec -it qm /path/to/ipc-benchmark \
+    -m tcp --run-mode client --blocking -s 1024
+
+# Terminal 2: Run sender from host
+./target/release/ipc-benchmark \
+    -m tcp --run-mode sender --blocking \
+    -s 1024 -i 10000 --one-way --round-trip \
+    --host <container-ip> \
+    -o results.json
+```
+
+### Supported Mechanisms for Cross-Process
 
 | Mechanism | Container Setup | Notes |
 |-----------|-----------------|-------|
-| UDS | Volume mount `/tmp/rusty-comms` | Full support |
-| SHM | `--ipc=host` | One-way only |
-| TCP | `--network=host` | Full support |
-| PMQ | Mount `/dev/mqueue` + privileged | Limited by kernel |
-
-### Container Management
-
-```bash
-# List benchmark containers
-./target/release/ipc-benchmark --list-containers
-
-# Stop all benchmark containers
-./target/release/ipc-benchmark --stop-container all
-```
-
-### Documentation
-
-- **Setup**: See [docs/PODMAN_SETUP.md](docs/PODMAN_SETUP.md)
-- **Usage**: See [docs/HOST_CONTAINER_USAGE.md](docs/HOST_CONTAINER_USAGE.md)
-
-## Container-to-Container Mode
-
-The benchmark suite also supports running IPC benchmarks between two containers. This enables performance measurement across container isolation boundaries without involving the host.
-
-### Architecture
-
-```
-Container A (Server)                 Container B (Sender)
-┌─────────────────────┐             ┌─────────────────────┐
-│ --run-mode client   │             │ --run-mode sender   │
-│ (IPC server role)   │◄───────────►│ (IPC client role)   │
-│                     │   shared    │                     │
-│ Creates IPC         │   /dev/shm  │ Connects to server  │
-│ resources & waits   │   or volume │ Sends messages      │
-└─────────────────────┘             └─────────────────────┘
-```
-
-### Run Modes for C2C
-
-| Mode | Description |
-|------|-------------|
-| `client` | Runs as IPC server/receiver - creates resources and waits |
-| `sender` | Runs as IPC client/sender - connects and sends messages |
-
-### Quick Start
-
-```bash
-# Build container image
-podman build -t localhost/ipc-benchmark:latest .
-
-# Run the orchestration script
-python3 run_container_to_container_tests.py --all -i 10000
-```
-
-### Manual Container Launch
-
-```bash
-# Create shared directories
-mkdir -p /tmp/c2c_shm /tmp/c2c_output
-chmod 1777 /tmp/c2c_shm /tmp/c2c_output
-
-# Start server container (receiver)
-podman run -d --name c2c-server \
-    --network host \
-    -v /tmp/c2c_shm:/dev/shm:z \
-    -v /tmp/c2c_output:/app/output:z \
-    localhost/ipc-benchmark:latest \
-    -m shm --run-mode client --blocking -s 1024
-
-# Wait for server to be ready, then start sender container
-podman run -d --name c2c-sender \
-    --network host \
-    -v /tmp/c2c_shm:/dev/shm:z \
-    -v /tmp/c2c_output:/app/output:z \
-    localhost/ipc-benchmark:latest \
-    -m shm --run-mode sender --blocking -s 1024 \
-    -i 10000 --one-way \
-    --streaming-output-json /app/output/shm_results.json \
-    --log-file stderr --quiet
-```
-
-### Supported Mechanisms
-
-| Mechanism | Container Setup | Notes |
-|-----------|-----------------|-------|
-| TCP | `--network host` | Full round-trip support |
+| TCP | Network accessible | Full round-trip support |
 | UDS | Shared volume for socket | Full round-trip support |
 | SHM | Shared `/dev/shm` mount | One-way recommended |
-| SHM-Direct | Shared `/dev/shm` mount | One-way, lowest latency |
-
-### Performance Results (Container-to-Container)
-
-| Mechanism | Size | Latency Type | Mean Latency |
-|-----------|------|--------------|--------------|
-| SharedMemory | 64B | one-way | ~1.3 µs |
-| SharedMemory (direct) | 64B | one-way | ~6.6 µs |
-| Unix Domain Socket | 64B | round-trip | ~31 µs |
-| TCP Socket | 64B | round-trip | ~63 µs |
-
-### Orchestration Script
-
-The `run_container_to_container_tests.py` script automates the full C2C benchmark process:
-
-```bash
-# Test all mechanisms with default sizes
-python3 run_container_to_container_tests.py --all
-
-# Test specific mechanism
-python3 run_container_to_container_tests.py -m tcp -s 64,1024,4096 -i 10000
-
-# Run duration-based tests
-python3 run_container_to_container_tests.py -m shm-direct --duration 10s
-```
-
-Results are written to `/tmp/c2c_output/` as JSON files.
+| PMQ | `--ipc=host` + mount `/dev/mqueue` | Full support with shared IPC namespace |
 
 ## Shared Memory Implementations
 

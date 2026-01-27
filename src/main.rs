@@ -37,8 +37,6 @@ use ipc_benchmark::{
     benchmark::{BenchmarkConfig, BenchmarkRunner},
     benchmark_blocking::BlockingBenchmarkRunner,
     cli::{Args, IpcMechanism, RunMode},
-    container::ContainerManager,
-    host_container::HostBenchmarkRunner,
     ipc::{get_monotonic_time_ns, Message, MessageType, TransportFactory},
     results::{BenchmarkResults, ResultsManager},
     results_blocking::BlockingResultsManager,
@@ -66,8 +64,8 @@ use logging::ColorizedFormatter;
 /// # Run Modes
 ///
 /// - **Standalone (default)**: Spawns client as subprocess on same host
-/// - **Host**: Creates Podman container as client, drives tests from host
-/// - **Client**: Runs inside container, connects back to host server
+/// - **Client**: Runs as IPC server (receiver/responder) - for use inside containers
+/// - **Sender**: Connects to server and runs benchmark as sender
 ///
 /// The mode selection happens at runtime based on CLI arguments, allowing the
 /// same binary to run in any mode without recompilation.
@@ -81,25 +79,15 @@ use logging::ColorizedFormatter;
 /// # Run in blocking mode
 /// ipc-benchmark -m uds -s 1024 -i 10000 --blocking
 ///
-/// # Run in host mode (creates container)
-/// ipc-benchmark -m uds --run-mode host -i 10000
+/// # Run as server inside container
+/// ipc-benchmark -m tcp --run-mode client --host 0.0.0.0 --blocking
 ///
-/// # Stop containers
-/// ipc-benchmark --stop-container all
+/// # Run as sender connecting to remote server
+/// ipc-benchmark -m tcp --run-mode sender --host 10.88.0.2 --blocking -i 1000
 /// ```
 fn main() -> Result<()> {
     // Parse CLI arguments to determine execution mode
     let mut args = Args::parse();
-
-    // Handle container stop command first (exits after)
-    if let Some(ref mechanism) = args.stop_container {
-        return stop_container_command(&args, mechanism);
-    }
-
-    // Handle container list command (exits after)
-    if args.list_containers {
-        return list_containers_command(&args);
-    }
 
     // Auto-enable blocking mode when --shm-direct is used
     // Direct memory shared memory is only available in blocking mode
@@ -121,16 +109,8 @@ fn main() -> Result<()> {
                 run_async_mode(args)
             }
         }
-        RunMode::Host => {
-            // Host mode - create container, drive tests
-            if args.blocking {
-                run_host_mode_blocking(args)
-            } else {
-                run_host_mode_async(args)
-            }
-        }
         RunMode::Client => {
-            // Client mode - connect to host (run inside container)
+            // Client mode - run as IPC server (receiver/responder)
             if args.blocking {
                 run_client_mode_blocking(args)
             } else {
@@ -139,7 +119,7 @@ fn main() -> Result<()> {
         }
         RunMode::Sender => {
             // Sender mode - connect to existing server, run benchmark as sender
-            // Used for container-to-container IPC
+            // Used for cross-process IPC (e.g., host to container)
             if args.blocking {
                 run_sender_mode_blocking(args)
             } else {
@@ -149,457 +129,10 @@ fn main() -> Result<()> {
     }
 }
 
-/// Stop container command handler.
-///
-/// Stops the specified benchmark container(s) and exits.
-///
-/// # Arguments
-///
-/// * `args` - CLI arguments containing container configuration
-/// * `mechanism` - Mechanism name ("uds", "shm", "pmq") or "all"
-///
-/// # Returns
-///
-/// * `Ok(())` - Containers stopped successfully
-/// * `Err` - Failed to stop containers
-fn stop_container_command(args: &Args, mechanism: &str) -> Result<()> {
-    let container_manager = ContainerManager::new(&args.container_prefix, &args.container_image);
-
-    if mechanism.to_lowercase() == "all" {
-        info!("Stopping all benchmark containers");
-        container_manager.stop_all()?;
-        container_manager.remove_all()?;
-        info!("All benchmark containers stopped and removed");
-    } else {
-        // Parse mechanism name to IpcMechanism
-        let mech = match mechanism.to_lowercase().as_str() {
-            "uds" => IpcMechanism::UnixDomainSocket,
-            "shm" => IpcMechanism::SharedMemory,
-            "tcp" => IpcMechanism::TcpSocket,
-            #[cfg(target_os = "linux")]
-            "pmq" => IpcMechanism::PosixMessageQueue,
-            _ => {
-                return Err(anyhow::anyhow!(
-                    "Unknown mechanism: '{}'. Use uds, shm, tcp, pmq, or all.",
-                    mechanism
-                ));
-            }
-        };
-
-        let container_name = container_manager.container_name(&mech);
-        info!("Stopping container: {}", container_name);
-        container_manager.stop(&container_name)?;
-        container_manager.remove(&container_name)?;
-        info!("Container '{}' stopped and removed", container_name);
-    }
-
-    Ok(())
-}
-
-/// List all benchmark containers managed by this tool.
-///
-/// Shows container names and their status (running/stopped/not found).
-///
-/// # Arguments
-///
-/// * `args` - Parsed command-line arguments (for container prefix)
-///
-/// # Returns
-///
-/// * `Ok(())` - List completed successfully
-/// * `Err` - Failed to query containers
-fn list_containers_command(args: &Args) -> Result<()> {
-    let container_manager = ContainerManager::new(&args.container_prefix, &args.container_image);
-
-    println!("Benchmark containers (prefix: {}):", args.container_prefix);
-    println!("{:-<50}", "");
-
-    let mechanisms = vec![
-        #[cfg(unix)]
-        IpcMechanism::UnixDomainSocket,
-        IpcMechanism::SharedMemory,
-        IpcMechanism::TcpSocket,
-        #[cfg(target_os = "linux")]
-        IpcMechanism::PosixMessageQueue,
-    ];
-
-    let mut found_any = false;
-    for mechanism in &mechanisms {
-        let container_name = container_manager.container_name(mechanism);
-
-        let exists = container_manager.exists(&container_name)?;
-        if exists {
-            found_any = true;
-            let running = container_manager.is_running(&container_name)?;
-            let status = if running { "running" } else { "stopped" };
-            println!("  {} : {}", container_name, status);
-        }
-    }
-
-    if !found_any {
-        println!("  (no containers found)");
-    }
-
-    println!();
-    println!("Use --stop-container <mechanism> to stop a container.");
-    println!("Use --stop-container all to stop all containers.");
-
-    Ok(())
-}
-
-/// Run benchmark in host mode with async I/O.
-///
-/// Creates Podman container client, drives tests, collects results.
-/// The host acts as server and spawns a container running the benchmark
-/// in client mode.
-///
-/// # Arguments
-///
-/// * `args` - Parsed command-line arguments
-///
-/// # Returns
-///
-/// * `Ok(())` - Benchmark completed successfully
-/// * `Err` - Benchmark or container management failed
-#[tokio::main]
-async fn run_host_mode_async(args: Args) -> Result<()> {
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::util::SubscriberInitExt;
-    use tracing_subscriber::Layer;
-
-    // Configure logging level based on verbosity flags
-    let log_level = match args.verbose {
-        0 => tracing_subscriber::filter::LevelFilter::INFO,
-        1 => tracing_subscriber::filter::LevelFilter::DEBUG,
-        _ => tracing_subscriber::filter::LevelFilter::TRACE,
-    };
-
-    // Configure the detailed log layer (file or stderr)
-    let guard;
-    let detailed_log_layer;
-
-    if let Some("stderr") = args.log_file.as_deref() {
-        detailed_log_layer = tracing_subscriber::fmt::layer()
-            .with_writer(std::io::stderr)
-            .with_filter(log_level)
-            .boxed();
-        guard = None;
-    } else {
-        let file_appender = match args.log_file.as_deref() {
-            Some(path_str) => {
-                let log_path = std::path::Path::new(path_str);
-                let log_dir = log_path
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new("."));
-                let log_filename = log_path
-                    .file_name()
-                    .unwrap_or_else(|| std::ffi::OsStr::new("ipc_benchmark.log"));
-                tracing_appender::rolling::daily(log_dir, log_filename)
-            }
-            None => tracing_appender::rolling::daily(".", "ipc_benchmark.log"),
-        };
-        let (non_blocking_writer, file_guard) = tracing_appender::non_blocking(file_appender);
-        detailed_log_layer = tracing_subscriber::fmt::layer()
-            .with_writer(non_blocking_writer)
-            .with_ansi(false)
-            .with_filter(log_level)
-            .boxed();
-        guard = Some(file_guard);
-    }
-
-    // Stdout layer for user-facing output
-    let stdout_log = if !args.quiet {
-        Some(
-            tracing_subscriber::fmt::layer()
-                .with_writer(std::io::stdout)
-                .event_format(ColorizedFormatter)
-                .with_filter(log_level),
-        )
-    } else {
-        None
-    };
-
-    // Initialize the tracing subscriber
-    tracing_subscriber::registry()
-        .with(detailed_log_layer)
-        .with(stdout_log)
-        .init();
-
-    let _log_guard = guard;
-
-    info!("Starting IPC Benchmark Suite (Host-Container Mode, Async)");
-
-    // Create benchmark configuration from parsed CLI arguments
-    let config = BenchmarkConfig::from_args(&args)?;
-
-    // Calculate today's date for log file naming
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-
-    let log_file_for_manager = match args.log_file.as_deref() {
-        Some("stderr") => Some("stderr".to_string()),
-        Some(path_str) => Some(format!("{}.{}", path_str, today)),
-        None => Some(format!("ipc_benchmark.log.{}", today)),
-    };
-
-    // Initialize async results manager
-    let mut results_manager =
-        ResultsManager::new(args.output_file.as_deref(), log_file_for_manager.as_deref())?;
-
-    // Enable streaming if specified
-    let both_tests_enabled = config.one_way && config.round_trip;
-
-    if let Some(ref streaming_file) = args.streaming_output_json {
-        info!(
-            "Enabling per-message latency streaming to: {:?}",
-            streaming_file
-        );
-        if both_tests_enabled {
-            results_manager.enable_combined_streaming(streaming_file, true)?;
-        } else {
-            results_manager.enable_per_message_streaming(streaming_file)?;
-        }
-    }
-
-    if let Some(ref streaming_file) = args.streaming_output_csv {
-        info!("Enabling CSV latency streaming to: {:?}", streaming_file);
-        results_manager.enable_csv_streaming(streaming_file)?;
-        // Set combined mode for CSV if both tests are enabled
-        if both_tests_enabled {
-            results_manager.set_combined_mode(true);
-        }
-    }
-
-    // Get expanded mechanisms (handles 'all' expansion)
-    let mechanisms = IpcMechanism::expand_all(args.mechanisms.clone());
-
-    // Run benchmarks for each selected mechanism
-    for &mechanism in &mechanisms {
-        info!("Running async host-container benchmark for {}", mechanism);
-
-        let runner = HostBenchmarkRunner::new(config.clone(), mechanism, args.clone());
-
-        match runner.run(Some(&mut results_manager)).await {
-            Ok(results) => {
-                info!(
-                    "Successfully completed async host-container benchmark for {} mechanism",
-                    mechanism
-                );
-                results_manager.add_results(results).await?;
-            }
-            Err(e) => {
-                let error_msg = e.to_string();
-                error!(
-                    "Async host-container benchmark for {} failed: {}. {}",
-                    mechanism,
-                    error_msg,
-                    if args.continue_on_error {
-                        "Continuing to next mechanism."
-                    } else {
-                        "Aborting."
-                    }
-                );
-
-                if !args.continue_on_error {
-                    return Err(e);
-                }
-            }
-        }
-    }
-
-    // Finalize and write results
-    results_manager.finalize().await?;
-    results_manager.print_summary()?;
-
-    info!("IPC Benchmark Suite (Host-Container Mode, Async) completed successfully");
-
-    Ok(())
-}
-
-/// Run benchmark in host mode with blocking I/O.
-///
-/// Creates Podman container client, drives tests, collects results.
-/// The host acts as server and spawns a container running the benchmark
-/// in client mode.
-///
-/// # Arguments
-///
-/// * `args` - Parsed command-line arguments
-///
-/// # Returns
-///
-/// * `Ok(())` - Benchmark completed successfully
-/// * `Err` - Benchmark or container management failed
-fn run_host_mode_blocking(args: Args) -> Result<()> {
-    // Configure logging level based on verbosity flags
-    let log_level = match args.verbose {
-        0 => tracing_subscriber::filter::LevelFilter::INFO,
-        1 => tracing_subscriber::filter::LevelFilter::DEBUG,
-        _ => tracing_subscriber::filter::LevelFilter::TRACE,
-    };
-
-    // Configure the detailed log layer (file or stderr)
-    let guard;
-    let detailed_log_layer;
-
-    if let Some("stderr") = args.log_file.as_deref() {
-        detailed_log_layer = tracing_subscriber::fmt::layer()
-            .with_writer(std::io::stderr)
-            .with_filter(log_level)
-            .boxed();
-        guard = None;
-    } else {
-        let file_appender = match args.log_file.as_deref() {
-            Some(path_str) => {
-                let log_path = std::path::Path::new(path_str);
-                let log_dir = log_path
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new("."));
-                let log_filename = log_path
-                    .file_name()
-                    .unwrap_or_else(|| std::ffi::OsStr::new("ipc_benchmark.log"));
-                tracing_appender::rolling::daily(log_dir, log_filename)
-            }
-            None => tracing_appender::rolling::daily(".", "ipc_benchmark.log"),
-        };
-        let (non_blocking_writer, file_guard) = tracing_appender::non_blocking(file_appender);
-        detailed_log_layer = tracing_subscriber::fmt::layer()
-            .with_writer(non_blocking_writer)
-            .with_ansi(false)
-            .with_filter(log_level)
-            .boxed();
-        guard = Some(file_guard);
-    }
-
-    // Stdout layer for user-facing output
-    let stdout_log = if !args.quiet {
-        Some(
-            tracing_subscriber::fmt::layer()
-                .with_writer(std::io::stdout)
-                .event_format(ColorizedFormatter)
-                .with_filter(log_level),
-        )
-    } else {
-        None
-    };
-
-    // Initialize the tracing subscriber
-    tracing_subscriber::registry()
-        .with(detailed_log_layer)
-        .with(stdout_log)
-        .init();
-
-    let _log_guard = guard;
-
-    info!("Starting IPC Benchmark Suite (Host-Container Mode, Blocking)");
-
-    // Create benchmark configuration from parsed CLI arguments
-    let config = BenchmarkConfig::from_args(&args)?;
-
-    // Calculate today's date for log file naming
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-
-    let log_file_for_manager = match args.log_file.as_deref() {
-        Some("stderr") => Some("stderr".to_string()),
-        Some(path_str) => Some(format!("{}.{}", path_str, today)),
-        None => Some(format!("ipc_benchmark.log.{}", today)),
-    };
-
-    // Initialize blocking results manager
-    let mut results_manager =
-        BlockingResultsManager::new(args.output_file.as_deref(), log_file_for_manager.as_deref())?;
-
-    // Enable streaming if specified
-    let both_tests_enabled = config.one_way && config.round_trip;
-
-    if let Some(ref streaming_file) = args.streaming_output_json {
-        info!(
-            "Enabling per-message latency streaming to: {:?}",
-            streaming_file
-        );
-        if both_tests_enabled {
-            results_manager.enable_combined_streaming(streaming_file, true)?;
-        } else {
-            results_manager.enable_per_message_streaming(streaming_file)?;
-        }
-    }
-
-    if let Some(ref streaming_file) = args.streaming_output_csv {
-        info!("Enabling CSV latency streaming to: {:?}", streaming_file);
-        results_manager.enable_csv_streaming(streaming_file)?;
-        // Set combined mode for CSV if both tests are enabled
-        if both_tests_enabled {
-            results_manager.set_combined_mode(true);
-        }
-    }
-
-    // Get expanded mechanisms (handles 'all' expansion)
-    let mechanisms = IpcMechanism::expand_all(args.mechanisms.clone());
-
-    // Run benchmarks for each selected mechanism
-    for &mechanism in &mechanisms {
-        info!("Running host-container benchmark for {}", mechanism);
-
-        let runner = HostBenchmarkRunner::new(config.clone(), mechanism, args.clone());
-
-        match runner.run_blocking(Some(&mut results_manager)) {
-            Ok(results) => {
-                info!(
-                    "Successfully completed host-container benchmark for {} mechanism",
-                    mechanism
-                );
-                results_manager.add_results(results)?;
-            }
-            Err(e) => {
-                let error_msg = e.to_string();
-                error!(
-                    "Host-container benchmark for {} failed: {}. {}",
-                    mechanism,
-                    error_msg,
-                    if args.continue_on_error {
-                        "Continuing to next mechanism."
-                    } else {
-                        "Aborting."
-                    }
-                );
-
-                if args.continue_on_error {
-                    let mut failed_result = BenchmarkResults::new(
-                        mechanism,
-                        config.message_size,
-                        0,
-                        config.concurrency,
-                        config.msg_count,
-                        config.duration,
-                        config.warmup_iterations,
-                        config.one_way,
-                        config.round_trip,
-                    );
-                    failed_result.set_failure(error_msg);
-                    results_manager.add_results(failed_result)?;
-                } else {
-                    return Err(e);
-                }
-            }
-        }
-    }
-
-    // Finalize results
-    results_manager.finalize()?;
-
-    if let Err(e) = results_manager.print_summary() {
-        error!("Failed to print results summary: {}", e);
-    }
-
-    info!("IPC Benchmark Suite (Host-Container Mode) completed successfully");
-
-    Ok(())
-}
-
 /// Run benchmark in client mode with async I/O.
 ///
-/// Runs inside container, connects back to host server.
-/// This mode is automatically invoked by the host mode when it creates
-/// the container.
+/// Runs as IPC server (receiver/responder) for use inside containers
+/// or for manual cross-process testing.
 ///
 /// # Arguments
 ///
@@ -621,14 +154,13 @@ async fn run_client_mode_async(_args: Args) -> Result<()> {
 
 /// Run benchmark in client mode with blocking I/O.
 ///
-/// Runs inside container, acts as IPC server (receiver/responder).
-/// This mode is automatically invoked by the host when it creates
-/// the container.
+/// Acts as IPC server (receiver/responder). Use this mode for:
+/// - Running inside containers for cross-process testing
+/// - Manual testing where you need a separate server process
 ///
-/// The client mode is essentially the same as `--internal-run-as-server`
-/// but designed for container execution. It:
+/// Workflow:
 /// 1. Sets up IPC transport as server
-/// 2. Signals readiness to stdout
+/// 2. Signals readiness to stdout ("SERVER_READY")
 /// 3. Receives messages and responds (for round-trip tests)
 /// 4. Exits on shutdown message or client disconnect
 ///
@@ -638,18 +170,18 @@ async fn run_client_mode_async(_args: Args) -> Result<()> {
 ///
 /// # Returns
 ///
-/// * `Ok(())` - Client completed successfully
-/// * `Err` - Connection or benchmark failed
+/// * `Ok(())` - Server completed successfully
+/// * `Err` - Connection or execution failed
 fn run_client_mode_blocking(args: Args) -> Result<()> {
     use ipc_benchmark::ipc::BlockingTransportFactory;
 
-    // Minimal logging setup for container mode - log to stderr only
+    // Minimal logging setup for client mode - log to stderr only
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_max_level(tracing::Level::DEBUG)
         .init();
 
-    info!("Starting IPC Benchmark (Client/Container Mode, Blocking)");
+    info!("Starting IPC Benchmark (Client Mode, Blocking)");
 
     // In client mode, we only care about the first mechanism specified
     let mechanism = match args.mechanisms.first() {
@@ -779,9 +311,9 @@ fn run_client_mode_blocking(args: Args) -> Result<()> {
 /// Run the benchmark in sender mode (blocking).
 ///
 /// Sender mode connects to an existing server and runs the benchmark as the
-/// sender/client. This is used for container-to-container IPC where:
-/// - Container A runs in Client mode (acts as IPC server/receiver)
-/// - Container B runs in Sender mode (acts as IPC client/sender)
+/// sender/client. This is used for cross-process IPC where:
+/// - Process A runs in Client mode (acts as IPC server/receiver)
+/// - Process B runs in Sender mode (acts as IPC client/sender)
 ///
 /// The sender collects metrics and outputs results.
 ///

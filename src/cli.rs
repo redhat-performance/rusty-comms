@@ -51,8 +51,8 @@ use std::time::Duration;
 /// Controls how the benchmark operates in terms of process/container architecture:
 ///
 /// - `Standalone`: Default mode. Spawns client as a subprocess on same host.
-/// - `Host`: Server mode. Creates/manages Podman container as client.
-/// - `Client`: Client mode. Runs inside container, connects to host server.
+/// - `Client`: Server mode. Runs as IPC server (receiver/responder).
+/// - `Sender`: Client mode. Connects to server and runs benchmark as sender.
 ///
 /// # Examples
 ///
@@ -60,24 +60,22 @@ use std::time::Duration;
 /// # Standalone mode (default, existing behavior)
 /// ipc-benchmark -m uds --msg-count 1000
 ///
-/// # Host mode - creates container and drives tests
-/// ipc-benchmark -m uds --run-mode host --msg-count 1000
+/// # Client mode - run as IPC server (use inside containers or for manual testing)
+/// ipc-benchmark -m tcp --run-mode client --host 0.0.0.0 --blocking
 ///
-/// # Client mode - used inside container (auto-invoked by host mode)
-/// ipc-benchmark -m uds --run-mode client --socket-path /tmp/rusty-comms/uds.sock
+/// # Sender mode - connect to server and run benchmark
+/// ipc-benchmark -m tcp --run-mode sender --host 10.88.0.2 --blocking -i 1000
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum, Serialize, Deserialize)]
 pub enum RunMode {
     /// Standalone mode - spawn client as subprocess (default, existing behavior)
     #[default]
     Standalone,
-    /// Host/server mode - create container client, drive tests, collect results
-    Host,
-    /// Client mode - run inside container, connect back to host
+    /// Client mode - run as IPC server (receiver/responder)
+    /// Use this inside containers or for manual cross-process testing
     Client,
     /// Sender mode - connect to existing server and run benchmark as sender
-    /// Use this for container-to-container IPC where one container runs as
-    /// Client (server/receiver) and another runs as Sender (client/sender)
+    /// Use this for cross-process IPC (e.g., host to container)
     Sender,
 }
 
@@ -85,7 +83,6 @@ impl fmt::Display for RunMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RunMode::Standalone => write!(f, "standalone"),
-            RunMode::Host => write!(f, "host"),
             RunMode::Client => write!(f, "client"),
             RunMode::Sender => write!(f, "sender"),
         }
@@ -413,87 +410,30 @@ pub struct Args {
     #[arg(long, default_value_t = false, help_heading = ADVANCED)]
     pub shm_direct: bool,
 
-    // --- Host-Container Mode Options ---
+    // --- Run Mode Options ---
     /// Run mode for IPC communication architecture.
     ///
     /// Controls the process/container architecture:
     /// - `standalone` (default): Spawns client as subprocess on same host
-    /// - `host`: Creates Podman container as client, drives tests from host
-    /// - `client`: Runs inside container, connects back to host server
+    /// - `client`: Runs as IPC server (receiver/responder) - use inside containers
+    /// - `sender`: Connects to server and runs benchmark as sender
+    ///
+    /// For cross-process testing (e.g., host to container):
+    /// 1. Copy binary to container: `podman cp ipc-benchmark <container>:/tmp/`
+    /// 2. Start server in container: `podman exec <container> /tmp/ipc-benchmark -m tcp --run-mode client --host 0.0.0.0 --blocking`
+    /// 3. Run sender from host: `./ipc-benchmark -m tcp --run-mode sender --host <container-ip> --blocking`
     ///
     /// # Examples
     ///
     /// ```bash
-    /// # Run as host, auto-create container client
-    /// ipc-benchmark -m uds --run-mode host --msg-count 1000
+    /// # Client mode - run as IPC server
+    /// ipc-benchmark -m tcp --run-mode client --host 0.0.0.0 --blocking
     ///
-    /// # Container client mode (auto-invoked by host mode)
-    /// ipc-benchmark -m uds --run-mode client
+    /// # Sender mode - connect and run benchmark
+    /// ipc-benchmark -m tcp --run-mode sender --host 10.88.0.2 --blocking -i 1000
     /// ```
     #[arg(long, value_enum, default_value_t = RunMode::Standalone, help_heading = ADVANCED)]
     pub run_mode: RunMode,
-
-    /// Stop a running benchmark container.
-    ///
-    /// When provided, stops the Podman container used for IPC benchmarking
-    /// instead of running a benchmark. Can specify mechanism name to stop
-    /// a specific container (e.g., "uds", "shm", "pmq") or use "all" to
-    /// stop all benchmark containers.
-    ///
-    /// # Examples
-    ///
-    /// ```bash
-    /// # Stop the UDS benchmark container
-    /// ipc-benchmark --stop-container uds
-    ///
-    /// # Stop all benchmark containers
-    /// ipc-benchmark --stop-container all
-    /// ```
-    #[arg(long, value_name = "MECHANISM", help_heading = ADVANCED)]
-    pub stop_container: Option<String>,
-
-    /// List all benchmark containers managed by this tool.
-    ///
-    /// When provided, lists all containers with the configured prefix
-    /// (default: "rusty-comms") and their status (running/stopped).
-    /// Does not run a benchmark.
-    ///
-    /// # Examples
-    ///
-    /// ```bash
-    /// # List all benchmark containers
-    /// ipc-benchmark --list-containers
-    /// ```
-    #[arg(long, help_heading = ADVANCED)]
-    pub list_containers: bool,
-
-    /// Container image to use for client containers.
-    ///
-    /// Specifies the Podman image containing the ipc-benchmark binary.
-    /// Used when --run-mode is set to "host".
-    ///
-    /// # Examples
-    ///
-    /// ```bash
-    /// # Use custom image
-    /// ipc-benchmark -m uds --run-mode host --container-image myregistry/ipc-benchmark:v1
-    /// ```
-    #[arg(long, default_value = "localhost/ipc-benchmark:latest", help_heading = ADVANCED)]
-    pub container_image: String,
-
-    /// Container name prefix for benchmark containers.
-    ///
-    /// Containers are named "<prefix>-<mechanism>", e.g., "rusty-comms-uds".
-    /// Used when --run-mode is set to "host".
-    ///
-    /// # Examples
-    ///
-    /// ```bash
-    /// # Use custom prefix
-    /// ipc-benchmark -m uds --run-mode host --container-prefix my-bench
-    /// ```
-    #[arg(long, default_value = "rusty-comms", help_heading = ADVANCED)]
-    pub container_prefix: String,
 
     /// (Internal) Run the process in server-only mode.
     ///
@@ -1124,12 +1064,6 @@ mod tests {
     }
 
     #[test]
-    fn test_run_mode_can_be_set_to_host() {
-        let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "--run-mode", "host"]);
-        assert_eq!(args.run_mode, RunMode::Host);
-    }
-
-    #[test]
     fn test_run_mode_can_be_set_to_client() {
         let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "--run-mode", "client"]);
         assert_eq!(args.run_mode, RunMode::Client);
@@ -1137,7 +1071,7 @@ mod tests {
 
     #[test]
     fn test_run_mode_client_with_socket_path() {
-        // Client mode (H2C receiver) with socket path for UDS
+        // Client mode (receiver in QM/container) with socket path for UDS
         let args = Args::parse_from([
             "ipc-benchmark",
             "-m", "uds",
@@ -1152,7 +1086,7 @@ mod tests {
 
     #[test]
     fn test_run_mode_client_with_shm() {
-        // Client mode with shared memory for H2C
+        // Client mode with shared memory
         let args = Args::parse_from([
             "ipc-benchmark",
             "-m", "shm",
@@ -1166,7 +1100,7 @@ mod tests {
 
     #[test]
     fn test_run_mode_client_with_shm_direct() {
-        // Client mode with SHM-direct for H2C
+        // Client mode with SHM-direct (receiver in QM/container)
         let args = Args::parse_from([
             "ipc-benchmark",
             "-m", "shm",
@@ -1181,7 +1115,7 @@ mod tests {
 
     #[test]
     fn test_run_mode_client_with_pmq() {
-        // Client mode with PMQ for H2C
+        // Client mode with PMQ (receiver in QM/container)
         let args = Args::parse_from([
             "ipc-benchmark",
             "-m", "pmq",
@@ -1195,7 +1129,7 @@ mod tests {
 
     #[test]
     fn test_run_mode_client_with_tcp() {
-        // Client mode with TCP for H2C
+        // Client mode with TCP
         let args = Args::parse_from([
             "ipc-benchmark",
             "-m", "tcp",
@@ -1212,7 +1146,6 @@ mod tests {
     #[test]
     fn test_run_mode_display() {
         assert_eq!(format!("{}", RunMode::Standalone), "standalone");
-        assert_eq!(format!("{}", RunMode::Host), "host");
         assert_eq!(format!("{}", RunMode::Client), "client");
         assert_eq!(format!("{}", RunMode::Sender), "sender");
     }
@@ -1225,7 +1158,7 @@ mod tests {
 
     #[test]
     fn test_run_mode_sender_with_socket_path() {
-        // Sender mode with socket path for C2C UDS
+        // Sender mode with socket path for UDS
         let args = Args::parse_from([
             "ipc-benchmark",
             "-m",
@@ -1243,7 +1176,7 @@ mod tests {
 
     #[test]
     fn test_run_mode_sender_with_shm_direct() {
-        // Sender mode with shared memory direct for C2C
+        // Sender mode with shared memory direct
         let args = Args::parse_from([
             "ipc-benchmark",
             "-m",
@@ -1260,76 +1193,16 @@ mod tests {
     }
 
     #[test]
-    fn test_stop_container_option() {
-        let args = Args::parse_from(["ipc-benchmark", "--stop-container", "uds"]);
-        assert_eq!(args.stop_container, Some("uds".to_string()));
-    }
-
-    #[test]
-    fn test_stop_container_all() {
-        let args = Args::parse_from(["ipc-benchmark", "--stop-container", "all"]);
-        assert_eq!(args.stop_container, Some("all".to_string()));
-    }
-
-    #[test]
-    fn test_list_containers_default() {
-        let args = Args::parse_from(["ipc-benchmark", "-m", "tcp"]);
-        assert!(!args.list_containers);
-    }
-
-    #[test]
-    fn test_list_containers_flag() {
-        let args = Args::parse_from(["ipc-benchmark", "--list-containers"]);
-        assert!(args.list_containers);
-    }
-
-    #[test]
-    fn test_container_image_default() {
-        let args = Args::parse_from(["ipc-benchmark", "-m", "tcp"]);
-        assert_eq!(args.container_image, "localhost/ipc-benchmark:latest");
-    }
-
-    #[test]
-    fn test_container_image_custom() {
-        let args = Args::parse_from([
-            "ipc-benchmark",
-            "-m",
-            "tcp",
-            "--container-image",
-            "myrepo/bench:v1",
-        ]);
-        assert_eq!(args.container_image, "myrepo/bench:v1");
-    }
-
-    #[test]
-    fn test_container_prefix_default() {
-        let args = Args::parse_from(["ipc-benchmark", "-m", "tcp"]);
-        assert_eq!(args.container_prefix, "rusty-comms");
-    }
-
-    #[test]
-    fn test_container_prefix_custom() {
-        let args = Args::parse_from([
-            "ipc-benchmark",
-            "-m",
-            "tcp",
-            "--container-prefix",
-            "my-bench",
-        ]);
-        assert_eq!(args.container_prefix, "my-bench");
-    }
-
-    #[test]
     fn test_run_mode_works_with_blocking() {
         let args = Args::parse_from([
             "ipc-benchmark",
             "-m",
             "tcp",
             "--run-mode",
-            "host",
+            "sender",
             "--blocking",
         ]);
-        assert_eq!(args.run_mode, RunMode::Host);
+        assert_eq!(args.run_mode, RunMode::Sender);
         assert!(args.blocking);
     }
 }

@@ -206,7 +206,7 @@ pub struct Message {
     ///
     /// When a receiver processes a message, it calculates the one-way latency
     /// (receive_time - send_timestamp) and includes it in the response.
-    /// This enables accurate one-way latency measurement in C2C mode.
+    /// This enables accurate one-way latency measurement in cross-process mode.
     #[serde(default)]
     pub one_way_latency_ns: u64,
 }
@@ -590,7 +590,6 @@ impl Default for TransportConfig {
         Self {
             // Default 8KB buffer works for all IPC mechanisms including PMQ
             // (PMQ has system limits, typically 8192 max message size)
-            // SHM host-container mode overrides this to 64KB in host_container.rs
             buffer_size: 8192,
             host: "127.0.0.1".to_string(),
             port: 8080,

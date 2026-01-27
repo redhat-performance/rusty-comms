@@ -115,12 +115,8 @@ fn main() -> Result<()> {
         message_queue_name: None,
         internal_latency_file: None,
 
-        // Host-container mode options (not used in this example)
+        // Run mode (standalone by default)
         run_mode: ipc_benchmark::cli::RunMode::Standalone,
-        stop_container: None,
-        list_containers: false,
-        container_image: "localhost/ipc-benchmark:latest".to_string(),
-        container_prefix: "rusty-comms".to_string(),
     };
 
     println!("Configuration:");

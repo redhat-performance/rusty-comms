@@ -38,9 +38,9 @@
 //! This implementation is only available on Unix platforms (Linux, macOS, BSD)
 //! as it relies on POSIX shared memory and pthread primitives.
 //!
-//! # Container Support
+//! # Cross-Process Support
 //!
-//! This transport works across host-container boundaries when:
+//! This transport works across process boundaries (including containers) when:
 //! - **Linux with `--ipc=host`**: Container shares host's IPC namespace including `/dev/shm`
 //! - **Linux with explicit mount**: Container has `/dev/shm:/dev/shm:rw` volume mount
 //!
@@ -379,7 +379,7 @@ pub struct BlockingSharedMemoryDirect {
 impl BlockingSharedMemoryDirect {
     /// Size of the shared memory segment required for direct memory transport.
     ///
-    /// Use this constant when pre-creating SHM segments for host-container mode.
+    /// Use this constant when pre-creating SHM segments for cross-process mode.
     pub const SEGMENT_SIZE: usize = RawSharedMessage::SIZE;
 
     /// Create a new direct memory shared memory transport.
@@ -403,7 +403,7 @@ impl BlockingSharedMemoryDirect {
         }
     }
 
-    /// Pre-create and initialize a SHM-direct segment for host-container mode.
+    /// Pre-create and initialize a SHM-direct segment for cross-process mode.
     ///
     /// This function creates the shared memory segment and initializes the
     /// pthread mutex/condvar on the host side. The container will then open
@@ -543,9 +543,9 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
             config.shared_memory_name
         );
 
-        // Check if we should open an existing segment (host-container mode)
-        // In host-container mode, the host pre-creates the SHM segment and the
-        // container opens it rather than creating a new one.
+        // Check if we should open an existing segment (cross-process mode)
+        // In cross-process mode, one process pre-creates the SHM segment and the
+        // other opens it rather than creating a new one.
         let open_existing = std::env::var("IPC_SHM_OPEN_EXISTING").is_ok();
         debug!(
             "SHM-direct IPC_SHM_OPEN_EXISTING check: open_existing={}",
@@ -580,7 +580,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
             }
         } else {
             // Clean up any existing shared memory segment with this name.
-            // This ensures a fresh start and works across host-container boundaries
+            // This ensures a fresh start and works across process boundaries
             // where a previous run may have left stale segments.
             #[cfg(unix)]
             {
@@ -920,7 +920,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
             }
 
             // Unlink the shared memory segment to free system resources.
-            // This is important for host-container mode where stale segments
+            // This is important for cross-process mode where stale segments
             // could interfere with subsequent benchmark runs.
             #[cfg(unix)]
             if !self.shm_name.is_empty() {

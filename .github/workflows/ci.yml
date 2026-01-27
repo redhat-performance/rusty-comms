@@ -434,16 +434,4 @@ jobs:
         github-token: ${{ secrets.GITHUB_TOKEN }}
         auto-push: true
 
-  podman:
-    name: Container Build
-    runs-on: ubuntu-latest
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Build container image
-      run: podman build -t ipc-benchmark -f Containerfile .
-
-    - name: Test container image
-      run: podman run --rm ipc-benchmark --help
 

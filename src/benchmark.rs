@@ -1795,7 +1795,7 @@ port={}",
         // 4. If in duration mode, use a large fixed size to avoid backpressure.
         // 5. Otherwise, calculate based on message count (for UDS/TCP which handle backpressure well).
         let is_shm = self.mechanism == IpcMechanism::SharedMemory;
-        const SHM_DEFAULT_BUFFER_SIZE: usize = 65536; // 64KB - matches H2C behavior
+        const SHM_DEFAULT_BUFFER_SIZE: usize = 65536; // 64KB default for SHM
         const MESSAGE_OVERHEAD: usize = 64;
 
         let buffer_size = self.config.buffer_size.unwrap_or_else(|| {
