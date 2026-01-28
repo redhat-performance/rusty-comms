@@ -1313,14 +1313,13 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
         .context("Failed to write server ready byte to stdout")?;
     io::stdout().flush().ok();
 
-    // Open latency file for writing if specified
-    let mut latency_file = if let Some(ref path) = args.internal_latency_file {
-        Some(
-            std::fs::File::create(path)
-                .with_context(|| format!("Failed to create latency file: {}", path))?,
-        )
+    // Buffer latencies in memory instead of per-message file I/O
+    // This avoids the massive overhead of writing to disk for each message
+    let latency_file_path = args.internal_latency_file.clone();
+    let mut latency_buffer: Vec<u64> = if latency_file_path.is_some() {
+        Vec::with_capacity(100_000) // Pre-allocate for performance
     } else {
-        None
+        Vec::new()
     };
 
     // Persistent server loop: receive messages and optionally reply
@@ -1332,12 +1331,10 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
                 let receive_time_ns = get_monotonic_time_ns();
                 let latency_ns = receive_time_ns.saturating_sub(message.timestamp);
 
-                // Write latency to file if enabled (one latency per line in nanoseconds)
+                // Buffer latency in memory if enabled
                 // Skip canary messages (ID == u64::MAX) which are used for warmup
-                if let Some(ref mut file) = latency_file {
-                    if message.id != u64::MAX {
-                        writeln!(file, "{}", latency_ns).ok();
-                    }
+                if latency_file_path.is_some() && message.id != u64::MAX {
+                    latency_buffer.push(latency_ns);
                 }
 
                 // Check for shutdown message (used by PMQ and other queue-based transports)
@@ -1374,6 +1371,18 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
     }
 
     transport.close_blocking()?;
+
+    // Write all buffered latencies to file at once (much faster than per-message I/O)
+    if let Some(ref path) = latency_file_path {
+        debug!("Writing {} buffered latencies to file: {}", latency_buffer.len(), path);
+        let mut file = std::fs::File::create(path)
+            .with_context(|| format!("Failed to create latency file: {}", path))?;
+        for latency_ns in &latency_buffer {
+            writeln!(file, "{}", latency_ns).ok();
+        }
+        debug!("Finished writing latencies to file");
+    }
+
     info!("Server exiting cleanly.");
     Ok(())
 }
@@ -1509,15 +1518,13 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
         .context("Failed to write server ready byte to stdout")?;
     io::stdout().flush().ok();
 
-    // Open latency file for writing if specified
-    let mut latency_file = if let Some(ref path) = args.internal_latency_file {
-        Some(
-            tokio::fs::File::create(path)
-                .await
-                .with_context(|| format!("Failed to create latency file: {}", path))?,
-        )
+    // Buffer latencies in memory instead of per-message file I/O
+    // This avoids the massive overhead of writing to disk for each message
+    let latency_file_path = args.internal_latency_file.clone();
+    let mut latency_buffer: Vec<u64> = if latency_file_path.is_some() {
+        Vec::with_capacity(100_000) // Pre-allocate for performance
     } else {
-        None
+        Vec::new()
     };
 
     // Persistent server loop: receive messages and optionally reply to
@@ -1532,13 +1539,10 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
                 let receive_time_ns = get_monotonic_time_ns();
                 let latency_ns = receive_time_ns.saturating_sub(msg.timestamp);
 
-                // Write latency to file if enabled (one latency per line in nanoseconds)
+                // Buffer latency in memory if enabled
                 // Skip canary messages (ID == u64::MAX) which are used for warmup
-                if let Some(ref mut file) = latency_file {
-                    if msg.id != u64::MAX {
-                        use tokio::io::AsyncWriteExt;
-                        let _ = file.write_all(format!("{}\n", latency_ns).as_bytes()).await;
-                    }
+                if latency_file_path.is_some() && msg.id != u64::MAX {
+                    latency_buffer.push(latency_ns);
                 }
 
                 // Message received
@@ -1572,6 +1576,20 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
     }
 
     let _ = transport.close().await;
+
+    // Write all buffered latencies to file at once (much faster than per-message I/O)
+    if let Some(ref path) = latency_file_path {
+        debug!("Writing {} buffered latencies to file: {}", latency_buffer.len(), path);
+        use tokio::io::AsyncWriteExt;
+        let mut file = tokio::fs::File::create(path)
+            .await
+            .with_context(|| format!("Failed to create latency file: {}", path))?;
+        for latency_ns in &latency_buffer {
+            let _ = file.write_all(format!("{}\n", latency_ns).as_bytes()).await;
+        }
+        debug!("Finished writing latencies to file");
+    }
+
     info!("Server mode finished.");
     Ok(())
 }
