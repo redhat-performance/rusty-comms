@@ -374,6 +374,12 @@ pub struct BlockingSharedMemoryDirect {
     ///
     /// Stored so we can call shm_unlink during close on the server side.
     shm_name: String,
+
+    /// Cross-container mode flag.
+    ///
+    /// When false (default for standalone): Uses efficient pthread_cond_wait
+    /// When true (for cross-container): Uses futex with short timeouts for reliability
+    cross_container: bool,
 }
 
 impl BlockingSharedMemoryDirect {
@@ -400,6 +406,7 @@ impl BlockingSharedMemoryDirect {
             shmem: None,
             is_server: false,
             shm_name: String::new(),
+            cross_container: false,
         }
     }
 
@@ -626,6 +633,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
 
         self.shmem = Some(SendableShmem(shmem));
         self.is_server = true;
+        self.cross_container = config.cross_container;
         // Store name for cleanup during close (but don't unlink if we opened existing)
         self.shm_name = if open_existing {
             String::new() // Don't store name - we don't own this segment
@@ -681,6 +689,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
 
         self.shmem = Some(SendableShmem(shmem));
         self.is_server = false;
+        self.cross_container = config.cross_container;
 
         // Signal to server that client is ready
         unsafe {
@@ -709,48 +718,73 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
         unsafe {
             let ptr = self.get_raw_message_ptr();
 
-            // Backpressure: Wait if previous message hasn't been consumed yet.
-            // Use futex on Linux for efficient cross-container synchronization.
-            let loop_start = Instant::now();
-            let timeout = Duration::from_secs(30);
+            // Backpressure: Wait if previous message hasn't been consumed yet
+            if self.cross_container {
+                // Container-safe path: Use futex/timedwait with short timeouts
+                let loop_start = Instant::now();
+                let timeout = Duration::from_secs(30);
 
-            #[cfg(target_os = "linux")]
-            {
-                // Futex-based waiting: works reliably across container boundaries
-                while (*ptr).ready.load(Ordering::Acquire) == 1 {
-                    if loop_start.elapsed() > timeout {
-                        return Err(anyhow!("Timeout waiting for receiver to consume message"));
+                #[cfg(target_os = "linux")]
+                {
+                    while (*ptr).ready.load(Ordering::Acquire) == 1 {
+                        if loop_start.elapsed() > timeout {
+                            return Err(anyhow!("Timeout waiting for receiver to consume message"));
+                        }
+                        futex::futex_wait(&(*ptr).ready, 1, 100_000); // 100µs
                     }
-                    // Wait with 100µs timeout. Futex operates at kernel level,
-                    // so it works across container boundaries regardless of glibc.
-                    futex::futex_wait(&(*ptr).ready, 1, 100_000); // 100µs
                 }
-            }
 
-            #[cfg(not(target_os = "linux"))]
-            {
-                // Non-Linux: use pthread condvar with mutex
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let ret = libc::pthread_mutex_lock(&mut (*ptr).mutex);
+                    if ret != 0 {
+                        return Err(anyhow!("Failed to lock mutex: {}", ret));
+                    }
+
+                    while (*ptr).ready.load(Ordering::Acquire) == 1 {
+                        if loop_start.elapsed() > timeout {
+                            libc::pthread_mutex_unlock(&mut (*ptr).mutex);
+                            return Err(anyhow!("Timeout waiting for receiver to consume message"));
+                        }
+                        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+                        libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts);
+                        ts.tv_nsec += 100_000; // 100µs
+                        if ts.tv_nsec >= 1_000_000_000 {
+                            ts.tv_sec += 1;
+                            ts.tv_nsec -= 1_000_000_000;
+                        }
+                        libc::pthread_cond_timedwait(&mut (*ptr).cond, &mut (*ptr).mutex, &ts);
+                    }
+                }
+            } else {
+                // Fast path: Use pthread_cond_wait (efficient, lowest latency)
                 let ret = libc::pthread_mutex_lock(&mut (*ptr).mutex);
                 if ret != 0 {
                     return Err(anyhow!("Failed to lock mutex: {}", ret));
                 }
 
-                while (*ptr).ready.load(Ordering::Acquire) == 1 {
-                    if loop_start.elapsed() > timeout {
-                        libc::pthread_mutex_unlock(&mut (*ptr).mutex);
-                        return Err(anyhow!("Timeout waiting for receiver to consume message"));
+                if (*ptr).ready.load(Ordering::Acquire) == 1 {
+                    trace!("Waiting for receiver to consume previous message (backpressure)");
+
+                    // Use timed wait (5 seconds) to avoid infinite blocking
+                    let mut timespec = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+                    libc::clock_gettime(libc::CLOCK_REALTIME, &mut timespec);
+                    timespec.tv_sec += 5; // 5 second timeout
+
+                    while (*ptr).ready.load(Ordering::Acquire) == 1 {
+                        let ret = libc::pthread_cond_timedwait(
+                            &mut (*ptr).cond,
+                            &mut (*ptr).mutex,
+                            &timespec,
+                        );
+
+                        if ret == libc::ETIMEDOUT {
+                            libc::pthread_mutex_unlock(&mut (*ptr).mutex);
+                            return Err(anyhow!(
+                                "Timeout waiting for receiver to consume previous message"
+                            ));
+                        }
                     }
-                    let mut ts = libc::timespec {
-                        tv_sec: 0,
-                        tv_nsec: 0,
-                    };
-                    libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts);
-                    ts.tv_nsec += 100_000; // 100µs
-                    if ts.tv_nsec >= 1_000_000_000 {
-                        ts.tv_sec += 1;
-                        ts.tv_nsec -= 1_000_000_000;
-                    }
-                    libc::pthread_cond_timedwait(&mut (*ptr).cond, &mut (*ptr).mutex, &ts);
                 }
             }
 
@@ -783,14 +817,20 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
             // Set ready flag with release ordering to ensure all writes are visible
             (*ptr).ready.store(1, Ordering::Release);
 
-            // Wake receiver
-            #[cfg(target_os = "linux")]
-            {
-                futex::futex_wake(&(*ptr).ready, 1);
-            }
+            // Wake receiver and unlock mutex
+            if self.cross_container {
+                #[cfg(target_os = "linux")]
+                {
+                    futex::futex_wake(&(*ptr).ready, 1);
+                }
 
-            #[cfg(not(target_os = "linux"))]
-            {
+                #[cfg(not(target_os = "linux"))]
+                {
+                    libc::pthread_cond_signal(&mut (*ptr).cond);
+                    libc::pthread_mutex_unlock(&mut (*ptr).mutex);
+                }
+            } else {
+                // Fast path: signal and unlock mutex
                 libc::pthread_cond_signal(&mut (*ptr).cond);
                 libc::pthread_mutex_unlock(&mut (*ptr).mutex);
             }
@@ -818,48 +858,67 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
         let message = unsafe {
             let ptr = self.get_raw_message_ptr();
 
-            // Wait for data to be ready.
-            // Use futex on Linux for efficient cross-container synchronization.
-            let loop_start = Instant::now();
-            let timeout = Duration::from_secs(30);
+            // Wait for data to be ready
+            if self.cross_container {
+                // Container-safe path: Use futex/timedwait with short timeouts
+                let loop_start = Instant::now();
+                let timeout = Duration::from_secs(30);
 
-            #[cfg(target_os = "linux")]
-            {
-                // Futex-based waiting: works reliably across container boundaries
-                while (*ptr).ready.load(Ordering::Acquire) == 0 {
-                    if loop_start.elapsed() > timeout {
-                        return Err(anyhow!("Timeout waiting for message"));
+                #[cfg(target_os = "linux")]
+                {
+                    while (*ptr).ready.load(Ordering::Acquire) == 0 {
+                        if loop_start.elapsed() > timeout {
+                            return Err(anyhow!("Timeout waiting for message"));
+                        }
+                        futex::futex_wait(&(*ptr).ready, 0, 100_000); // 100µs
                     }
-                    // Wait with 100µs timeout. Futex operates at kernel level,
-                    // so it works across container boundaries regardless of glibc.
-                    futex::futex_wait(&(*ptr).ready, 0, 100_000); // 100µs
                 }
-            }
 
-            #[cfg(not(target_os = "linux"))]
-            {
-                // Non-Linux: use pthread condvar with mutex
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let ret = libc::pthread_mutex_lock(&mut (*ptr).mutex);
+                    if ret != 0 {
+                        return Err(anyhow!("Failed to lock mutex: {}", ret));
+                    }
+
+                    while (*ptr).ready.load(Ordering::Acquire) == 0 {
+                        if loop_start.elapsed() > timeout {
+                            libc::pthread_mutex_unlock(&mut (*ptr).mutex);
+                            return Err(anyhow!("Timeout waiting for message"));
+                        }
+                        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+                        libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts);
+                        ts.tv_nsec += 100_000; // 100µs
+                        if ts.tv_nsec >= 1_000_000_000 {
+                            ts.tv_sec += 1;
+                            ts.tv_nsec -= 1_000_000_000;
+                        }
+                        libc::pthread_cond_timedwait(&mut (*ptr).cond, &mut (*ptr).mutex, &ts);
+                    }
+                }
+            } else {
+                // Fast path: Use pthread_cond_wait (efficient, lowest latency)
                 let ret = libc::pthread_mutex_lock(&mut (*ptr).mutex);
                 if ret != 0 {
                     return Err(anyhow!("Failed to lock mutex: {}", ret));
                 }
 
+                // Use timed wait (5 seconds) to avoid infinite blocking
+                let mut timespec = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+                libc::clock_gettime(libc::CLOCK_REALTIME, &mut timespec);
+                timespec.tv_sec += 5; // 5 second timeout
+
                 while (*ptr).ready.load(Ordering::Acquire) == 0 {
-                    if loop_start.elapsed() > timeout {
+                    let ret = libc::pthread_cond_timedwait(
+                        &mut (*ptr).cond,
+                        &mut (*ptr).mutex,
+                        &timespec,
+                    );
+
+                    if ret == libc::ETIMEDOUT {
                         libc::pthread_mutex_unlock(&mut (*ptr).mutex);
                         return Err(anyhow!("Timeout waiting for message"));
                     }
-                    let mut ts = libc::timespec {
-                        tv_sec: 0,
-                        tv_nsec: 0,
-                    };
-                    libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts);
-                    ts.tv_nsec += 100_000; // 100µs
-                    if ts.tv_nsec >= 1_000_000_000 {
-                        ts.tv_sec += 1;
-                        ts.tv_nsec -= 1_000_000_000;
-                    }
-                    libc::pthread_cond_timedwait(&mut (*ptr).cond, &mut (*ptr).mutex, &ts);
                 }
             }
 
@@ -881,14 +940,20 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
             // Clear ready flag with release ordering
             (*ptr).ready.store(0, Ordering::Release);
 
-            // Wake sender (in case of backpressure)
-            #[cfg(target_os = "linux")]
-            {
-                futex::futex_wake(&(*ptr).ready, 1);
-            }
+            // Wake sender (in case of backpressure) and unlock mutex
+            if self.cross_container {
+                #[cfg(target_os = "linux")]
+                {
+                    futex::futex_wake(&(*ptr).ready, 1);
+                }
 
-            #[cfg(not(target_os = "linux"))]
-            {
+                #[cfg(not(target_os = "linux"))]
+                {
+                    libc::pthread_cond_signal(&mut (*ptr).cond);
+                    libc::pthread_mutex_unlock(&mut (*ptr).mutex);
+                }
+            } else {
+                // Fast path: signal and unlock mutex
                 libc::pthread_cond_signal(&mut (*ptr).cond);
                 libc::pthread_mutex_unlock(&mut (*ptr).mutex);
             }

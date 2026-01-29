@@ -410,6 +410,26 @@ pub struct Args {
     #[arg(long, default_value_t = false, help_heading = ADVANCED)]
     pub shm_direct: bool,
 
+    /// Force cross-container mode for shared memory IPC (auto-detected by default).
+    ///
+    /// This flag is usually NOT needed. Cross-container mode is automatically
+    /// enabled when using --run-mode client or --run-mode sender.
+    ///
+    /// When enabled, uses container-safe synchronization primitives (timed waits,
+    /// polling fallbacks) that work reliably across container boundaries where
+    /// pthread mutexes/condvars may fail due to glibc ABI mismatches.
+    ///
+    /// **Auto-detection:**
+    /// - `--run-mode standalone` (default) → Fast path (pthread_cond_wait)
+    /// - `--run-mode client/sender` → Container-safe path (auto-enabled)
+    ///
+    /// **Only use this flag if:**
+    /// - You need to force container-safe mode in standalone for testing
+    ///
+    /// Default: auto-detected based on run-mode
+    #[arg(long, default_value_t = false, help_heading = ADVANCED)]
+    pub cross_container: bool,
+
     // --- Run Mode Options ---
     /// Run mode for IPC communication architecture.
     ///

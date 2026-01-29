@@ -1894,6 +1894,8 @@ port={}",
                 .clone()
                 .unwrap_or_else(|| format!("/ipc_benchmark_pmq_{}", unique_id)),
             pmq_priority: self.config.pmq_priority,
+            // Auto-detect cross-container mode based on run_mode, or use explicit flag
+            cross_container: args.cross_container || args.run_mode != crate::cli::RunMode::Standalone,
         })
     }
 

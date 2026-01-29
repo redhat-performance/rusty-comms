@@ -279,67 +279,72 @@ impl SharedMemoryRingBuffer {
     /// Uses pthread_cond_wait to block until space is available, then writes
     /// the data and signals any waiting readers.
     ///
+    /// # Parameters
+    /// - `data`: The message data to write (may be mutated for timestamp update)
+    /// - `timestamp_offset`: Optional range in data where timestamp should be updated
+    /// - `cross_container`: If true, use container-safe timed waits; if false, use fast pthread_cond_wait
+    ///
     /// # Safety
     /// Only available on Unix platforms with pthread support.
     #[cfg(unix)]
-    unsafe fn write_data_blocking(&self, data: &mut [u8], timestamp_offset: Option<std::ops::Range<usize>>) -> Result<()> {
+    unsafe fn write_data_blocking(&self, data: &mut [u8], timestamp_offset: Option<std::ops::Range<usize>>, cross_container: bool) -> Result<()> {
         let data_len = data.len();
         let required_space = data_len + 4; // 4 bytes for length prefix
 
         // Lock mutex
-        let lock_result = libc::pthread_mutex_lock(&self.mutex as *const _ as *mut _);
-        if lock_result != 0 {
-            // Mutex lock failed - fall back to polling without mutex
-            return self.write_data_polling(data, timestamp_offset.clone());
-        }
+        libc::pthread_mutex_lock(&self.mutex as *const _ as *mut _);
 
-        // Wait for space to become available
-        // Use timed wait to handle cross-process signaling issues
-        let mut wait_count = 0;
-        let loop_start = std::time::Instant::now();
-        while self.available_write_space() < required_space {
-            // Check for shutdown while waiting
-            if self.shutdown.load(Ordering::Acquire) {
-                libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
-                return Err(anyhow!("Connection closed"));
+        if cross_container {
+            // Container-safe path: Use timed waits with polling fallback
+            let mut wait_count = 0;
+            let loop_start = std::time::Instant::now();
+            while self.available_write_space() < required_space {
+                if self.shutdown.load(Ordering::Acquire) {
+                    libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
+                    return Err(anyhow!("Connection closed"));
+                }
+
+                // Detect broken pthread primitives
+                if wait_count >= 100 && loop_start.elapsed() < Duration::from_millis(10) {
+                    libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
+                    trace!("Detected broken pthread condvar, falling back to polling");
+                    return self.write_data_polling(data, timestamp_offset.clone());
+                }
+
+                // Use timed wait (500µs) for cross-container robustness
+                let mut timeout = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+                libc::clock_gettime(libc::CLOCK_REALTIME, &mut timeout);
+                timeout.tv_nsec += 500_000; // 500µs
+                if timeout.tv_nsec >= 1_000_000_000 {
+                    timeout.tv_sec += 1;
+                    timeout.tv_nsec -= 1_000_000_000;
+                }
+
+                libc::pthread_cond_timedwait(
+                    &self.space_ready as *const _ as *mut _,
+                    &self.mutex as *const _ as *mut _,
+                    &timeout,
+                );
+
+                wait_count += 1;
+                if wait_count > 60000 {
+                    libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
+                    return Err(anyhow!("Timeout waiting for buffer space"));
+                }
             }
+        } else {
+            // Fast path: Use pthread_cond_wait (infinite wait, lowest latency)
+            while self.available_write_space() < required_space {
+                if self.shutdown.load(Ordering::Acquire) {
+                    libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
+                    return Err(anyhow!("Connection closed"));
+                }
 
-            // Detect if pthread primitives are broken (returning too fast).
-            // If we've done 100+ iterations in less than 10ms, the condvar
-            // is not actually waiting. This can happen with glibc ABI mismatches
-            // across container boundaries.
-            // With 500µs timeout, 100 iterations should take ~50ms if working.
-            if wait_count >= 100 && loop_start.elapsed() < Duration::from_millis(10) {
-                libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
-                trace!("Detected broken pthread condvar, falling back to polling");
-                return self.write_data_polling(data, timestamp_offset.clone());
-            }
-
-            // Use timed wait instead of infinite wait for cross-process robustness.
-            // Keep timeout short (500µs) to minimize worst-case latency when signals
-            // are missed across container boundaries (glibc ABI mismatch).
-            let mut timeout = libc::timespec {
-                tv_sec: 0,
-                tv_nsec: 0,
-            };
-            libc::clock_gettime(libc::CLOCK_REALTIME, &mut timeout);
-            timeout.tv_nsec += 500_000; // 500µs
-            if timeout.tv_nsec >= 1_000_000_000 {
-                timeout.tv_sec += 1;
-                timeout.tv_nsec -= 1_000_000_000;
-            }
-
-            libc::pthread_cond_timedwait(
-                &self.space_ready as *const _ as *mut _,
-                &self.mutex as *const _ as *mut _,
-                &timeout,
-            );
-
-            wait_count += 1;
-            if wait_count > 60000 {
-                // 30 second timeout (60000 * 500µs = 30s)
-                libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
-                return Err(anyhow!("Timeout waiting for buffer space"));
+                // Wait on condition variable (releases mutex, reacquires on wake)
+                libc::pthread_cond_wait(
+                    &self.space_ready as *const _ as *mut _,
+                    &self.mutex as *const _ as *mut _,
+                );
             }
         }
 
@@ -446,64 +451,67 @@ impl SharedMemoryRingBuffer {
     /// Uses pthread_cond_wait to block until data is available, then reads
     /// it and signals any waiting writers.
     ///
+    /// # Parameters
+    /// - `cross_container`: If true, use container-safe timed waits; if false, use fast pthread_cond_wait
+    ///
     /// # Safety
     /// Only available on Unix platforms with pthread support.
     #[cfg(unix)]
-    unsafe fn read_data_blocking(&self) -> Result<Vec<u8>> {
+    unsafe fn read_data_blocking(&self, cross_container: bool) -> Result<Vec<u8>> {
         // Lock mutex
-        let lock_result = libc::pthread_mutex_lock(&self.mutex as *const _ as *mut _);
-        if lock_result != 0 {
-            // Mutex lock failed - fall back to polling without mutex
-            return self.read_data_polling();
-        }
+        libc::pthread_mutex_lock(&self.mutex as *const _ as *mut _);
 
-        // Wait for data to become available
-        // Use timed wait for cross-process robustness
-        let mut wait_count = 0;
-        let loop_start = std::time::Instant::now();
-        while self.available_read_data() < 4 {
-            // Check for shutdown while waiting
-            if self.shutdown.load(Ordering::Acquire) {
-                libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
-                return Err(anyhow!("Connection closed"));
+        if cross_container {
+            // Container-safe path: Use timed waits with polling fallback
+            let mut wait_count = 0;
+            let loop_start = std::time::Instant::now();
+            while self.available_read_data() < 4 {
+                if self.shutdown.load(Ordering::Acquire) {
+                    libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
+                    return Err(anyhow!("Connection closed"));
+                }
+
+                // Detect broken pthread primitives
+                if wait_count >= 100 && loop_start.elapsed() < Duration::from_millis(10) {
+                    libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
+                    trace!("Detected broken pthread condvar, falling back to polling");
+                    return self.read_data_polling();
+                }
+
+                // Use timed wait (500µs) for cross-container robustness
+                let mut timeout = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+                libc::clock_gettime(libc::CLOCK_REALTIME, &mut timeout);
+                timeout.tv_nsec += 500_000; // 500µs
+                if timeout.tv_nsec >= 1_000_000_000 {
+                    timeout.tv_sec += 1;
+                    timeout.tv_nsec -= 1_000_000_000;
+                }
+
+                libc::pthread_cond_timedwait(
+                    &self.data_ready as *const _ as *mut _,
+                    &self.mutex as *const _ as *mut _,
+                    &timeout,
+                );
+
+                wait_count += 1;
+                if wait_count > 60000 {
+                    libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
+                    return Err(anyhow!("Timeout waiting for data"));
+                }
             }
+        } else {
+            // Fast path: Use pthread_cond_wait (infinite wait, lowest latency)
+            while self.available_read_data() < 4 {
+                if self.shutdown.load(Ordering::Acquire) {
+                    libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
+                    return Err(anyhow!("Connection closed"));
+                }
 
-            // Detect if pthread primitives are broken (returning too fast).
-            // If we've done 100+ iterations in less than 10ms, the condvar
-            // is not actually waiting. This can happen with glibc ABI mismatches
-            // across container boundaries.
-            // With 500µs timeout, 100 iterations should take ~50ms if working.
-            if wait_count >= 100 && loop_start.elapsed() < Duration::from_millis(10) {
-                libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
-                trace!("Detected broken pthread condvar, falling back to polling");
-                return self.read_data_polling();
-            }
-
-            // Use timed wait instead of infinite wait.
-            // Keep timeout short (500µs) to minimize worst-case latency when signals
-            // are missed across container boundaries (glibc ABI mismatch).
-            let mut timeout = libc::timespec {
-                tv_sec: 0,
-                tv_nsec: 0,
-            };
-            libc::clock_gettime(libc::CLOCK_REALTIME, &mut timeout);
-            timeout.tv_nsec += 500_000; // 500µs
-            if timeout.tv_nsec >= 1_000_000_000 {
-                timeout.tv_sec += 1;
-                timeout.tv_nsec -= 1_000_000_000;
-            }
-
-            libc::pthread_cond_timedwait(
-                &self.data_ready as *const _ as *mut _,
-                &self.mutex as *const _ as *mut _,
-                &timeout,
-            );
-
-            wait_count += 1;
-            if wait_count > 60000 {
-                // 30 second timeout (60000 * 500µs = 30s)
-                libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
-                return Err(anyhow!("Timeout waiting for data"));
+                // Wait on condition variable (releases mutex, reacquires on wake)
+                libc::pthread_cond_wait(
+                    &self.data_ready as *const _ as *mut _,
+                    &self.mutex as *const _ as *mut _,
+                );
             }
         }
 
@@ -630,6 +638,12 @@ pub struct BlockingSharedMemory {
 
     /// Whether this instance is the server (creator)
     is_server: bool,
+
+    /// Cross-container mode flag
+    ///
+    /// When true, uses container-safe synchronization (timed waits, polling fallbacks).
+    /// When false (default), uses fast pthread_cond_wait for same-host communication.
+    cross_container: bool,
 }
 
 // Safety: The ring buffer uses atomic operations for coordination
@@ -655,6 +669,7 @@ impl BlockingSharedMemory {
             ring_buffer: None,
             shmem: None,
             is_server: false,
+            cross_container: false, // Default to fast same-host mode
         }
     }
 
@@ -822,6 +837,7 @@ impl BlockingTransport for BlockingSharedMemory {
         self.ring_buffer = Some(ptr);
         self.shmem = Some(Arc::new(Mutex::new(shmem)));
         self.is_server = true;
+        self.cross_container = config.cross_container;
 
         // Don't wait for client here - do it on first send/receive.
         // This allows the server to signal readiness before blocking.
@@ -875,6 +891,7 @@ impl BlockingTransport for BlockingSharedMemory {
         self.ring_buffer = Some(ptr);
         self.shmem = Some(Arc::new(Mutex::new(shmem)));
         self.is_server = false;
+        self.cross_container = config.cross_container;
 
         debug!("Client connected to shared memory successfully");
         Ok(())
@@ -916,7 +933,7 @@ impl BlockingTransport for BlockingSharedMemory {
         #[cfg(unix)]
         {
             unsafe {
-                (*ring_buffer).write_data_blocking(&mut serialized, Some(Message::timestamp_offset()))?;
+                (*ring_buffer).write_data_blocking(&mut serialized, Some(Message::timestamp_offset()), self.cross_container)?;
             }
             trace!("Message ID {} sent successfully", message.id);
             Ok(())
@@ -963,7 +980,7 @@ impl BlockingTransport for BlockingSharedMemory {
 
         // Use condition variable-based blocking read
         #[cfg(unix)]
-        let data = unsafe { (*ring_buffer).read_data_blocking()? };
+        let data = unsafe { (*ring_buffer).read_data_blocking(self.cross_container)? };
 
         #[cfg(not(unix))]
         let data = loop {

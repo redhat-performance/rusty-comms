@@ -568,6 +568,13 @@ pub struct TransportConfig {
     /// Sets the priority for messages sent via PMQ. Higher numbers
     /// indicate higher priority. This is only used by the PMQ transport.
     pub pmq_priority: u32,
+
+    /// Enable cross-container mode for shared memory IPC.
+    ///
+    /// When true, uses container-safe synchronization primitives (timed waits,
+    /// polling fallbacks) that work reliably across container boundaries.
+    /// When false (default), uses fast pthread_cond_wait for same-host communication.
+    pub cross_container: bool,
 }
 
 impl Default for TransportConfig {
@@ -599,6 +606,7 @@ impl Default for TransportConfig {
             message_queue_depth: 10, // Default POSIX Message Queue depth
             message_queue_name: "ipc_benchmark_pmq".to_string(), // Default PMQ name
             pmq_priority: 0,     // Default PMQ message priority
+            cross_container: false, // Default to fast same-host mode
         }
     }
 }

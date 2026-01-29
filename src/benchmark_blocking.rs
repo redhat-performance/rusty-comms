@@ -673,6 +673,8 @@ impl BlockingBenchmarkRunner {
             max_connections: 1,
             message_queue_depth: adaptive_queue_depth,
             pmq_priority: self.config.pmq_priority,
+            // Auto-detect cross-container mode based on run_mode, or use explicit flag
+            cross_container: args.cross_container || args.run_mode != crate::cli::RunMode::Standalone,
         })
     }
 
