@@ -2173,8 +2173,8 @@ mod tests {
             Some(1000),
             None,
             0,
-            true,  // one_way
-            true,  // round_trip
+            true, // one_way
+            true, // round_trip
         );
         results2.summary.average_latency_ns = Some(5000.0); // Lower
         manager.add_results(results2).unwrap();
@@ -2206,8 +2206,8 @@ mod tests {
             Some(1000),
             None,
             0,
-            true,  // one_way
-            true,  // round_trip
+            true, // one_way
+            true, // round_trip
         );
         results2.summary.average_throughput_mbps = 200.0; // Higher
         manager.add_results(results2).unwrap();
@@ -2519,8 +2519,17 @@ mod tests {
         assert_eq!(manager.results.len(), 1);
 
         // Add another result
-        let results2 =
-            BenchmarkResults::new(IpcMechanism::SharedMemory, 512, 4096, 1, Some(500), None, 0, true, true);
+        let results2 = BenchmarkResults::new(
+            IpcMechanism::SharedMemory,
+            512,
+            4096,
+            1,
+            Some(500),
+            None,
+            0,
+            true,
+            true,
+        );
         manager.add_results(results2).unwrap();
 
         assert_eq!(manager.results.len(), 2);
@@ -2611,8 +2620,17 @@ mod tests {
         let mut manager = BlockingResultsManager::new(None, None).unwrap();
 
         // Create a failed result
-        let mut results =
-            BenchmarkResults::new(IpcMechanism::TcpSocket, 1024, 8192, 1, Some(100), None, 0, true, true);
+        let mut results = BenchmarkResults::new(
+            IpcMechanism::TcpSocket,
+            1024,
+            8192,
+            1,
+            Some(100),
+            None,
+            0,
+            true,
+            true,
+        );
         results.status = BenchmarkStatus::Failure("Test failure message".to_string());
         manager.add_results(results).unwrap();
 
@@ -2630,8 +2648,17 @@ mod tests {
 
         let mut manager = BlockingResultsManager::new(None, None).unwrap();
 
-        let mut results =
-            BenchmarkResults::new(IpcMechanism::TcpSocket, 1024, 8192, 1, Some(100), None, 0, true, true);
+        let mut results = BenchmarkResults::new(
+            IpcMechanism::TcpSocket,
+            1024,
+            8192,
+            1,
+            Some(100),
+            None,
+            0,
+            true,
+            true,
+        );
         results.status = BenchmarkStatus::Success;
 
         // Add one-way latency results

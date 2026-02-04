@@ -21,8 +21,8 @@ Access at: `http://localhost:8050`
 The dashboard requires **both** summary and streaming data files from ipc-benchmark. Missing either type will result in limited functionality.
 
 #### **Required File Types**
-- **Summary JSON** (`*_summary.json` or `*_results.json`) - Enables Summary Analysis tab
-- **Streaming JSON** (`*_streaming.json`) - Enables Time Series Analysis tab
+- **Summary JSON** (any JSON file produced by `ipc-benchmark -o <FILE>`) - Enables Summary Analysis tab
+- **Streaming JSON/CSV** (any file produced by `--streaming-output-json <FILE>` or `--streaming-output-csv <FILE>`) - Enables Time Series Analysis tab
 
 #### **Generating Dashboard-Compatible Data**
 
@@ -30,17 +30,18 @@ To ensure full dashboard functionality, run ipc-benchmark with both output param
 
 ```bash
 # Minimum command for dashboard compatibility
-./ipc-benchmark --mechanism SharedMemory --message-size 1024 \
-                 -o ./dashboard_data/ \
-                 --streaming-output-json \
+mkdir -p ./dashboard_data
+./ipc-benchmark -m shm --message-size 1024 \
+                 -o ./dashboard_data/summary.json \
+                 --streaming-output-json ./dashboard_data/streaming.json \
                  --duration 30s
 ```
 
 #### **Expected Output Structure**
 ```
 dashboard_data/
-├── sharedmemory_1024_summary.json     # Summary statistics
-└── sharedmemory_1024_streaming.json   # Per-message latency data
+├── summary.json     # Summary statistics (aggregated)
+└── streaming.json   # Per-message latency data (columnar)
 ```
 
 ### **Troubleshooting Data Issues**
@@ -114,21 +115,13 @@ For complete ipc-benchmark parameter documentation, see the [main README](../../
 ### **Auto-Discovery**
 The dashboard automatically discovers files in your data directory:
 
-- **Summary**: `*_results.json` - Statistical summaries and throughput data
-- **Streaming**: `*_streaming.json` or `*.csv` - Raw latency measurements
+- **Summary**: JSON files produced by `ipc-benchmark -o <FILE>`
+- **Streaming**: JSON/CSV files produced by `--streaming-output-json <FILE>` / `--streaming-output-csv <FILE>`
 - **Mixed Formats**: Supports both JSON and CSV in the same directory
 
-### **Sample Structure**
-```json
-{
-  "mechanism": "SharedMemory",
-  "message_size": 1024,
-  "one_way_latency_us": 1.23,
-  "round_trip_latency_us": 2.46,
-  "one_way_msgs_per_sec": 812347.5,
-  "round_trip_msgs_per_sec": 406173.75
-}
-```
+Tip: naming files with suffixes like `_results.json` and `_streaming.json` can make
+it easier to recognize them in file listings, but the dashboard primarily detects
+file type by inspecting the JSON/CSV contents.
 
 ## 🎛️ **Configuration**
 

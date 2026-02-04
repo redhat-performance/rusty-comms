@@ -29,17 +29,18 @@ This document provides detailed information about configuring the IPC Benchmark 
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `--one-way` | Boolean | `true` | Enable one-way latency tests |
-| `--round-trip` | Boolean | `true` | Enable round-trip latency tests |
+| `--one-way` | Flag | - | Enable one-way latency tests (if neither specified, both run) |
+| `--round-trip` | Flag | - | Enable round-trip latency tests (if neither specified, both run) |
 | `--warmup-iterations` | `-w` | Number | `1000` | Number of warmup iterations |
 | `--percentiles` | Number[] | `[50.0, 95.0, 99.0, 99.9]` | Percentiles to calculate |
-| `--buffer-size` | Number | `8192` | Buffer size for shared memory/queues |
+| `--buffer-size` | Number | Auto-calculated | Buffer size for shared memory/queues (PMQ defaults to 8192) |
 
 ### Advanced Options
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `--streaming-output` | String | - | File for streaming results during execution |
+| `--streaming-output-json` | String | - | JSON file for streaming results during execution |
+| `--streaming-output-csv` | String | - | CSV file for streaming results during execution |
 | `--continue-on-error` | Boolean | `false` | Continue running if one test fails |
 | `--verbose` | `-v` | Boolean | `false` | Enable verbose output |
 | `--host` | String | `"127.0.0.1"` | Host address for TCP sockets |
@@ -69,61 +70,47 @@ ipc-benchmark --percentiles 50 90 95 99 99.9 99.99 --warmup-iterations 10000
 ipc-benchmark -m shm --message-size 65536 --buffer-size 1048576
 ```
 
-## Configuration File
+## Configuration via Shell Scripts
 
-You can create a configuration file to avoid repeating command-line arguments:
+Since configuration files are not currently supported, you can create shell scripts to avoid repeating command-line arguments:
 
-### JSON Configuration Format
-
-```json
-{
-  "mechanisms": ["uds", "shm", "tcp", "pmq"],
-  // Alternative: "mechanisms": ["all"] to test all available mechanisms
-  "message_size": 1024,
-  "msg_count": 10000,
-  "concurrency": 4,
-  "one_way": true,
-  "round_trip": true,
-  "warmup_iterations": 1000,
-  "percentiles": [50.0, 95.0, 99.0, 99.9],
-  "buffer_size": 8192,
-  "output_file": "results.json",
-  "streaming_output": "streaming.json",
-  "host": "127.0.0.1",
-  "port": 8080
-}
-```
-
-### TOML Configuration Format
-
-```toml
-mechanisms = ["uds", "shm", "tcp", "pmq"]
-# Alternative: mechanisms = ["all"]  # to test all available mechanisms
-message_size = 1024
-msg_count = 10000
-concurrency = 4
-one_way = true
-round_trip = true
-warmup_iterations = 1000
-percentiles = [50.0, 95.0, 99.0, 99.9]
-buffer_size = 8192
-output_file = "results.json"
-streaming_output = "streaming.json"
-host = "127.0.0.1"
-port = 8080
-```
-
-### Using Configuration Files
+### Example: Benchmark Script
 
 ```bash
-# JSON configuration
-ipc-benchmark --config config.json
+#!/bin/bash
+# benchmark-config.sh - Reusable benchmark configuration
 
-# TOML configuration
-ipc-benchmark --config config.toml
+MECHANISMS="uds shm tcp pmq"
+MESSAGE_SIZE=1024
+MSG_COUNT=10000
+CONCURRENCY=4
+WARMUP=1000
+PERCENTILES="50 95 99 99.9"
+OUTPUT_DIR="./results"
 
-# Override specific options
-ipc-benchmark --config config.json --concurrency 8
+ipc-benchmark \
+  -m $MECHANISMS \
+  --message-size $MESSAGE_SIZE \
+  --msg-count $MSG_COUNT \
+  --concurrency $CONCURRENCY \
+  --warmup-iterations $WARMUP \
+  --percentiles $PERCENTILES \
+  -o "$OUTPUT_DIR/benchmark_results.json" \
+  --streaming-output-json "$OUTPUT_DIR/streaming.json"
+```
+
+### Example: Multi-Run Script
+
+```bash
+#!/bin/bash
+# Run benchmarks with different configurations
+
+for size in 64 256 1024 4096; do
+  ipc-benchmark -m shm \
+    --message-size $size \
+    --msg-count 10000 \
+    -o "./results/shm_${size}.json"
+done
 ```
 
 ## Environment Variables
@@ -132,8 +119,6 @@ ipc-benchmark --config config.json --concurrency 8
 |----------|-------------|---------|
 | `RUST_LOG` | Logging level (trace, debug, info, warn, error) | `info` |
 | `IPC_BENCHMARK_TEMP_DIR` | Temporary directory for IPC files | `/tmp` |
-| `IPC_BENCHMARK_OUTPUT_DIR` | Default output directory | Current directory |
-| `IPC_BENCHMARK_CONFIG` | Default configuration file path | - |
 | `CARGO_BIN_EXE_ipc-benchmark` | Path hint for the test runner to spawn the server binary | Auto-detected |
 | `CARGO_BIN_EXE_ipc_benchmark` | Alternate env var name used in some setups | Auto-detected |
 
@@ -145,9 +130,6 @@ RUST_LOG=debug ipc-benchmark
 
 # Use custom temporary directory
 IPC_BENCHMARK_TEMP_DIR=/var/tmp ipc-benchmark
-
-# Set default configuration
-IPC_BENCHMARK_CONFIG=./default.json ipc-benchmark
 ```
 
 ## IPC Mechanism Settings
@@ -199,31 +181,32 @@ For full dashboard compatibility, you **must** use both output parameters:
 
 | Parameter | Purpose | Dashboard Impact |
 |-----------|---------|------------------|
-| `-o <directory>` | Generate summary JSON files | Enables Summary Analysis tab |
+| `-o <file>` | Generate a summary JSON file | Enables Summary Analysis tab |
 | `--streaming-output-json` | Generate streaming data files | Enables Time Series Analysis tab |
 
 ### Example Dashboard-Ready Commands
 
 ```bash
 # Basic dashboard-compatible benchmark
-ipc-benchmark --mechanism SharedMemory --message-size 1024 \
-               -o ./dashboard_data/ \
-               --streaming-output-json
+mkdir -p ./dashboard_data
+ipc-benchmark -m shm --message-size 1024 \
+               -o ./dashboard_data/summary.json \
+               --streaming-output-json ./dashboard_data/streaming.json
 
 # Comprehensive comparison for dashboard
 ipc-benchmark -m uds shm tcp pmq \
                --message-size 1024 \
                --msg-count 50000 \
-               -o ./results/ \
-               --streaming-output-json \
+               -o ./results/summary.json \
+               --streaming-output-json ./results/streaming.json \
                --continue-on-error
 
 # Multi-size analysis
 for size in 64 256 1024 4096; do
-  ipc-benchmark --mechanism SharedMemory \
+  ipc-benchmark -m shm \
                  --message-size $size \
-                 -o ./dashboard_data/ \
-                 --streaming-output-json \
+                 -o ./dashboard_data/summary_${size}.json \
+                 --streaming-output-json ./dashboard_data/streaming_${size}.json \
                  --duration 10s
 done
 ```
@@ -234,8 +217,8 @@ Dashboard-compatible runs will generate:
 
 ```
 results/
-├── sharedmemory_1024_summary.json     # Summary statistics and throughput
-└── sharedmemory_1024_streaming.json   # Per-message latency data
+├── summary.json     # Summary statistics and throughput
+└── streaming.json   # Per-message latency data
 ```
 
 ### Dashboard Limitation Matrix
@@ -252,19 +235,23 @@ results/
 #### Missing Time Series Data
 ```bash
 # Problem: Only used -o parameter
-ipc-benchmark -m shm -o results/
+ipc-benchmark -m shm -o ./results/summary.json
 
 # Solution: Add streaming output
-ipc-benchmark -m shm -o results/ --streaming-output-json
+ipc-benchmark -m shm \
+  -o ./results/summary.json \
+  --streaming-output-json ./results/streaming.json
 ```
 
 #### Missing Summary Data
 ```bash
 # Problem: Only used streaming output
-ipc-benchmark -m shm --streaming-output-json
+ipc-benchmark -m shm --streaming-output-json ./results/streaming.json
 
 # Solution: Add summary output
-ipc-benchmark -m shm -o results/ --streaming-output-json
+ipc-benchmark -m shm \
+  -o ./results/summary.json \
+  --streaming-output-json ./results/streaming.json
 ```
 
 #### No Dashboard Data
@@ -273,7 +260,9 @@ ipc-benchmark -m shm -o results/ --streaming-output-json
 ipc-benchmark -m shm
 
 # Solution: Use both required parameters
-ipc-benchmark -m shm -o results/ --streaming-output-json
+ipc-benchmark -m shm \
+  -o ./results/summary.json \
+  --streaming-output-json ./results/streaming.json
 ```
 
 For dashboard setup and usage instructions, see [`utils/dashboard/README.md`](utils/dashboard/README.md).
@@ -359,8 +348,7 @@ ipc-benchmark \
   --concurrency 1 \
   --warmup-iterations 10000 \
   --percentiles 50 90 95 99 99.9 99.99 \
-  --round-trip \
-  --no-one-way
+  --round-trip
 ```
 
 **Configuration:**
@@ -380,8 +368,7 @@ ipc-benchmark \
   --duration 60s \
   --concurrency 8 \
   --buffer-size 1048576 \
-  --one-way \
-  --no-round-trip
+  --one-way
 ```
 
 **Configuration:**
@@ -594,8 +581,8 @@ netstat -tuln | grep :8080
 # Check file permissions
 ls -la /tmp/ipc_benchmark_*
 
-# Validate configuration
-ipc-benchmark --config config.json --dry-run
+# Validate by running a quick test
+ipc-benchmark -m uds -i 100 -v
 ```
 
 ### Performance Debugging

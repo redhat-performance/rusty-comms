@@ -287,6 +287,7 @@ fn create_args(
         client_affinity: None,
         buffer_size: None,
         pmq_priority: 0,
+        cross_container: false,
         internal_run_as_server: false,
         verbose: 0,
         quiet: false,

@@ -54,7 +54,7 @@
 //! - **Single Queue**: Uses one bidirectional queue (no true multi-client support)
 //! - **Message Size**: Limited by system configuration (typically 8KB default)
 //! - **Queue Depth**: Limited by system configuration (typically 10 messages)
-//! - **Platform**: UNIX-like systems only (Linux, macOS, BSD)
+//! - **Platform**: Linux only (this transport is only selectable on Linux builds)
 //! - **Permissions**: Requires appropriate system permissions for queue operations
 
 use super::{ConnectionId, IpcError, IpcTransport, Message, TransportConfig, TransportState};

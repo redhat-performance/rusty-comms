@@ -287,7 +287,12 @@ impl SharedMemoryRingBuffer {
     /// # Safety
     /// Only available on Unix platforms with pthread support.
     #[cfg(unix)]
-    unsafe fn write_data_blocking(&self, data: &mut [u8], timestamp_offset: Option<std::ops::Range<usize>>, cross_container: bool) -> Result<()> {
+    unsafe fn write_data_blocking(
+        &self,
+        data: &mut [u8],
+        timestamp_offset: Option<std::ops::Range<usize>>,
+        cross_container: bool,
+    ) -> Result<()> {
         let data_len = data.len();
         let required_space = data_len + 4; // 4 bytes for length prefix
 
@@ -312,7 +317,10 @@ impl SharedMemoryRingBuffer {
                 }
 
                 // Use timed wait (500µs) for cross-container robustness
-                let mut timeout = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+                let mut timeout = libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                };
                 libc::clock_gettime(libc::CLOCK_REALTIME, &mut timeout);
                 timeout.tv_nsec += 500_000; // 500µs
                 if timeout.tv_nsec >= 1_000_000_000 {
@@ -394,7 +402,11 @@ impl SharedMemoryRingBuffer {
     /// # Safety
     /// Only available on Unix platforms.
     #[cfg(unix)]
-    unsafe fn write_data_polling(&self, data: &mut [u8], timestamp_offset: Option<std::ops::Range<usize>>) -> Result<()> {
+    unsafe fn write_data_polling(
+        &self,
+        data: &mut [u8],
+        timestamp_offset: Option<std::ops::Range<usize>>,
+    ) -> Result<()> {
         let data_len = data.len();
         let required_space = data_len + 4; // 4 bytes for length prefix
 
@@ -408,7 +420,9 @@ impl SharedMemoryRingBuffer {
             }
 
             if start.elapsed() > timeout {
-                return Err(anyhow!("Timeout waiting for buffer space (polling fallback)"));
+                return Err(anyhow!(
+                    "Timeout waiting for buffer space (polling fallback)"
+                ));
             }
 
             // Sleep to avoid busy-waiting
@@ -479,7 +493,10 @@ impl SharedMemoryRingBuffer {
                 }
 
                 // Use timed wait (500µs) for cross-container robustness
-                let mut timeout = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+                let mut timeout = libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                };
                 libc::clock_gettime(libc::CLOCK_REALTIME, &mut timeout);
                 timeout.tv_nsec += 500_000; // 500µs
                 if timeout.tv_nsec >= 1_000_000_000 {
@@ -933,7 +950,11 @@ impl BlockingTransport for BlockingSharedMemory {
         #[cfg(unix)]
         {
             unsafe {
-                (*ring_buffer).write_data_blocking(&mut serialized, Some(Message::timestamp_offset()), self.cross_container)?;
+                (*ring_buffer).write_data_blocking(
+                    &mut serialized,
+                    Some(Message::timestamp_offset()),
+                    self.cross_container,
+                )?;
             }
             trace!("Message ID {} sent successfully", message.id);
             Ok(())

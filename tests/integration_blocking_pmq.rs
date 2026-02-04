@@ -7,6 +7,7 @@
 
 use anyhow::Result;
 use ipc_benchmark::{cli::Args, BenchmarkConfig, BlockingBenchmarkRunner, IpcMechanism};
+use std::io::Read;
 
 /// Verify PMQ round-trip works end-to-end in blocking mode with a spawned
 /// server process.
@@ -137,11 +138,25 @@ fn pmq_blocking_server_ready_smoke() -> Result<()> {
         BlockingBenchmarkRunner::new(config, IpcMechanism::PosixMessageQueue, args.clone());
 
     let transport_config = runner.create_transport_config_internal(&args)?;
-    let (mut child, _reader) = runner.spawn_server_process(&transport_config)?;
+    let (mut child, mut reader) = runner.spawn_server_process(&transport_config)?;
 
-    // Give server a moment to start (blocking sleep)
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    // Wait for the server to signal readiness (no fixed sleeps).
+    let mut buf = [0u8; 1];
+    reader.read_exact(&mut buf)?;
 
-    let _ = child.kill();
+    // Gracefully shut down the server so it can unlink the queues.
+    let mut client_transport = ipc_benchmark::ipc::BlockingTransportFactory::create(
+        &IpcMechanism::PosixMessageQueue,
+        args.shm_direct,
+    )?;
+    client_transport.start_client_blocking(&transport_config)?;
+    client_transport.send_blocking(&ipc_benchmark::ipc::Message::new(
+        0,
+        Vec::new(),
+        ipc_benchmark::ipc::MessageType::Shutdown,
+    ))?;
+    client_transport.close_blocking()?;
+
+    let _ = child.wait();
     Ok(())
 }

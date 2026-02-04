@@ -101,6 +101,7 @@ fn main() -> Result<()> {
         client_affinity: None,
         buffer_size: None,
         pmq_priority: 0,
+        cross_container: false,
 
         // Internal flag (not for external use)
         internal_run_as_server: false,

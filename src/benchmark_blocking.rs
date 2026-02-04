@@ -674,7 +674,8 @@ impl BlockingBenchmarkRunner {
             message_queue_depth: adaptive_queue_depth,
             pmq_priority: self.config.pmq_priority,
             // Auto-detect cross-container mode based on run_mode, or use explicit flag
-            cross_container: args.cross_container || args.run_mode != crate::cli::RunMode::Standalone,
+            cross_container: args.cross_container
+                || args.run_mode != crate::cli::RunMode::Standalone,
         })
     }
 
@@ -731,7 +732,10 @@ impl BlockingBenchmarkRunner {
             self.config.concurrency,
             self.config.msg_count,
             self.config.duration,
-            self.config.warmup_iterations, self.config.one_way, self.config.round_trip);
+            self.config.warmup_iterations,
+            self.config.one_way,
+            self.config.round_trip,
+        );
 
         // Run warmup if configured
         if self.config.warmup_iterations > 0 {
@@ -1121,7 +1125,8 @@ impl BlockingBenchmarkRunner {
             // Stream latency if enabled
             if let Some(ref mut manager) = results_manager {
                 // Use current timestamp since this is server-measured latency read from file
-                let send_timestamp_ns = crate::results::MessageLatencyRecord::current_timestamp_ns();
+                let send_timestamp_ns =
+                    crate::results::MessageLatencyRecord::current_timestamp_ns();
                 let record = crate::results::MessageLatencyRecord::new(
                     i as u64,
                     self.mechanism,
@@ -1218,7 +1223,8 @@ impl BlockingBenchmarkRunner {
 
             while start_time.elapsed() < duration {
                 // Capture send timestamp for streaming record (wall clock)
-                let send_timestamp_ns = crate::results::MessageLatencyRecord::current_timestamp_ns();
+                let send_timestamp_ns =
+                    crate::results::MessageLatencyRecord::current_timestamp_ns();
                 let send_time = Instant::now();
                 let message = Message::new(i, payload.clone(), MessageType::Request);
 
@@ -1266,7 +1272,8 @@ impl BlockingBenchmarkRunner {
 
             for i in 0..msg_count {
                 // Capture send timestamp for streaming record (wall clock)
-                let send_timestamp_ns = crate::results::MessageLatencyRecord::current_timestamp_ns();
+                let send_timestamp_ns =
+                    crate::results::MessageLatencyRecord::current_timestamp_ns();
                 let send_time = Instant::now();
                 let message = Message::new(i as u64, payload.clone(), MessageType::Request);
                 client_transport.send_blocking(&message)?;

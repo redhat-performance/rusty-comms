@@ -746,7 +746,10 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                             libc::pthread_mutex_unlock(&mut (*ptr).mutex);
                             return Err(anyhow!("Timeout waiting for receiver to consume message"));
                         }
-                        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+                        let mut ts = libc::timespec {
+                            tv_sec: 0,
+                            tv_nsec: 0,
+                        };
                         libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts);
                         ts.tv_nsec += 100_000; // 100µs
                         if ts.tv_nsec >= 1_000_000_000 {
@@ -767,7 +770,10 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                     trace!("Waiting for receiver to consume previous message (backpressure)");
 
                     // Use timed wait (5 seconds) to avoid infinite blocking
-                    let mut timespec = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+                    let mut timespec = libc::timespec {
+                        tv_sec: 0,
+                        tv_nsec: 0,
+                    };
                     libc::clock_gettime(libc::CLOCK_REALTIME, &mut timespec);
                     timespec.tv_sec += 5; // 5 second timeout
 
@@ -886,7 +892,10 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                             libc::pthread_mutex_unlock(&mut (*ptr).mutex);
                             return Err(anyhow!("Timeout waiting for message"));
                         }
-                        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+                        let mut ts = libc::timespec {
+                            tv_sec: 0,
+                            tv_nsec: 0,
+                        };
                         libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts);
                         ts.tv_nsec += 100_000; // 100µs
                         if ts.tv_nsec >= 1_000_000_000 {
@@ -904,7 +913,10 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 }
 
                 // Use timed wait (5 seconds) to avoid infinite blocking
-                let mut timespec = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+                let mut timespec = libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                };
                 libc::clock_gettime(libc::CLOCK_REALTIME, &mut timespec);
                 timespec.tv_sec += 5; // 5 second timeout
 
@@ -1223,24 +1235,24 @@ mod tests {
     #[test]
     fn test_sync_flags_atomic() {
         use std::sync::atomic::Ordering;
-        
+
         // Create a mock shared message structure to test atomic operations
         let ready = std::sync::atomic::AtomicI32::new(0);
         let client_ready = std::sync::atomic::AtomicI32::new(0);
-        
+
         // Verify initial state
         assert_eq!(ready.load(Ordering::Acquire), 0);
         assert_eq!(client_ready.load(Ordering::Acquire), 0);
-        
+
         // Test compare_exchange for ready flag (simulating send)
         ready.store(1, Ordering::Release);
         assert_eq!(ready.load(Ordering::Acquire), 1);
-        
+
         // Test compare_exchange for client_ready flag (simulating receive ack)
         let result = client_ready.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire);
         assert!(result.is_ok());
         assert_eq!(client_ready.load(Ordering::Acquire), 1);
-        
+
         // Reset flags (simulating next message cycle)
         ready.store(0, Ordering::Release);
         client_ready.store(0, Ordering::Release);
@@ -1253,13 +1265,13 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn test_futex_syscall_available() {
         use std::sync::atomic::{AtomicI32, Ordering};
-        
+
         let futex_word = AtomicI32::new(0);
-        
+
         // Test FUTEX_WAIT with immediate timeout (should return immediately
         // since value doesn't match expected)
         futex_word.store(1, Ordering::SeqCst);
-        
+
         // futex_wait expects value 0 but we stored 1, so it should return
         // immediately with EAGAIN (value mismatch) - this confirms the syscall works
         let ptr = futex_word.as_ptr();
@@ -1268,16 +1280,19 @@ mod tests {
                 libc::SYS_futex,
                 ptr,
                 libc::FUTEX_WAIT,
-                0i32,  // Expected value (doesn't match)
+                0i32, // Expected value (doesn't match)
                 std::ptr::null::<libc::timespec>(),
                 std::ptr::null::<i32>(),
                 0i32,
             )
         };
-        
+
         // Should fail with EAGAIN because value doesn't match
         assert_eq!(result, -1);
-        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::EAGAIN));
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EAGAIN)
+        );
     }
 
     /// Test that futex wake works correctly on Linux.
@@ -1285,23 +1300,23 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn test_futex_wake() {
         use std::sync::atomic::AtomicI32;
-        
+
         let futex_word = AtomicI32::new(0);
         let ptr = futex_word.as_ptr();
-        
+
         // Wake with no waiters should succeed (returns 0 waiters woken)
         let result = unsafe {
             libc::syscall(
                 libc::SYS_futex,
                 ptr,
                 libc::FUTEX_WAKE,
-                1i32,  // Wake at most 1 waiter
+                1i32, // Wake at most 1 waiter
                 std::ptr::null::<libc::timespec>(),
                 std::ptr::null::<i32>(),
                 0i32,
             )
         };
-        
+
         // Should return 0 (no waiters to wake)
         assert_eq!(result, 0);
     }

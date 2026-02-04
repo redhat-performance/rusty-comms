@@ -16,13 +16,13 @@
 //!
 //! ```bash
 //! # Test all mechanisms with default settings
-//! ipc-benchmark --mechanisms all
+//! ipc-benchmark -m all
 //!
 //! # Test specific mechanisms with custom parameters
 //! ipc-benchmark -m uds tcp -s 4096 -i 50000 -c 4
 //!
 //! # Duration-based testing with streaming output
-//! ipc-benchmark -m all -d 30s --streaming-output live_results.json
+//! ipc-benchmark -m all -d 30s --streaming-output-json live_results.json
 //!
 //! # High-throughput testing with large buffers
 //! ipc-benchmark -m shm -s 16384 --buffer-size 65536 --concurrency 8
@@ -1094,13 +1094,19 @@ mod tests {
         // Client mode (receiver in QM/container) with socket path for UDS
         let args = Args::parse_from([
             "ipc-benchmark",
-            "-m", "uds",
-            "--run-mode", "client",
-            "--socket-path", "/tmp/rusty-comms/uds.sock",
+            "-m",
+            "uds",
+            "--run-mode",
+            "client",
+            "--socket-path",
+            "/tmp/rusty-comms/uds.sock",
             "--blocking",
         ]);
         assert_eq!(args.run_mode, RunMode::Client);
-        assert_eq!(args.socket_path, Some("/tmp/rusty-comms/uds.sock".to_string()));
+        assert_eq!(
+            args.socket_path,
+            Some("/tmp/rusty-comms/uds.sock".to_string())
+        );
         assert!(args.blocking);
     }
 
@@ -1109,13 +1115,19 @@ mod tests {
         // Client mode with shared memory
         let args = Args::parse_from([
             "ipc-benchmark",
-            "-m", "shm",
-            "--run-mode", "client",
-            "--shared-memory-name", "/ipc_benchmark_shm",
+            "-m",
+            "shm",
+            "--run-mode",
+            "client",
+            "--shared-memory-name",
+            "/ipc_benchmark_shm",
             "--blocking",
         ]);
         assert_eq!(args.run_mode, RunMode::Client);
-        assert_eq!(args.shared_memory_name, Some("/ipc_benchmark_shm".to_string()));
+        assert_eq!(
+            args.shared_memory_name,
+            Some("/ipc_benchmark_shm".to_string())
+        );
     }
 
     #[test]
@@ -1123,9 +1135,12 @@ mod tests {
         // Client mode with SHM-direct (receiver in QM/container)
         let args = Args::parse_from([
             "ipc-benchmark",
-            "-m", "shm",
-            "--run-mode", "client",
-            "--shared-memory-name", "/ipc_direct",
+            "-m",
+            "shm",
+            "--run-mode",
+            "client",
+            "--shared-memory-name",
+            "/ipc_direct",
             "--shm-direct",
         ]);
         assert_eq!(args.run_mode, RunMode::Client);
@@ -1138,13 +1153,19 @@ mod tests {
         // Client mode with PMQ (receiver in QM/container)
         let args = Args::parse_from([
             "ipc-benchmark",
-            "-m", "pmq",
-            "--run-mode", "client",
-            "--message-queue-name", "/ipc_benchmark_mq",
+            "-m",
+            "pmq",
+            "--run-mode",
+            "client",
+            "--message-queue-name",
+            "/ipc_benchmark_mq",
             "--blocking",
         ]);
         assert_eq!(args.run_mode, RunMode::Client);
-        assert_eq!(args.message_queue_name, Some("/ipc_benchmark_mq".to_string()));
+        assert_eq!(
+            args.message_queue_name,
+            Some("/ipc_benchmark_mq".to_string())
+        );
     }
 
     #[test]
@@ -1152,10 +1173,14 @@ mod tests {
         // Client mode with TCP
         let args = Args::parse_from([
             "ipc-benchmark",
-            "-m", "tcp",
-            "--run-mode", "client",
-            "--host", "172.17.0.1",
-            "--port", "18080",
+            "-m",
+            "tcp",
+            "--run-mode",
+            "client",
+            "--host",
+            "172.17.0.1",
+            "--port",
+            "18080",
             "--blocking",
         ]);
         assert_eq!(args.run_mode, RunMode::Client);

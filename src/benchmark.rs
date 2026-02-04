@@ -334,25 +334,12 @@ impl BenchmarkConfig {
 /// #     buffer_size: Some(8192),
 /// #     host: "127.0.0.1".to_string(),
 /// #     port: 8080,
-/// #     output_file: None,
-/// #     continue_on_error: false,
-/// #     quiet: false,
-/// #     verbose: 0,
-/// #     log_file: None,
-/// #     streaming_output_json: None,
-/// #     streaming_output_csv: None,
-/// #     server_affinity: None,
-/// #     client_affinity: None,
-/// #     send_delay: None,
 /// #     pmq_priority: 0,
-/// #     include_first_message: false,
 /// #     blocking: false,
-/// #     internal_run_as_server: false,
-/// #     socket_path: None,
-/// #     shared_memory_name: None,
-/// #     message_queue_name: None,
-/// #     internal_latency_file: None,
 /// #     shm_direct: false,
+/// #     cross_container: false,
+/// #     run_mode: ipc_benchmark::cli::RunMode::Standalone,
+/// #     ..Default::default()
 /// # };
 /// let config = BenchmarkConfig::from_args(&args)?;
 /// #[cfg(unix)]
@@ -489,7 +476,10 @@ impl BenchmarkRunner {
             self.config.concurrency,
             self.config.msg_count,
             self.config.duration,
-            self.config.warmup_iterations, self.config.one_way, self.config.round_trip);
+            self.config.warmup_iterations,
+            self.config.one_way,
+            self.config.round_trip,
+        );
 
         // Run warmup if configured
         if self.config.warmup_iterations > 0 {
@@ -1065,7 +1055,8 @@ port={}",
                             match client_transport.receive().await {
                                 Ok(response) => {
                                     // Extract server-measured one-way latency from response
-                                    latencies.push(Duration::from_nanos(response.one_way_latency_ns));
+                                    latencies
+                                        .push(Duration::from_nanos(response.one_way_latency_ns));
                                     i += 1;
                                     if let Some(delay) = client_config.send_delay {
                                         sleep(delay).await;
@@ -1113,7 +1104,8 @@ port={}",
 
             // Stream latency if enabled
             if let Some(ref mut manager) = results_manager {
-                let send_timestamp_ns = crate::results::MessageLatencyRecord::current_timestamp_ns();
+                let send_timestamp_ns =
+                    crate::results::MessageLatencyRecord::current_timestamp_ns();
                 let record = crate::results::MessageLatencyRecord::new(
                     i as u64,
                     self.mechanism,
@@ -1280,7 +1272,8 @@ port={}",
             // Stream latency if enabled
             if let Some(ref mut manager) = results_manager {
                 // Use current timestamp since this is server-measured latency read from file
-                let send_timestamp_ns = crate::results::MessageLatencyRecord::current_timestamp_ns();
+                let send_timestamp_ns =
+                    crate::results::MessageLatencyRecord::current_timestamp_ns();
                 let record = crate::results::MessageLatencyRecord::new(
                     line_num,
                     self.mechanism,
@@ -1424,7 +1417,8 @@ port={}",
             metrics_collector.record_message(self.config.message_size, Some(*latency))?;
             if let Some(ref mut manager) = results_manager {
                 // Use current timestamp since latencies are recorded after collection
-                let send_timestamp_ns = crate::results::MessageLatencyRecord::current_timestamp_ns();
+                let send_timestamp_ns =
+                    crate::results::MessageLatencyRecord::current_timestamp_ns();
                 let record = crate::results::MessageLatencyRecord::new(
                     i as u64,
                     self.mechanism,
@@ -1719,7 +1713,8 @@ port={}",
             one_way_metrics.record_message(self.config.message_size, Some(one_way_latency))?;
             if let Some(ref mut manager) = results_manager {
                 // Use current timestamp since latencies are recorded after collection
-                let send_timestamp_ns = crate::results::MessageLatencyRecord::current_timestamp_ns();
+                let send_timestamp_ns =
+                    crate::results::MessageLatencyRecord::current_timestamp_ns();
                 let record = crate::results::MessageLatencyRecord::new_combined(
                     i as u64,
                     self.mechanism,
@@ -1788,29 +1783,20 @@ port={}",
         // Buffer size logic:
         // 1. If user provides --buffer-size, use it directly.
         // 2. If the mechanism is PMQ, always use a safe, small default.
-        // 3. If the mechanism is SHM, use a fixed 64KB buffer (or 2x message size if larger)
-        //    to enable proper streaming behavior. Previously, sizing to fit all messages
-        //    caused the writer to dump everything instantly while the reader slowly drained,
-        //    leading to huge accumulated latencies.
-        // 4. If in duration mode, use a large fixed size to avoid backpressure.
-        // 5. Otherwise, calculate based on message count (for UDS/TCP which handle backpressure well).
-        let is_shm = self.mechanism == IpcMechanism::SharedMemory;
-        const SHM_DEFAULT_BUFFER_SIZE: usize = 65536; // 64KB default for SHM
+        // 3. If in duration mode, use a large fixed size to avoid backpressure.
+        // 4. Otherwise, calculate based on message count and message size to fit
+        //    the expected data volume.
         const MESSAGE_OVERHEAD: usize = 64;
 
         let buffer_size = self.config.buffer_size.unwrap_or_else(|| {
             if is_pmq {
                 PMQ_SAFE_DEFAULT_BUFFER_SIZE
-            } else if is_shm {
-                // Use fixed buffer for SHM to enable streaming, not batching
-                let min_for_message = (self.config.message_size + MESSAGE_OVERHEAD) * 2;
-                std::cmp::max(SHM_DEFAULT_BUFFER_SIZE, min_for_message)
             } else if self.config.duration.is_some() {
                 DURATION_MODE_BUFFER_SIZE
             } else {
-                // For message-count mode with UDS/TCP, size buffer to fit all messages.
-                // These mechanisms handle backpressure via kernel buffers.
-                self.get_msg_count() * (self.config.message_size + 64)
+                // For message-count mode, size buffer to fit all messages to avoid
+                // backpressure by default (except PMQ).
+                self.get_msg_count() * (self.config.message_size + MESSAGE_OVERHEAD)
             }
         });
 
@@ -1827,16 +1813,12 @@ port={}",
             }
         }
 
-        // Log SHM buffer info - fixed buffer enables streaming, not batching
+        // Log SHM buffer info for visibility (can be large in message-count mode).
         if self.mechanism == IpcMechanism::SharedMemory && self.config.duration.is_none() {
-            let total_message_data = self.get_msg_count() * (self.config.message_size + 32); // 32 bytes overhead per message
-            if buffer_size < total_message_data {
-                debug!(
-                    "SHM using fixed {}KB buffer for {} bytes of data - streaming mode enabled",
-                    buffer_size / 1024,
-                    total_message_data
-                );
-            }
+            debug!(
+                "SHM buffer sized for message-count mode: {} bytes",
+                buffer_size
+            );
         }
 
         // Conservative queue depth for PMQ - most systems have very low limits (often just 10)
@@ -1895,7 +1877,8 @@ port={}",
                 .unwrap_or_else(|| format!("/ipc_benchmark_pmq_{}", unique_id)),
             pmq_priority: self.config.pmq_priority,
             // Auto-detect cross-container mode based on run_mode, or use explicit flag
-            cross_container: args.cross_container || args.run_mode != crate::cli::RunMode::Standalone,
+            cross_container: args.cross_container
+                || args.run_mode != crate::cli::RunMode::Standalone,
         })
     }
 
@@ -2039,6 +2022,7 @@ mod tests {
             message_queue_depth: 10,
             message_queue_name: "/pmq-x".into(),
             pmq_priority: 0,
+            cross_container: false,
         };
         let display = format!(
             "{}",

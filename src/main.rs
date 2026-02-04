@@ -278,7 +278,8 @@ fn run_client_mode_blocking(args: Args) -> Result<()> {
                 match message.message_type {
                     MessageType::Request => {
                         // Echo response for round-trip tests with one-way latency
-                        let mut response = Message::new(message.id, Vec::new(), MessageType::Response);
+                        let mut response =
+                            Message::new(message.id, Vec::new(), MessageType::Response);
                         response.one_way_latency_ns = latency_ns; // Include measured one-way latency
                         if let Err(e) = transport.send_blocking(&response) {
                             warn!("Failed to send response: {}. Exiting.", e);
@@ -447,9 +448,7 @@ fn run_sender_mode_blocking(args: Args) -> Result<()> {
             }
         }
         IpcMechanism::All => {
-            return Err(anyhow::anyhow!(
-                "Cannot use 'all' mechanism in sender mode"
-            ))
+            return Err(anyhow::anyhow!("Cannot use 'all' mechanism in sender mode"))
         }
         #[allow(unreachable_patterns)]
         _ => {}
@@ -469,10 +468,8 @@ fn run_sender_mode_blocking(args: Args) -> Result<()> {
     info!("Connected to server, starting benchmark");
 
     // Initialize results manager for output
-    let mut results_manager = BlockingResultsManager::new(
-        args.output_file.as_deref(),
-        args.log_file.as_deref(),
-    )?;
+    let mut results_manager =
+        BlockingResultsManager::new(args.output_file.as_deref(), args.log_file.as_deref())?;
 
     // Enable streaming if specified
     let both_tests = config.one_way && config.round_trip;
@@ -582,7 +579,11 @@ fn run_sender_mode_blocking(args: Args) -> Result<()> {
                 i,
                 mechanism,
                 config.message_size,
-                if config.round_trip { LatencyType::RoundTrip } else { LatencyType::OneWay },
+                if config.round_trip {
+                    LatencyType::RoundTrip
+                } else {
+                    LatencyType::OneWay
+                },
                 primary_latency,
                 send_timestamp_ns,
             ));
@@ -657,7 +658,11 @@ fn run_sender_mode_blocking(args: Args) -> Result<()> {
                 i as u64,
                 mechanism,
                 config.message_size,
-                if config.round_trip { LatencyType::RoundTrip } else { LatencyType::OneWay },
+                if config.round_trip {
+                    LatencyType::RoundTrip
+                } else {
+                    LatencyType::OneWay
+                },
                 primary_latency,
                 send_timestamp_ns,
             ));
@@ -720,9 +725,7 @@ fn run_sender_mode_blocking(args: Args) -> Result<()> {
 async fn run_sender_mode_async(args: Args) -> Result<()> {
     // For now, just redirect to blocking mode with a warning
     // Full async implementation can be added later if needed
-    warn!(
-        "Async sender mode not yet implemented, falling back to blocking"
-    );
+    warn!("Async sender mode not yet implemented, falling back to blocking");
     run_sender_mode_blocking(args)
 }
 
@@ -1252,6 +1255,7 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
     use ipc_benchmark::ipc::BlockingTransportFactory;
 
     info!("Running in server-only mode (blocking)");
+    close_nonstdio_fds_best_effort();
 
     // In server mode, we only care about the first mechanism specified
     let mechanism = match args.mechanisms.first() {
@@ -1374,7 +1378,11 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
 
     // Write all buffered latencies to file at once (much faster than per-message I/O)
     if let Some(ref path) = latency_file_path {
-        debug!("Writing {} buffered latencies to file: {}", latency_buffer.len(), path);
+        debug!(
+            "Writing {} buffered latencies to file: {}",
+            latency_buffer.len(),
+            path
+        );
         let mut file = std::fs::File::create(path)
             .with_context(|| format!("Failed to create latency file: {}", path))?;
         for latency_ns in &latency_buffer {
@@ -1426,6 +1434,50 @@ fn set_affinity(core_id: usize) -> Result<()> {
         ))
     }
 }
+
+/// Best-effort cleanup of inherited file descriptors in server-only mode (Linux).
+///
+/// The benchmark spawns a server process and signals readiness via a single byte
+/// on `stdout`. In test harnesses and some CI environments, the child may inherit
+/// a large number of open file descriptors. If the environment also sets a low
+/// `RLIMIT_NOFILE`, the server can fail to initialize transports (notably PMQ)
+/// with `EMFILE` ("Too many open files").
+///
+/// In server-only mode the child does not need most inherited descriptors, so we
+/// proactively close everything except stdin/stdout/stderr (FDs 0, 1, 2).
+#[cfg(target_os = "linux")]
+fn close_nonstdio_fds_best_effort() {
+    let entries = match std::fs::read_dir("/proc/self/fd") {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    let mut fds: Vec<i32> = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Ok(name) = name.into_string() else {
+            continue;
+        };
+        let Ok(fd) = name.parse::<i32>() else {
+            continue;
+        };
+        if fd > 2 {
+            fds.push(fd);
+        }
+    }
+
+    // Close highest FDs first (not strictly required, but a common pattern).
+    fds.sort_unstable();
+    fds.dedup();
+    for fd in fds.into_iter().rev() {
+        unsafe {
+            let _ = libc::close(fd);
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn close_nonstdio_fds_best_effort() {}
 
 /// Executes the application in a server-only mode for a single IPC mechanism.
 ///
@@ -1579,7 +1631,11 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
 
     // Write all buffered latencies to file at once (much faster than per-message I/O)
     if let Some(ref path) = latency_file_path {
-        debug!("Writing {} buffered latencies to file: {}", latency_buffer.len(), path);
+        debug!(
+            "Writing {} buffered latencies to file: {}",
+            latency_buffer.len(),
+            path
+        );
         use tokio::io::AsyncWriteExt;
         let mut file = tokio::fs::File::create(path)
             .await

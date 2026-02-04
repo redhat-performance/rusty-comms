@@ -1,0 +1,13 @@
+# MyST/Sphinx documentation requirements
+
+# Core Sphinx
+sphinx>=5.0
+
+# MyST parser for Markdown support
+myst-parser>=2.0
+
+# Theme
+sphinx-book-theme>=1.0
+
+# Extensions
+sphinx-copybutton>=0.5

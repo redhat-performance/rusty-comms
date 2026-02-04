@@ -99,6 +99,10 @@ The benchmark suite supports running IPC benchmarks between separate processes, 
 | `client` | Runs as IPC server/receiver (use inside container/QM) |
 | `sender` | Runs as IPC client/sender (use on host to connect to container) |
 
+**Note:** Cross-process run modes currently require `--blocking`. The async
+client/sender paths are not implemented yet, so `--run-mode client|sender`
+without `--blocking` is not supported.
+
 ### Manual Cross-Process Testing
 
 ```bash
@@ -426,8 +430,8 @@ ipc-benchmark --log-file stderr
 # Continue running tests even if one mechanism fails
 ipc-benchmark -m all --continue-on-error
 
-# Run only round-trip tests
-ipc-benchmark --round-trip --no-one-way
+# Run only round-trip tests (omit --one-way flag)
+ipc-benchmark --round-trip
 
 # Custom percentiles for latency analysis
 ipc-benchmark --percentiles 50 90 95 99 99.9 99.99
@@ -794,18 +798,20 @@ When you see this warning, it means your benchmark may be measuring a backpressu
 
 The benchmark provides two log streams: a user-friendly console output and a detailed diagnostic log.
 
-- **Console Verbosity**: Control the level of detail on `stdout` with the `-v` flag.
-  - `-v`: Show `DEBUG` level messages.
-  - `-vv`: Show `TRACE` level messages for maximum detail.
+- **Diagnostic verbosity**: Increase the level of detail in diagnostic logs on `stderr`
+  with the `-v` flag.
+  - `-v`: Info
+  - `-vv`: Debug
+  - `-vvv`: Trace
 
 - **Diagnostic Logs**: By default, detailed logs are saved to `ipc_benchmark.log`. Use the `--log-file` flag to customize this.
 
 ```bash
-# Run with DEBUG level console output and default log file
+# Run with INFO level diagnostics and default log file
 ./target/release/ipc-benchmark -v
 
-# Run with TRACE level console output and log to a custom file
-./target/release/ipc-benchmark -vv --log-file /tmp/ipc-debug.log
+# Run with TRACE level diagnostics and log to a custom file
+./target/release/ipc-benchmark -vvv --log-file /tmp/ipc-trace.log
 
 # Send detailed diagnostic logs to stderr instead of a file
 ./target/release/ipc-benchmark --log-file stderr
@@ -901,7 +907,6 @@ This project uses GitHub Actions for continuous integration. The CI pipeline is 
 - **Testing**: Runs the full test suite on stable, beta, and MSRV Rust across Linux, Windows, and macOS.
 - **Code Coverage**: Generates a code coverage report using `cargo-tarpaulin`.
 - **Security Audit**: Scans for vulnerabilities using `cargo audit`.
-- **Docker Build**: Validates that the Docker image can be built and run successfully.
 
 ### Pull Request Automation
 
@@ -926,15 +931,17 @@ To generate dashboard-compatible output, you **must** include both output parame
 
 ```bash
 # Minimum command for dashboard compatibility
-./ipc-benchmark --mechanism <MECHANISM> --message-size <SIZE> \
-                 -o results/ \
-                 --streaming-output-json \
+mkdir -p results
+./ipc-benchmark -m <MECHANISM> --message-size <SIZE> \
+                 -o results/summary.json \
+                 --streaming-output-json results/streaming.json \
                  --continue-on-error
 
 # Example with specific values
-./ipc-benchmark --mechanism SharedMemory --message-size 1024 \
-                 -o ./benchmark_results/ \
-                 --streaming-output-json \
+mkdir -p ./benchmark_results
+./ipc-benchmark -m shm --message-size 1024 \
+                 -o ./benchmark_results/summary.json \
+                 --streaming-output-json ./benchmark_results/streaming.json \
                  --duration 30s
 ```
 
@@ -944,17 +951,17 @@ After running with the required parameters, you should see these files:
 
 ```
 results/
-├── sharedmemory_1024_summary.json     # Enables Summary Analysis
-└── sharedmemory_1024_streaming.json   # Enables Time Series Analysis
+├── summary.json     # Enables Summary Analysis
+└── streaming.json   # Enables Time Series Analysis
 ```
 
 ### Dashboard Parameter Reference
 
 | Parameter | Required | Purpose | Dashboard Impact |
 |-----------|----------|---------|------------------|
-| `-o <dir>` | **Yes** | Output directory | Summary data location |
-| `--streaming-output-json` | **Yes** | Enable streaming data | Time series analysis |
-| `--mechanism <type>` | **Yes** | IPC mechanism | Data categorization |
+| `-o <file>` | **Yes** | Summary JSON output file | Summary data location |
+| `--streaming-output-json <file>` | **Yes** | Streaming JSON output file | Time series analysis |
+| `-m <type>` | **Yes** | IPC mechanism | Data categorization |
 | `--message-size <bytes>` | **Yes** | Message size | Performance comparison |
 | `--duration <time>` | Recommended | Test duration | Data volume |
 | `--continue-on-error` | Recommended | Continue if one test fails | Complete dataset |
@@ -963,20 +970,20 @@ results/
 
 #### Single Mechanism Test
 ```bash
-./ipc-benchmark --mechanism SharedMemory \
+./ipc-benchmark -m shm \
                  --message-size 1024 \
-                 -o ./dashboard_data/ \
-                 --streaming-output-json \
+                 -o ./dashboard_data/summary.json \
+                 --streaming-output-json ./dashboard_data/streaming.json \
                  --duration 30s
 ```
 
 #### Multi-Size Comparison Test
 ```bash
 for size in 64 256 1024 4096; do
-  ./ipc-benchmark --mechanism SharedMemory \
+  ./ipc-benchmark -m shm \
                    --message-size $size \
-                   -o ./dashboard_data/ \
-                   --streaming-output-json \
+                   -o ./dashboard_data/summary_${size}.json \
+                   --streaming-output-json ./dashboard_data/streaming_${size}.json \
                    --duration 10s
 done
 ```
@@ -984,10 +991,10 @@ done
 #### Multi-Mechanism Comparison
 ```bash
 for mechanism in uds shm tcp pmq; do
-  ./ipc-benchmark --mechanism $mechanism \
+  ./ipc-benchmark -m $mechanism \
                    --message-size 1024 \
-                   -o ./dashboard_data/ \
-                   --streaming-output-json \
+                   -o ./dashboard_data/summary_${mechanism}.json \
+                   --streaming-output-json ./dashboard_data/streaming_${mechanism}.json \
                    --duration 15s
 done
 ```
@@ -1032,7 +1039,7 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for version history and changes.
+See [docs/CHANGELOG.md](docs/CHANGELOG.md) for version history and changes.
 
 ---
 
