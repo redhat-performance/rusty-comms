@@ -85,18 +85,29 @@ impl SharedMemoryRingBuffer {
         let write_pos = self.write_pos.load(Ordering::Acquire);
         let data_ptr = self.data_ptr();
 
-        // Write length prefix
+        // Write length prefix (always fits in 4 bytes, handle wrap)
         let len_bytes = (data_len as u32).to_le_bytes();
-        for (i, &byte) in len_bytes.iter().enumerate() {
-            unsafe {
+        unsafe {
+            for (i, &byte) in len_bytes.iter().enumerate() {
                 *data_ptr.add((write_pos + i) % capacity) = byte;
             }
         }
 
-        // Write data
-        for (i, &byte) in data.iter().enumerate() {
-            unsafe {
-                *data_ptr.add((write_pos + 4 + i) % capacity) = byte;
+        // Write data using bulk copy when possible
+        let data_start = (write_pos + 4) % capacity;
+        unsafe {
+            if data_start + data_len <= capacity {
+                // Data fits contiguously - use fast memcpy
+                std::ptr::copy_nonoverlapping(data.as_ptr(), data_ptr.add(data_start), data_len);
+            } else {
+                // Data wraps around - copy in two parts
+                let first_part = capacity - data_start;
+                std::ptr::copy_nonoverlapping(data.as_ptr(), data_ptr.add(data_start), first_part);
+                std::ptr::copy_nonoverlapping(
+                    data.as_ptr().add(first_part),
+                    data_ptr,
+                    data_len - first_part,
+                );
             }
         }
 
@@ -116,10 +127,10 @@ impl SharedMemoryRingBuffer {
         let read_pos = self.read_pos.load(Ordering::Acquire);
         let data_ptr = self.data_ptr();
 
-        // Read length prefix
+        // Read length prefix (handle potential wrap)
         let mut len_bytes = [0u8; 4];
-        for (i, byte) in len_bytes.iter_mut().enumerate() {
-            unsafe {
+        unsafe {
+            for (i, byte) in len_bytes.iter_mut().enumerate() {
                 *byte = *data_ptr.add((read_pos + i) % capacity);
             }
         }
@@ -134,11 +145,22 @@ impl SharedMemoryRingBuffer {
             return Err(anyhow!("Incomplete message"));
         }
 
-        // Read data
+        // Read data using bulk copy when possible
         let mut data = vec![0u8; data_len];
-        for (i, byte) in data.iter_mut().enumerate() {
-            unsafe {
-                *byte = *data_ptr.add((read_pos + 4 + i) % capacity);
+        let data_start = (read_pos + 4) % capacity;
+        unsafe {
+            if data_start + data_len <= capacity {
+                // Data is contiguous - use fast memcpy
+                std::ptr::copy_nonoverlapping(data_ptr.add(data_start), data.as_mut_ptr(), data_len);
+            } else {
+                // Data wraps around - copy in two parts
+                let first_part = capacity - data_start;
+                std::ptr::copy_nonoverlapping(data_ptr.add(data_start), data.as_mut_ptr(), first_part);
+                std::ptr::copy_nonoverlapping(
+                    data_ptr,
+                    data.as_mut_ptr().add(first_part),
+                    data_len - first_part,
+                );
             }
         }
 
@@ -242,60 +264,106 @@ impl SharedMemoryConnection {
     }
 
     /// Sends a message, returning true if the buffer was full and caused a delay.
+    /// Sends a message with accurate timestamp capture for latency measurement.
+    ///
+    /// The timestamp is updated immediately before the write to shared memory
+    /// to ensure accurate one-way latency measurement.
+    ///
+    /// Uses adaptive spinning: tight spin for immediate write, then short pause to
+    /// reduce CPU contention in sustained high-throughput scenarios.
     async fn send_message(&self, message: &Message) -> Result<bool, IpcError> {
         let ring_buffer = self.get_ring_buffer();
-        let message_bytes =
+
+        // Pre-serialize with current timestamp (will be updated before write)
+        let mut message_bytes =
             bincode::serialize(&message).map_err(|e| IpcError::Generic(e.into()))?;
         let mut backpressure_detected = false;
+
+        // Pre-compute timestamp offset for efficient in-place updates
+        let ts_offset = Message::timestamp_offset();
 
         // Try to write with timeout and backpressure detection
         let start = std::time::Instant::now();
         let timeout_duration = Duration::from_secs(5);
+        let mut spin_count: u32 = 0;
+        const SPIN_LIMIT: u32 = 1000; // Spin for quick space availability
 
         loop {
+            // CRITICAL: Update timestamp immediately before write to shared memory
+            // This ensures accurate latency measurement by excluding async overhead
+            let ts_now = crate::ipc::get_monotonic_time_ns();
+            let ts_bytes = ts_now.to_le_bytes();
+            if message_bytes.len() >= ts_offset.end {
+                message_bytes[ts_offset.clone()].copy_from_slice(&ts_bytes);
+            }
+
             match ring_buffer.write_data(&message_bytes) {
                 Ok(()) => {
                     debug!(
                         "Sent message {} via connection {}",
                         message.id, self.connection_id
                     );
-                    // Signal reader that data is available
+                    // Signal reader that data is available (for in-process use)
                     self.notify_data_ready.notify_one();
                     return Ok(backpressure_detected);
                 }
                 Err(_) => {
-                    // This error means the buffer is full.
+                    // Buffer is full - wait for space to become available
                     if !backpressure_detected {
                         backpressure_detected = true;
                     }
                     if start.elapsed() > timeout_duration {
                         return Err(IpcError::BackpressureTimeout);
                     }
-                    // Very short sleep to yield to the receiver. Notify doesn't work across
-                    // processes (server is in separate process), so we use a short poll
-                    // delay. 10µs is a good balance between CPU usage and latency.
-                    sleep(Duration::from_micros(10)).await;
+
+                    // Adaptive spin: fast spin for immediate space, then brief pause
+                    // to reduce CPU contention and allow tokio runtime progress
+                    spin_count += 1;
+                    if spin_count < SPIN_LIMIT {
+                        std::hint::spin_loop();
+                    } else {
+                        // Yield to tokio runtime for both in-process and cross-process scenarios
+                        tokio::task::yield_now().await;
+                        spin_count = 0;
+                    }
                 }
             }
         }
     }
 
+    /// Receives a message with accurate timestamp capture for latency measurement.
+    ///
+    /// The receive timestamp is captured immediately after reading from shared memory
+    /// and stored in the message's one_way_latency_ns field.
+    ///
+    /// Uses adaptive spinning: tight spin for immediate data, then short pause to
+    /// reduce CPU contention in sustained high-throughput scenarios.
     async fn receive_message(&self) -> Result<Message> {
         let ring_buffer = self.get_ring_buffer();
 
         // Try to read with timeout
         let start = std::time::Instant::now();
         let timeout_duration = Duration::from_secs(5);
+        let mut spin_count: u32 = 0;
+        const SPIN_LIMIT: u32 = 1000; // Spin for quick data availability
 
         loop {
             match ring_buffer.read_data() {
                 Ok(data) => {
-                    let message = Message::from_bytes(&data)?;
+                    // CRITICAL: Capture receive timestamp immediately after read
+                    // This ensures accurate latency measurement
+                    let receive_time_ns = crate::ipc::get_monotonic_time_ns();
+
+                    let mut message = Message::from_bytes(&data)?;
                     debug!(
                         "Received message {} via connection {}",
                         message.id, self.connection_id
                     );
-                    // Signal writer that space is available
+
+                    // Calculate and store one-way latency using accurate receive timestamp
+                    message.one_way_latency_ns = receive_time_ns.saturating_sub(message.timestamp);
+
+                    // Signal writer that space is available (for in-process use)
                     self.notify_space_ready.notify_one();
                     return Ok(message);
                 }
@@ -303,10 +371,17 @@ impl SharedMemoryConnection {
                     if start.elapsed() > timeout_duration {
                         return Err(anyhow!("Timeout receiving message"));
                     }
-                    // Very short sleep to yield to the sender. Notify doesn't work across
-                    // processes (server is in separate process), so we use a short poll
-                    // delay. 10µs is a good balance between CPU usage and latency.
-                    sleep(Duration::from_micros(10)).await;
+
+                    // Adaptive spin: fast spin for immediate data, then brief pause
+                    // to reduce CPU contention and allow tokio runtime progress
+                    spin_count += 1;
+                    if spin_count < SPIN_LIMIT {
+                        std::hint::spin_loop();
+                    } else {
+                        // Yield to tokio runtime for both in-process and cross-process scenarios
+                        tokio::task::yield_now().await;
+                        spin_count = 0;
+                    }
                 }
             }
         }

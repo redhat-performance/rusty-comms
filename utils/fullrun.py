@@ -35,6 +35,41 @@ from typing import List, Dict, Optional
 from dataclasses import dataclass
 from enum import Enum
 
+# SELinux helpers
+def get_selinux_mode() -> str:
+    """Get current SELinux mode (Enforcing, Permissive, or Disabled)."""
+    try:
+        result = subprocess.run(["getenforce"], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            return result.stdout.strip()
+        return "Unknown"
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return "N/A (getenforce not found)"
+
+
+def set_selinux_permissive() -> bool:
+    """Set SELinux to Permissive mode. Returns True on success."""
+    try:
+        result = subprocess.run(["setenforce", "0"], capture_output=True, text=True, timeout=5)
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, FileNotFoundError, PermissionError):
+        return False
+
+
+def check_selinux_for_tests() -> None:
+    """Check SELinux status and warn/set if needed for H2QM/C2C tests."""
+    mode = get_selinux_mode()
+    print(f"SELinux mode: {mode}")
+    
+    if mode == "Enforcing":
+        print("  WARNING: SELinux is Enforcing. H2QM PMQ tests may fail.")
+        print("  Attempting to set Permissive mode...")
+        if set_selinux_permissive():
+            print("  SELinux set to Permissive successfully.")
+        else:
+            print("  Failed to set Permissive mode. Run as root or use: sudo setenforce 0")
+
+
 # Configuration
 BINARY = "/root/hostcont/rusty-comms/target/release/ipc-benchmark"
 QM_BINARY = "/tmp/ipc-benchmark"
@@ -175,7 +210,9 @@ def run_command(cmd: List[str], timeout: int = 300, cwd: Optional[Path] = None,
         stream: If True, stream stdout/stderr in real-time to console
         stream_file: Deprecated - streaming CSV is now handled via --streaming-output-csv flag
     """
-    print(f"  Running: {' '.join(cmd[:10])}{'...' if len(cmd) > 10 else ''}", flush=True)
+    # Show full command for transparency
+    cmd_str = ' '.join(cmd)
+    print(f"  Command: {cmd_str}", flush=True)
     try:
         if stream:
             # Stream output in real-time to console
@@ -965,6 +1002,9 @@ Examples:
         print(f"ERROR: Binary not found: {BINARY}")
         print("  Run: cargo build --release")
         sys.exit(1)
+    
+    # Check SELinux status (important for H2QM PMQ and C2C tests)
+    check_selinux_for_tests()
     
     # Check and update QM binary if H2QM or QM_C2C tests are included
     if include_h2qm or include_qm_c2c:

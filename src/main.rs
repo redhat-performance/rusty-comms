@@ -1321,7 +1321,7 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
     // This avoids the massive overhead of writing to disk for each message
     let latency_file_path = args.internal_latency_file.clone();
     let mut latency_buffer: Vec<u64> = if latency_file_path.is_some() {
-        Vec::with_capacity(100_000) // Pre-allocate for performance
+        Vec::with_capacity(1_000_000) // Pre-allocate 1M entries for duration tests
     } else {
         Vec::new()
     };
@@ -1574,7 +1574,7 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
     // This avoids the massive overhead of writing to disk for each message
     let latency_file_path = args.internal_latency_file.clone();
     let mut latency_buffer: Vec<u64> = if latency_file_path.is_some() {
-        Vec::with_capacity(100_000) // Pre-allocate for performance
+        Vec::with_capacity(1_000_000) // Pre-allocate 1M entries for duration tests
     } else {
         Vec::new()
     };
@@ -1586,10 +1586,15 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
         // client disconnects) are observed and the server can exit cleanly.
         match transport.receive().await {
             Ok(msg) => {
-                // Calculate actual IPC latency: receive_time - send_time
-                // Use monotonic clock to avoid NTP adjustments affecting measurements
-                let receive_time_ns = get_monotonic_time_ns();
-                let latency_ns = receive_time_ns.saturating_sub(msg.timestamp);
+                // Use pre-calculated latency from transport if available (e.g., async PMQ
+                // calculates latency inside spawn_blocking for accuracy). Otherwise,
+                // calculate from current time and message timestamp.
+                let latency_ns = if msg.one_way_latency_ns > 0 {
+                    msg.one_way_latency_ns
+                } else {
+                    let receive_time_ns = get_monotonic_time_ns();
+                    receive_time_ns.saturating_sub(msg.timestamp)
+                };
 
                 // Buffer latency in memory if enabled
                 // Skip canary messages (ID == u64::MAX) which are used for warmup
@@ -1629,7 +1634,7 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
 
     let _ = transport.close().await;
 
-    // Write all buffered latencies to file at once (much faster than per-message I/O)
+    // Write all buffered latencies to file in a single operation (much faster)
     if let Some(ref path) = latency_file_path {
         debug!(
             "Writing {} buffered latencies to file: {}",
@@ -1637,12 +1642,20 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
             path
         );
         use tokio::io::AsyncWriteExt;
+        
+        // Build the entire output string in memory, then write once
+        // This is MUCH faster than per-line async writes
+        let output: String = latency_buffer
+            .iter()
+            .map(|ns| format!("{}\n", ns))
+            .collect();
+        
         let mut file = tokio::fs::File::create(path)
             .await
             .with_context(|| format!("Failed to create latency file: {}", path))?;
-        for latency_ns in &latency_buffer {
-            let _ = file.write_all(format!("{}\n", latency_ns).as_bytes()).await;
-        }
+        file.write_all(output.as_bytes())
+            .await
+            .with_context(|| format!("Failed to write latencies to file: {}", path))?;
         debug!("Finished writing latencies to file");
     }
 
