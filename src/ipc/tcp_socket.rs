@@ -50,7 +50,8 @@ impl TcpSocketTransport {
     }
 
     /// Read a message from the TCP stream
-    async fn read_message(stream: &mut TcpStream) -> Result<Message> {
+    /// Returns both the message and the receive timestamp (captured immediately after read)
+    async fn read_message(stream: &mut TcpStream) -> Result<(Message, u64)> {
         // Read message length (4 bytes)
         let mut len_bytes = [0u8; 4];
         stream.read_exact(&mut len_bytes).await?;
@@ -65,8 +66,13 @@ impl TcpSocketTransport {
         let mut message_data = vec![0u8; message_len];
         stream.read_exact(&mut message_data).await?;
 
+        // CRITICAL: Capture receive timestamp immediately after read, before deserialization
+        // This ensures accurate latency measurement
+        let receive_time_ns = crate::ipc::get_monotonic_time_ns();
+
         // Deserialize message
-        Message::from_bytes(&message_data)
+        let message = Message::from_bytes(&message_data)?;
+        Ok((message, receive_time_ns))
     }
 
     /// Write a message to the TCP stream
@@ -155,7 +161,12 @@ impl TcpSocketTransport {
         // Read messages from this connection
         loop {
             match Self::read_message(&mut stream).await {
-                Ok(message) => {
+                Ok((mut message, receive_time_ns)) => {
+                    // Calculate one-way latency for non-Response messages
+                    if message.message_type != crate::ipc::MessageType::Response {
+                        message.one_way_latency_ns =
+                            receive_time_ns.saturating_sub(message.timestamp);
+                    }
                     debug!(
                         "Received message {} from connection {}",
                         message.id, connection_id
@@ -321,7 +332,16 @@ impl IpcTransport for TcpSocketTransport {
         }
 
         if let Some(ref mut stream) = self.stream {
-            let message = Self::read_message(stream).await?;
+            let (mut message, receive_time_ns) = Self::read_message(stream).await?;
+
+            // Calculate and store one-way latency using accurate receive timestamp
+            // (captured inside read_message immediately after socket read, before deserialization)
+            // Only for Request/OneWay messages - Response messages already have
+            // one_way_latency_ns set by the server, so don't overwrite it
+            if message.message_type != crate::ipc::MessageType::Response {
+                message.one_way_latency_ns = receive_time_ns.saturating_sub(message.timestamp);
+            }
+
             debug!("Received message {} via TCP Socket", message.id);
             Ok(message)
         } else {

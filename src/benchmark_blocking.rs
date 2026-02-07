@@ -746,27 +746,45 @@ impl BlockingBenchmarkRunner {
             self.run_warmup(&transport_config)?;
         }
 
-        // Run one-way latency test if enabled
-        if self.config.one_way {
-            info!("Running one-way latency test");
-            let one_way_results =
-                self.run_one_way_test(&transport_config, results_manager.as_deref_mut())?;
-            results.add_one_way_results(one_way_results);
-        }
+        // Check if we should run a combined test (both one-way and round-trip enabled)
+        // Combined test measures BOTH latencies on the SAME messages for accurate comparison
+        let can_run_combined = self.config.one_way
+            && self.config.round_trip
+            && !(self.mechanism == IpcMechanism::SharedMemory && !self.args.shm_direct);
 
-        // Run round-trip latency test if enabled
-        // Note: Shared memory in blocking mode doesn't support bidirectional communication
-        if self.config.round_trip {
-            if self.mechanism == IpcMechanism::SharedMemory {
-                warn!(
-                    "Shared memory in blocking mode does not support bidirectional \
-                    communication. Skipping round-trip test."
-                );
-            } else {
-                info!("Running round-trip latency test");
-                let round_trip_results =
-                    self.run_round_trip_test(&transport_config, results_manager)?;
-                results.add_round_trip_results(round_trip_results);
+        if can_run_combined {
+            // Run combined test that measures both one-way and round-trip on same messages
+            info!("Running combined one-way and round-trip test");
+            let (one_way_results, round_trip_results) =
+                self.run_combined_test(&transport_config, results_manager)?;
+            results.add_one_way_results(one_way_results);
+            results.add_round_trip_results(round_trip_results);
+        } else {
+            // Run tests separately (original behavior for single-mode tests)
+
+            // Run one-way latency test if enabled
+            if self.config.one_way {
+                info!("Running one-way latency test");
+                let one_way_results =
+                    self.run_one_way_test(&transport_config, results_manager.as_deref_mut())?;
+                results.add_one_way_results(one_way_results);
+            }
+
+            // Run round-trip latency test if enabled
+            // Note: SHM ring-buffer mode doesn't support bidirectional (single buffer)
+            // SHM-direct now supports bidirectional via dual message slots
+            if self.config.round_trip {
+                if self.mechanism == IpcMechanism::SharedMemory && !self.args.shm_direct {
+                    warn!(
+                        "Shared memory ring-buffer mode does not support bidirectional communication. \
+                        Skipping round-trip test. Use --shm-direct, UDS, TCP, or PMQ for round-trip benchmarks."
+                    );
+                } else {
+                    info!("Running round-trip latency test");
+                    let round_trip_results =
+                        self.run_round_trip_test(&transport_config, results_manager)?;
+                    results.add_round_trip_results(round_trip_results);
+                }
             }
         }
 
@@ -948,6 +966,231 @@ impl BlockingBenchmarkRunner {
         )?;
 
         Ok(metrics_collector.get_metrics())
+    }
+
+    /// Run combined one-way and round-trip test (blocking version)
+    ///
+    /// This implementation measures BOTH one-way and round-trip latencies for the
+    /// SAME messages, ensuring a fair comparison between them. This is critical
+    /// because running separate one-way and round-trip tests uses different
+    /// message patterns (OneWay vs Request) which have different server load
+    /// characteristics.
+    ///
+    /// ## How It Works
+    ///
+    /// 1. Client sends Request message with embedded timestamp
+    /// 2. Server receives, calculates one-way latency, sends Response with latency
+    /// 3. Client receives Response, extracts one-way latency from it
+    /// 4. Client also measures round-trip as time from send to receive
+    ///
+    /// This ensures both measurements are taken under identical conditions
+    /// (same message rate, same server load, same system state).
+    ///
+    /// ## Returns
+    /// - `Ok((PerformanceMetrics, PerformanceMetrics))`: Tuple of (one_way, round_trip) results
+    /// - `Err(anyhow::Error)`: Test execution failure
+    fn run_combined_test(
+        &self,
+        transport_config: &TransportConfig,
+        mut results_manager: Option<&mut crate::results_blocking::BlockingResultsManager>,
+    ) -> Result<(PerformanceMetrics, PerformanceMetrics)> {
+        let mut one_way_metrics =
+            MetricsCollector::new(Some(LatencyType::OneWay), self.config.percentiles.clone())?;
+        let mut round_trip_metrics = MetricsCollector::new(
+            Some(LatencyType::RoundTrip),
+            self.config.percentiles.clone(),
+        )?;
+
+        let mut client_transport =
+            BlockingTransportFactory::create(&self.mechanism, self.args.shm_direct)?;
+
+        // --- Server Process Spawning ---
+        let (mut server_process, mut pipe_reader) = self.spawn_server_process(transport_config)?;
+
+        // Wait for the server to signal that it's ready
+        let mut buf = [0; 1];
+        pipe_reader
+            .read_exact(&mut buf)
+            .context("Failed to read server ready signal from pipe")?;
+        debug!("Client received server ready signal for combined test");
+
+        // --- Client Logic ---
+        // Apply client affinity if specified
+        if let Some(client_core_id) = self.config.client_affinity {
+            if let Some(ref core_ids) = self.available_cores {
+                if client_core_id < core_ids.len() {
+                    if !core_affinity::set_for_current(core_ids[client_core_id]) {
+                        warn!(
+                            "Failed to set client thread affinity to core {}",
+                            client_core_id
+                        );
+                    } else {
+                        debug!("Client thread pinned to core {}", client_core_id);
+                    }
+                }
+            }
+        }
+
+        client_transport.start_client_blocking(transport_config)?;
+
+        let payload = vec![0u8; self.config.message_size];
+        let start_time = Instant::now();
+
+        if let Some(duration) = self.config.duration {
+            // Duration-based test
+            let mut i = 0u64;
+
+            // Send canary message if first message should not be included
+            if !self.config.include_first_message {
+                let canary = Message::new(u64::MAX, payload.clone(), MessageType::Request);
+                if client_transport.send_blocking(&canary).is_ok() {
+                    let _ = client_transport.receive_blocking();
+                }
+            }
+
+            while start_time.elapsed() < duration {
+                let send_timestamp_ns =
+                    crate::results::MessageLatencyRecord::current_timestamp_ns();
+                let send_time = Instant::now();
+                let message = Message::new(i, payload.clone(), MessageType::Request);
+
+                match client_transport.send_blocking(&message) {
+                    Ok(_) => {
+                        if let Some(delay) = self.config.send_delay {
+                            std::thread::sleep(delay);
+                        }
+                        match client_transport.receive_blocking() {
+                            Ok(response) => {
+                                let round_trip_latency = send_time.elapsed();
+                                // Extract one-way latency from server's measurement in response
+                                let one_way_latency =
+                                    std::time::Duration::from_nanos(response.one_way_latency_ns);
+
+                                // Record one-way latency
+                                one_way_metrics
+                                    .record_message(self.config.message_size, Some(one_way_latency))?;
+
+                                // Record round-trip latency
+                                round_trip_metrics
+                                    .record_message(self.config.message_size, Some(round_trip_latency))?;
+
+                                // Stream latency records if enabled
+                                if let Some(ref mut manager) = results_manager {
+                                    // One-way record
+                                    let ow_record = crate::results::MessageLatencyRecord::new(
+                                        i,
+                                        self.mechanism,
+                                        self.config.message_size,
+                                        crate::metrics::LatencyType::OneWay,
+                                        one_way_latency,
+                                        send_timestamp_ns,
+                                    );
+                                    let _ = manager.stream_latency_record(&ow_record);
+
+                                    // Round-trip record
+                                    let rt_record = crate::results::MessageLatencyRecord::new(
+                                        i,
+                                        self.mechanism,
+                                        self.config.message_size,
+                                        crate::metrics::LatencyType::RoundTrip,
+                                        round_trip_latency,
+                                        send_timestamp_ns,
+                                    );
+                                    let _ = manager.stream_latency_record(&rt_record);
+                                }
+                            }
+                            Err(_) => break,
+                        }
+                        i += 1;
+                    }
+                    Err(_) => break,
+                }
+            }
+        } else {
+            // Message-count based test
+            let msg_count = self.config.msg_count.unwrap_or_default();
+
+            // Send canary message if first message should not be included
+            if !self.config.include_first_message {
+                let canary = Message::new(u64::MAX, payload.clone(), MessageType::Request);
+                if client_transport.send_blocking(&canary).is_ok() {
+                    let _ = client_transport.receive_blocking();
+                }
+            }
+
+            for i in 0..msg_count {
+                let send_timestamp_ns =
+                    crate::results::MessageLatencyRecord::current_timestamp_ns();
+                let send_time = Instant::now();
+                let message = Message::new(i as u64, payload.clone(), MessageType::Request);
+                client_transport.send_blocking(&message)?;
+
+                if let Some(delay) = self.config.send_delay {
+                    std::thread::sleep(delay);
+                }
+
+                let response = client_transport.receive_blocking()?;
+                let round_trip_latency = send_time.elapsed();
+                // Extract one-way latency from server's measurement in response
+                let one_way_latency =
+                    std::time::Duration::from_nanos(response.one_way_latency_ns);
+
+                // Record one-way latency
+                one_way_metrics.record_message(self.config.message_size, Some(one_way_latency))?;
+
+                // Record round-trip latency
+                round_trip_metrics
+                    .record_message(self.config.message_size, Some(round_trip_latency))?;
+
+                // Stream latency records if enabled
+                if let Some(ref mut manager) = results_manager {
+                    // One-way record
+                    let ow_record = crate::results::MessageLatencyRecord::new(
+                        i as u64,
+                        self.mechanism,
+                        self.config.message_size,
+                        crate::metrics::LatencyType::OneWay,
+                        one_way_latency,
+                        send_timestamp_ns,
+                    );
+                    let _ = manager.stream_latency_record(&ow_record);
+
+                    // Round-trip record
+                    let rt_record = crate::results::MessageLatencyRecord::new(
+                        i as u64,
+                        self.mechanism,
+                        self.config.message_size,
+                        crate::metrics::LatencyType::RoundTrip,
+                        round_trip_latency,
+                        send_timestamp_ns,
+                    );
+                    let _ = manager.stream_latency_record(&rt_record);
+                }
+            }
+        }
+
+        // --- Cleanup ---
+        // For PMQ and SHM, send a shutdown message to signal the server to exit
+        #[cfg(target_os = "linux")]
+        if self.mechanism == IpcMechanism::PosixMessageQueue {
+            debug!("Sending shutdown message to PMQ server (combined)");
+            let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+            let _ = client_transport.send_blocking(&shutdown);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        if self.mechanism == IpcMechanism::SharedMemory {
+            debug!("Sending shutdown message to SHM server (combined)");
+            let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+            let _ = client_transport.send_blocking(&shutdown);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        client_transport.close_blocking()?;
+        server_process
+            .wait()
+            .context("Server process exited with an error")?;
+
+        Ok((one_way_metrics.get_metrics(), round_trip_metrics.get_metrics()))
     }
 
     /// Run single-threaded one-way test (blocking version)

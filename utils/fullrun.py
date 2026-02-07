@@ -12,7 +12,7 @@ Runs all mechanisms and configurations:
 
 Message sizes:
 - PMQ: 512, 4096, 8100
-- Others: 64, 512, 4096, 8192, 65536
+- Others: 64, 512, 1024, 4096, 8192
 
 Host-to-QM tests require:
 - QM container running with proper configuration
@@ -92,7 +92,7 @@ WARMUP = 100
 
 # Message sizes
 PMQ_SIZES = [512, 1024, 4096, 8100]
-GENERAL_SIZES = [64, 512, 1024, 4096, 8192, 65536]
+GENERAL_SIZES = [64, 512, 1024, 4096, 8192]
 
 # Runtime settings (set by main())
 STREAM_OUTPUT = False
@@ -267,13 +267,10 @@ def run_standalone_test(config: TestConfig, stream_file: Optional[Path] = None) 
     if stream_file:
         cmd.extend(["--streaming-output-csv", str(stream_file)])
     
-    # Async PMQ and async SHM have timing issues with round-trip
-    # Only run one-way for these; other modes get both
-    skip_roundtrip = (
-        config.mode == Mode.STANDALONE_ASYNC and config.mechanism in ["pmq", "shm"]
-    )
-    if not skip_roundtrip:
-        cmd.append("--round-trip")
+    # All async mechanisms now support round-trip:
+    # - SHM uses dual ring buffers
+    # - PMQ uses dual queues (request/response)
+    cmd.append("--round-trip")
     
     # Add iteration or duration
     if config.test_type == "iter":
@@ -284,6 +281,9 @@ def run_standalone_test(config: TestConfig, stream_file: Optional[Path] = None) 
     # Add mode-specific flags
     if config.mode == Mode.STANDALONE_BLOCKING:
         cmd.append("--blocking")
+        # Use shm-direct for SHM in blocking mode (supports bidirectional via dual slots)
+        if config.mechanism == "shm":
+            cmd.append("--shm-direct")
     elif config.mode == Mode.STANDALONE_SHM_DIRECT:
         cmd.append("--shm-direct")
     # async is the default
@@ -339,6 +339,10 @@ def run_h2qm_test(config: TestConfig, stream_file: Optional[Path] = None) -> boo
         "-w", str(WARMUP),
         "--blocking",
     ]
+    
+    # Use shm-direct for SHM mechanism (supports bidirectional via dual slots)
+    if config.mechanism == "shm":
+        common_args.append("--shm-direct")
     
     if config.test_type == "iter":
         common_args.extend(["-i", str(ITERATIONS)])
@@ -425,9 +429,8 @@ def run_h2qm_test(config: TestConfig, stream_file: Optional[Path] = None) -> boo
     if stream_file:
         sender_cmd.extend(["--streaming-output-csv", str(stream_file)])
     
-    # SHM has timing issues with round-trip across host/QM boundary
-    if config.mechanism != "shm":
-        sender_cmd.append("--round-trip")
+    # All mechanisms now support round-trip (SHM uses shm-direct with dual slots)
+    sender_cmd.append("--round-trip")
     
     # Run sender from host
     print(f"  Running sender from host...")
@@ -535,6 +538,10 @@ def run_c2c_test(config: TestConfig, stream_file: Optional[Path] = None) -> bool
         "--blocking",
     ]
     
+    # Use shm-direct for SHM mechanism (supports bidirectional via dual slots)
+    if config.mechanism == "shm":
+        common_args.append("--shm-direct")
+    
     if config.test_type == "iter":
         common_args.extend(["-i", str(ITERATIONS)])
     else:
@@ -584,8 +591,8 @@ def run_c2c_test(config: TestConfig, stream_file: Optional[Path] = None) -> bool
             server_ip = "127.0.0.1"
         sender_extra = ["--host", server_ip]
     
-    # SHM has timing issues with round-trip across container boundaries
-    skip_roundtrip = config.mechanism == "shm"
+    # All mechanisms now support round-trip (SHM uses shm-direct with dual slots)
+    skip_roundtrip = False
     
     # Build sender command - runs sender container and waits for it
     sender_cmd = [
@@ -657,6 +664,10 @@ def run_qm_c2c_test(config: TestConfig, stream_file: Optional[Path] = None) -> b
         "--blocking",
     ]
     
+    # Use shm-direct for SHM mechanism (supports bidirectional via dual slots)
+    if config.mechanism == "shm":
+        common_args.append("--shm-direct")
+    
     if config.test_type == "iter":
         common_args.extend(["-i", str(ITERATIONS)])
     else:
@@ -727,9 +738,8 @@ def run_qm_c2c_test(config: TestConfig, stream_file: Optional[Path] = None) -> b
     if stream_file:
         sender_cmd.extend(["--streaming-output-csv", qm_streaming_path])
     
-    # SHM has timing issues with round-trip
-    if config.mechanism != "shm":
-        sender_cmd.append("--round-trip")
+    # All mechanisms now support round-trip (SHM uses shm-direct with dual slots)
+    sender_cmd.append("--round-trip")
     
     print(f"  Running sender in QM...")
     result = run_command(sender_cmd, timeout=600, stream=STREAM_OUTPUT)
@@ -800,10 +810,6 @@ def get_sizes_for_mechanism(mechanism: str, mode: Mode) -> List[int]:
     """
     if mechanism == "pmq":
         return PMQ_SIZES
-    
-    # SHM-direct has 8KB payload limit - exclude 65536
-    if mode == Mode.STANDALONE_SHM_DIRECT:
-        return [s for s in GENERAL_SIZES if s <= 8192]
     
     return GENERAL_SIZES
 

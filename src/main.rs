@@ -264,9 +264,9 @@ fn run_client_mode_blocking(args: Args) -> Result<()> {
     loop {
         match transport.receive_blocking() {
             Ok(message) => {
-                // Calculate actual IPC latency for one-way measurements
-                let receive_time_ns = get_monotonic_time_ns();
-                let latency_ns = receive_time_ns.saturating_sub(message.timestamp);
+                // Use the one-way latency already calculated inside receive_blocking()
+                // (captured immediately after socket/queue read, before deserialization)
+                let latency_ns = message.one_way_latency_ns;
 
                 // Check for shutdown message
                 if message.message_type == MessageType::Shutdown {
@@ -1330,10 +1330,10 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
     loop {
         match transport.receive_blocking() {
             Ok(message) => {
-                // Calculate actual IPC latency: receive_time - send_time
-                // Use monotonic clock to avoid NTP adjustments affecting measurements
-                let receive_time_ns = get_monotonic_time_ns();
-                let latency_ns = receive_time_ns.saturating_sub(message.timestamp);
+                // Use the one-way latency already calculated inside receive_blocking()
+                // (captured immediately after socket/queue read, before deserialization)
+                // This provides accurate IPC transit time measurement
+                let latency_ns = message.one_way_latency_ns;
 
                 // Buffer latency in memory if enabled
                 // Skip canary messages (ID == u64::MAX) which are used for warmup

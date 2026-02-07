@@ -465,13 +465,16 @@ impl BlockingTransport for BlockingPosixMessageQueue {
 
         // Receive message (blocks until message available)
         // Use a retry loop for EAGAIN errors
-        let data = loop {
+        let (data, receive_time_ns) = loop {
             let mut priority = 0u32;
             match mq_receive(fd, &mut buffer, &mut priority) {
                 Ok(size) => {
+                    // CRITICAL: Capture receive timestamp immediately after read
+                    // This ensures accurate latency measurement
+                    let receive_time_ns = crate::ipc::get_monotonic_time_ns();
                     // Truncate buffer to actual message size
                     buffer.truncate(size);
-                    break buffer;
+                    break (buffer, receive_time_ns);
                 }
                 Err(Errno::EAGAIN) => {
                     // No message available (shouldn't happen in blocking mode)
@@ -485,8 +488,15 @@ impl BlockingTransport for BlockingPosixMessageQueue {
         };
 
         // Deserialize message
-        let message: Message =
+        let mut message: Message =
             bincode::deserialize(&data).context("Failed to deserialize message")?;
+
+        // Calculate and store one-way latency using accurate receive timestamp
+        // Only for Request/OneWay messages - Response messages already have
+        // one_way_latency_ns set by the server, so don't overwrite it
+        if message.message_type != crate::ipc::MessageType::Response {
+            message.one_way_latency_ns = receive_time_ns.saturating_sub(message.timestamp);
+        }
 
         trace!("Received message ID {}", message.id);
         Ok(message)

@@ -490,21 +490,18 @@ impl BenchmarkRunner {
             self.run_warmup(&transport_config).await?;
         }
 
-        // Check if we need to run in combined mode for streaming
-        let results_manager_ref = results_manager.as_deref_mut();
-        let combined_streaming = results_manager_ref
-            .map(|rm| rm.is_combined_streaming_enabled())
-            .unwrap_or(false);
-
-        if combined_streaming && self.config.one_way && self.config.round_trip {
-            info!("Running combined one-way and round-trip test for streaming");
+        // ALWAYS use combined test when BOTH one-way and round-trip are enabled
+        // This ensures fair comparison by measuring both latencies on the SAME messages
+        // (Running tests separately causes OW mean > RT mean due to different message patterns)
+        if self.config.one_way && self.config.round_trip {
+            info!("Running combined one-way and round-trip test");
             let combined_results = self
                 .run_combined_test(&transport_config, results_manager.as_deref_mut())
                 .await?;
             results.add_one_way_results(combined_results.0);
             results.add_round_trip_results(combined_results.1);
         } else {
-            // Run one-way latency test if enabled
+            // Run tests separately when only one type is enabled
             if self.config.one_way {
                 info!("Running one-way latency test");
                 let one_way_results = self
@@ -513,7 +510,6 @@ impl BenchmarkRunner {
                 results.add_one_way_results(one_way_results);
             }
 
-            // Run round-trip latency test if enabled
             if self.config.round_trip {
                 info!("Running round-trip latency test");
                 let round_trip_results = self
@@ -1672,9 +1668,11 @@ port={}",
                     let message = Message::new(i, payload.clone(), MessageType::Request);
 
                     if client_transport.send(&message).await.is_ok() {
-                        let one_way_latency = send_start.elapsed();
-                        if client_transport.receive().await.is_ok() {
+                        if let Ok(response) = client_transport.receive().await {
                             let round_trip_latency = send_start.elapsed();
+                            // Extract one-way latency from server's measurement in response
+                            let one_way_latency =
+                                Duration::from_nanos(response.one_way_latency_ns);
                             one_way_latencies.push(one_way_latency);
                             round_trip_latencies.push(round_trip_latency);
                             i += 1;
@@ -1691,9 +1689,10 @@ port={}",
                     let send_start = Instant::now();
                     let message = Message::new(i as u64, payload.clone(), MessageType::Request);
                     client_transport.send(&message).await?;
-                    let one_way_latency = send_start.elapsed();
-                    client_transport.receive().await?;
+                    let response = client_transport.receive().await?;
                     let round_trip_latency = send_start.elapsed();
+                    // Extract one-way latency from server's measurement in response
+                    let one_way_latency = Duration::from_nanos(response.one_way_latency_ns);
                     one_way_latencies.push(one_way_latency);
                     round_trip_latencies.push(round_trip_latency);
                 }

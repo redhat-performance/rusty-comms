@@ -121,45 +121,84 @@ mod futex {
 /// segments small for reliable cross-process initialization.
 const MAX_PAYLOAD_SIZE: usize = 8192; // 8 KB
 
-/// Raw message structure stored directly in shared memory.
+/// A single message slot for one direction of communication.
 ///
-/// This struct is designed for minimal overhead IPC. It uses `#[repr(C, packed)]`
-/// to ensure predictable memory layout across process boundaries.
+/// Each slot has its own ready flag for independent synchronization.
+#[repr(C)]
+struct MessageSlot {
+    /// Coordination flag (used as futex on Linux).
+    ///
+    /// - `0`: No message ready (receiver should wait)
+    /// - `1`: Message ready (receiver can read)
+    ready: AtomicI32,
+
+    /// Message identifier (sequential counter).
+    id: u64,
+
+    /// Timestamp when message was sent (nanoseconds since CLOCK_MONOTONIC).
+    timestamp: u64,
+
+    /// Message type (converted from MessageType enum).
+    message_type: u32,
+
+    /// One-way latency measured by the receiver (in nanoseconds).
+    /// Used in round-trip mode to carry server-measured latency back to client.
+    one_way_latency_ns: u64,
+
+    /// Actual number of valid bytes in the payload.
+    payload_len: usize,
+
+    /// Fixed-size payload buffer.
+    payload: [u8; MAX_PAYLOAD_SIZE],
+}
+
+impl MessageSlot {
+    /// Initialize a message slot to empty state.
+    fn init(&mut self) {
+        // Use ptr::write to properly initialize AtomicI32 in shared memory
+        unsafe {
+            std::ptr::write(&mut self.ready, AtomicI32::new(0));
+        }
+        self.id = 0;
+        self.timestamp = 0;
+        self.message_type = 0;
+        self.one_way_latency_ns = 0;
+        self.payload_len = 0;
+    }
+}
+
+/// Dual-slot shared memory structure for bidirectional communication.
+///
+/// This struct supports true bidirectional IPC by having separate message
+/// slots for each direction:
+/// - `client_to_server`: Client writes, Server reads
+/// - `server_to_client`: Server writes, Client reads
 ///
 /// # Memory Layout
 ///
 /// ```text
-/// Offset  Size  Field              Description
-/// ------  ----  -----------------  ----------------------------------
-/// 0       48    mutex              pthread_mutex_t (PROCESS_SHARED)
-/// 48      48    data_ready         pthread_cond_t (PROCESS_SHARED)
-/// 96      8     id                 Message ID (u64)
-/// 104     8     timestamp          Send timestamp in nanoseconds (u64)
-/// 112     100   payload            Fixed-size payload data
-/// 212     4     message_type       Message type enum (u32)
-/// 216     4     ready              Coordination flag (0=empty, 1=ready)
-/// 220     4     _padding           Alignment padding
-/// ------  ----
-/// Total:  224 bytes
+/// ┌─────────────────────────────────────────────┐
+/// │ Header                                      │
+/// │   mutex: pthread_mutex_t (PROCESS_SHARED)   │
+/// │   cond: pthread_cond_t (PROCESS_SHARED)     │
+/// │   client_ready: AtomicI32 (handshake)       │
+/// ├─────────────────────────────────────────────┤
+/// │ client_to_server: MessageSlot               │
+/// │   ready, id, timestamp, message_type,       │
+/// │   payload_len, payload[MAX_PAYLOAD_SIZE]    │
+/// ├─────────────────────────────────────────────┤
+/// │ server_to_client: MessageSlot               │
+/// │   ready, id, timestamp, message_type,       │
+/// │   payload_len, payload[MAX_PAYLOAD_SIZE]    │
+/// └─────────────────────────────────────────────┘
 /// ```
 ///
 /// # Thread Safety
 ///
 /// The mutex and condition variable are initialized with
 /// `PTHREAD_PROCESS_SHARED` attribute, making them safe to use across
-/// process boundaries.
-///
-/// # Examples
-///
-/// ```rust,no_run
-/// use ipc_benchmark::ipc::*;
-///
-/// # fn example() -> anyhow::Result<()> {
-/// // This struct is typically not used directly.
-/// // Use BlockingSharedMemoryDirect instead.
-/// # Ok(())
-/// # }
-/// ```
+/// process boundaries. Each slot has its own ready flag for lock-free
+/// signaling via futex (Linux) or condvar (other platforms).
 #[repr(C)]
 struct RawSharedMessage {
     /// Mutex for exclusive access to shared memory.
@@ -169,45 +208,9 @@ struct RawSharedMessage {
 
     /// Condition variable for signaling.
     ///
-    /// Both sender and receiver wait/signal on this SAME condition variable
-    /// using a ping-pong pattern for efficient synchronization.
+    /// Used for pthread-based synchronization on non-Linux platforms
+    /// and as fallback.
     cond: libc::pthread_cond_t,
-
-    /// Message identifier (sequential counter).
-    id: u64,
-
-    /// Timestamp when message was sent (nanoseconds since CLOCK_MONOTONIC).
-    ///
-    /// This is captured immediately before the message is written to shared
-    /// memory for accurate latency measurement.
-    timestamp: u64,
-
-    /// Actual number of valid bytes in the payload.
-    ///
-    /// Only the first `payload_len` bytes of `payload` contain valid data.
-    /// This allows variable-length messages up to MAX_PAYLOAD_SIZE.
-    payload_len: usize,
-
-    /// Fixed-size payload buffer.
-    ///
-    /// Maximum 1MB. Only the first `payload_len` bytes are valid.
-    /// If the source payload is smaller, only those bytes are copied.
-    /// If larger, it's truncated to MAX_PAYLOAD_SIZE.
-    payload: [u8; MAX_PAYLOAD_SIZE],
-
-    /// Message type (converted from MessageType enum).
-    ///
-    /// Stored as u32 for stable memory layout.
-    message_type: u32,
-
-    /// Coordination flag (used as futex on Linux).
-    ///
-    /// - `0`: No message ready (receiver should wait)
-    /// - `1`: Message ready (receiver can read)
-    ///
-    /// Uses AtomicI32 for futex compatibility. Futex operates at kernel level,
-    /// working reliably across container boundaries regardless of glibc version.
-    ready: AtomicI32,
 
     /// Client ready flag (used as futex on Linux).
     ///
@@ -217,6 +220,14 @@ struct RawSharedMessage {
     /// This provides the handshake that prevents the server from entering
     /// receive loop before the client has opened the shared memory segment.
     client_ready: AtomicI32,
+
+    /// Message slot for Client → Server communication.
+    /// Client writes to this slot, Server reads from it.
+    client_to_server: MessageSlot,
+
+    /// Message slot for Server → Client communication.
+    /// Server writes to this slot, Client reads from it.
+    server_to_client: MessageSlot,
 }
 
 impl RawSharedMessage {
@@ -239,16 +250,6 @@ impl RawSharedMessage {
     /// # Errors
     ///
     /// Returns an error if pthread initialization fails.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// # use ipc_benchmark::ipc::*;
-    /// # fn example() -> anyhow::Result<()> {
-    /// // Typically called internally by BlockingSharedMemoryDirect
-    /// # Ok(())
-    /// # }
-    /// ```
     unsafe fn init(&mut self) -> Result<()> {
         use std::mem::MaybeUninit;
 
@@ -273,13 +274,17 @@ impl RawSharedMessage {
         libc::pthread_condattr_destroy(cond_attr.as_mut_ptr());
         self.cond = cond.assume_init();
 
-        // Initialize coordination flags and payload length
-        // Use ptr::write to initialize AtomicI32 in shared memory
-        std::ptr::write(&mut self.ready, AtomicI32::new(0));
+        // Initialize client ready flag
         std::ptr::write(&mut self.client_ready, AtomicI32::new(0));
-        self.payload_len = 0;
 
-        debug!("RawSharedMessage initialized successfully (mutex + cond var)");
+        // Initialize both message slots
+        self.client_to_server.init();
+        self.server_to_client.init();
+
+        debug!(
+            "RawSharedMessage initialized with dual slots (size: {} bytes)",
+            Self::SIZE
+        );
         Ok(())
     }
 
@@ -713,10 +718,23 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
     }
 
     fn send_blocking(&mut self, message: &Message) -> Result<()> {
-        trace!("Sending message ID {} via direct memory SHM", message.id);
+        trace!(
+            "Sending message ID {} via direct memory SHM (is_server={})",
+            message.id,
+            self.is_server
+        );
 
         unsafe {
             let ptr = self.get_raw_message_ptr();
+
+            // Select the appropriate slot based on role:
+            // - Client sends on client_to_server slot
+            // - Server sends on server_to_client slot
+            let slot = if self.is_server {
+                &mut (*ptr).server_to_client
+            } else {
+                &mut (*ptr).client_to_server
+            };
 
             // Backpressure: Wait if previous message hasn't been consumed yet
             if self.cross_container {
@@ -726,11 +744,11 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
 
                 #[cfg(target_os = "linux")]
                 {
-                    while (*ptr).ready.load(Ordering::Acquire) == 1 {
+                    while slot.ready.load(Ordering::Acquire) == 1 {
                         if loop_start.elapsed() > timeout {
                             return Err(anyhow!("Timeout waiting for receiver to consume message"));
                         }
-                        futex::futex_wait(&(*ptr).ready, 1, 100_000); // 100µs
+                        futex::futex_wait(&slot.ready, 1, 100_000); // 100µs
                     }
                 }
 
@@ -741,7 +759,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                         return Err(anyhow!("Failed to lock mutex: {}", ret));
                     }
 
-                    while (*ptr).ready.load(Ordering::Acquire) == 1 {
+                    while slot.ready.load(Ordering::Acquire) == 1 {
                         if loop_start.elapsed() > timeout {
                             libc::pthread_mutex_unlock(&mut (*ptr).mutex);
                             return Err(anyhow!("Timeout waiting for receiver to consume message"));
@@ -766,7 +784,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                     return Err(anyhow!("Failed to lock mutex: {}", ret));
                 }
 
-                if (*ptr).ready.load(Ordering::Acquire) == 1 {
+                if slot.ready.load(Ordering::Acquire) == 1 {
                     trace!("Waiting for receiver to consume previous message (backpressure)");
 
                     // Use timed wait (5 seconds) to avoid infinite blocking
@@ -777,7 +795,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                     libc::clock_gettime(libc::CLOCK_REALTIME, &mut timespec);
                     timespec.tv_sec += 5; // 5 second timeout
 
-                    while (*ptr).ready.load(Ordering::Acquire) == 1 {
+                    while slot.ready.load(Ordering::Acquire) == 1 {
                         let ret = libc::pthread_cond_timedwait(
                             &mut (*ptr).cond,
                             &mut (*ptr).mutex,
@@ -800,34 +818,40 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
             // Write message data directly to shared memory (no serialization!)
             // Validate message size - return error instead of silent truncation
             if message.payload.len() > MAX_PAYLOAD_SIZE {
+                // Unlock mutex before returning error
+                if !self.cross_container {
+                    libc::pthread_mutex_unlock(&mut (*ptr).mutex);
+                }
                 return Err(anyhow!(
-                    "Message payload size {} exceeds MAX_PAYLOAD_SIZE {} for --shm-direct mode.                     Use -m shm without --shm-direct for larger messages, or reduce message size.",
+                    "Message payload size {} exceeds MAX_PAYLOAD_SIZE {} for --shm-direct mode. \
+                     Use -m shm without --shm-direct for larger messages, or reduce message size.",
                     message.payload.len(),
                     MAX_PAYLOAD_SIZE
                 ));
             }
 
-            (*ptr).id = message.id;
-            (*ptr).timestamp = timestamp_ns;
-            (*ptr).message_type = message.message_type as u32;
+            slot.id = message.id;
+            slot.timestamp = timestamp_ns;
+            slot.message_type = message.message_type as u32;
+            slot.one_way_latency_ns = message.one_way_latency_ns;
 
             // Copy the payload bytes
             let len = message.payload.len();
-            (*ptr).payload_len = len;
+            slot.payload_len = len;
             std::ptr::copy_nonoverlapping(
                 message.payload.as_ptr(),
-                (*ptr).payload.as_mut_ptr(),
+                slot.payload.as_mut_ptr(),
                 len,
             );
 
             // Set ready flag with release ordering to ensure all writes are visible
-            (*ptr).ready.store(1, Ordering::Release);
+            slot.ready.store(1, Ordering::Release);
 
             // Wake receiver and unlock mutex
             if self.cross_container {
                 #[cfg(target_os = "linux")]
                 {
-                    futex::futex_wake(&(*ptr).ready, 1);
+                    futex::futex_wake(&slot.ready, 1);
                 }
 
                 #[cfg(not(target_os = "linux"))]
@@ -847,7 +871,10 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
     }
 
     fn receive_blocking(&mut self) -> Result<Message> {
-        trace!("Waiting to receive message via direct memory SHM");
+        trace!(
+            "Waiting to receive message via direct memory SHM (is_server={})",
+            self.is_server
+        );
 
         // If we're the server, wait for client to be ready on first receive
         if self.is_server {
@@ -864,6 +891,15 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
         let message = unsafe {
             let ptr = self.get_raw_message_ptr();
 
+            // Select the appropriate slot based on role:
+            // - Server receives from client_to_server slot
+            // - Client receives from server_to_client slot
+            let slot = if self.is_server {
+                &mut (*ptr).client_to_server
+            } else {
+                &mut (*ptr).server_to_client
+            };
+
             // Wait for data to be ready
             if self.cross_container {
                 // Container-safe path: Use futex/timedwait with short timeouts
@@ -872,11 +908,11 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
 
                 #[cfg(target_os = "linux")]
                 {
-                    while (*ptr).ready.load(Ordering::Acquire) == 0 {
+                    while slot.ready.load(Ordering::Acquire) == 0 {
                         if loop_start.elapsed() > timeout {
                             return Err(anyhow!("Timeout waiting for message"));
                         }
-                        futex::futex_wait(&(*ptr).ready, 0, 100_000); // 100µs
+                        futex::futex_wait(&slot.ready, 0, 100_000); // 100µs
                     }
                 }
 
@@ -887,7 +923,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                         return Err(anyhow!("Failed to lock mutex: {}", ret));
                     }
 
-                    while (*ptr).ready.load(Ordering::Acquire) == 0 {
+                    while slot.ready.load(Ordering::Acquire) == 0 {
                         if loop_start.elapsed() > timeout {
                             libc::pthread_mutex_unlock(&mut (*ptr).mutex);
                             return Err(anyhow!("Timeout waiting for message"));
@@ -920,7 +956,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 libc::clock_gettime(libc::CLOCK_REALTIME, &mut timespec);
                 timespec.tv_sec += 5; // 5 second timeout
 
-                while (*ptr).ready.load(Ordering::Acquire) == 0 {
+                while slot.ready.load(Ordering::Acquire) == 0 {
                     let ret = libc::pthread_cond_timedwait(
                         &mut (*ptr).cond,
                         &mut (*ptr).mutex,
@@ -934,29 +970,54 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 }
             }
 
+            // CRITICAL: Capture receive timestamp immediately after we know data is ready
+            // This ensures accurate latency measurement
+            let receive_time_ns = crate::ipc::get_monotonic_time_ns();
+
             // Read message data directly from shared memory (no deserialization!)
-            let id = (*ptr).id;
-            let timestamp = (*ptr).timestamp;
-            let message_type_u32 = (*ptr).message_type;
+            let id = slot.id;
+            let timestamp = slot.timestamp;
+            let message_type_u32 = slot.message_type;
             let message_type = <MessageType as From<u32>>::from(message_type_u32);
-            let payload_len = (*ptr).payload_len;
+            let payload_len = slot.payload_len;
+
+            // Calculate one-way latency for Request/OneWay messages
+            // For Response messages, preserve the server-measured latency from the slot
+            let one_way_latency_ns = if message_type != MessageType::Response {
+                receive_time_ns.saturating_sub(timestamp)
+            } else {
+                slot.one_way_latency_ns
+            };
+
+            // Validate payload_len to prevent buffer overread from corrupted shared memory
+            if payload_len > MAX_PAYLOAD_SIZE {
+                // Unlock mutex before returning error
+                if !self.cross_container {
+                    libc::pthread_mutex_unlock(&mut (*ptr).mutex);
+                }
+                return Err(anyhow!(
+                    "Invalid payload_len {} exceeds MAX_PAYLOAD_SIZE {} - shared memory may be corrupted",
+                    payload_len,
+                    MAX_PAYLOAD_SIZE
+                ));
+            }
 
             // Copy only the valid payload bytes (variable length)
             let mut payload = vec![0u8; payload_len];
             std::ptr::copy_nonoverlapping(
-                (*ptr).payload.as_ptr(),
+                slot.payload.as_ptr(),
                 payload.as_mut_ptr(),
                 payload_len,
             );
 
             // Clear ready flag with release ordering
-            (*ptr).ready.store(0, Ordering::Release);
+            slot.ready.store(0, Ordering::Release);
 
             // Wake sender (in case of backpressure) and unlock mutex
             if self.cross_container {
                 #[cfg(target_os = "linux")]
                 {
-                    futex::futex_wake(&(*ptr).ready, 1);
+                    futex::futex_wake(&slot.ready, 1);
                 }
 
                 #[cfg(not(target_os = "linux"))]
@@ -976,7 +1037,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 timestamp,
                 payload,
                 message_type,
-                one_way_latency_ns: 0,
+                one_way_latency_ns,
             }
         };
 
@@ -1038,16 +1099,16 @@ mod tests {
 
     #[test]
     fn test_raw_message_size() {
-        // Verify the struct size is reasonable (with 1MB payload buffer)
-        // Without pthread_cond, size is reduced
+        // Verify the struct size is reasonable with dual message slots
+        // Each slot has MAX_PAYLOAD_SIZE payload buffer
         let size = RawSharedMessage::SIZE;
-        // Size should be close to 1MB (payload) + ~100 bytes overhead (mutex + metadata)
-        let expected_min = MAX_PAYLOAD_SIZE;
-        let expected_max = MAX_PAYLOAD_SIZE + 1024; // Allow for mutex, metadata, alignment
+        // Size should be ~2x MAX_PAYLOAD_SIZE (dual slots) + header overhead
+        let expected_min = MAX_PAYLOAD_SIZE * 2;
+        let expected_max = MAX_PAYLOAD_SIZE * 2 + 1024; // Allow for mutex, cond, metadata
         assert!(
             size >= expected_min && size <= expected_max,
-            "RawSharedMessage size should be around {}MB + overhead, got {} bytes",
-            MAX_PAYLOAD_SIZE / 1024 / 1024,
+            "RawSharedMessage size should be ~{} bytes (2 slots) + overhead, got {} bytes",
+            expected_min,
             size
         );
     }

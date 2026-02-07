@@ -334,9 +334,20 @@ impl BlockingTransport for BlockingUnixDomainSocket {
             .read_exact(&mut buffer)
             .context("Failed to read message data")?;
 
+        // CRITICAL: Capture receive timestamp immediately after read
+        // This ensures accurate latency measurement
+        let receive_time_ns = crate::ipc::get_monotonic_time_ns();
+
         // Deserialize message
-        let message: Message =
+        let mut message: Message =
             bincode::deserialize(&buffer).context("Failed to deserialize message")?;
+
+        // Calculate and store one-way latency using accurate receive timestamp
+        // Only for Request/OneWay messages - Response messages already have
+        // one_way_latency_ns set by the server, so don't overwrite it
+        if message.message_type != crate::ipc::MessageType::Response {
+            message.one_way_latency_ns = receive_time_ns.saturating_sub(message.timestamp);
+        }
 
         trace!("Received message ID {}", message.id);
         Ok(message)

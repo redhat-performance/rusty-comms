@@ -13,19 +13,26 @@
 //! - **Atomic Operations**: Send/receive operations are atomic and thread-safe
 //! - **System-Wide**: Queues persist until explicitly removed or system reboot
 //! - **Non-Blocking I/O**: Supports non-blocking operations for high throughput
+//! - **Bidirectional**: Dual queue architecture for reliable round-trip communication
 //!
 //! ## Architecture Overview
 //!
-//! POSIX Message Queues operate as named system objects that can be accessed by
-//! multiple processes. The kernel manages message storage, ordering, and delivery:
+//! This implementation uses a dual queue architecture for reliable bidirectional
+//! communication. This prevents race conditions where clients might read their own
+//! messages or servers might receive responses intended for clients:
 //!
 //! ```text
-//! ┌─────────────┐    ┌─────────────────┐    ┌────────���────┐
-//! │   Client    │───▶│  Kernel Queue   │───▶│   Server    │
-//! │  Process    │    │   (FIFO with    │    │  Process    │
-//! │             │◀───│   priorities)   │◀───│             │
-//! └─────────────┘    └─────────────────┘    └─────────────┘
+//! ┌─────────────┐    Request Queue     ┌─────────────┐
+//! │   Client    │─────────────────────▶│   Server    │
+//! │  Process    │    ({name}_req)      │  Process    │
+//! │             │                      │             │
+//! │             │◀─────────────────────│             │
+//! └─────────────┘    Response Queue    └─────────────┘
+//!                    ({name}_resp)
 //! ```
+//!
+//! - **Request Queue** (`{name}_req`): Client sends requests, Server receives them
+//! - **Response Queue** (`{name}_resp`): Server sends responses, Client receives them
 //!
 //! ## Performance Characteristics
 //!
@@ -43,15 +50,15 @@
 //!
 //! ## Implementation Notes
 //!
-//! - **Queue Naming**: Uses "/" prefix for portable queue names
-//! - **Creation vs. Opening**: Server creates queues, clients open existing ones
-//! - **Cleanup**: Only queue creators (servers) unlink queues on close
+//! - **Queue Naming**: Uses "/" prefix for portable queue names, with `_req`/`_resp` suffixes
+//! - **Creation vs. Opening**: Server creates both queues, clients open existing ones
+//! - **Cleanup**: Only servers unlink queues on close
 //! - **Non-Blocking**: Uses O_NONBLOCK with retry logic for throughput
 //! - **Resource Management**: Proper cleanup prevents queue leaks
 //!
 //! ## Limitations
 //!
-//! - **Single Queue**: Uses one bidirectional queue (no true multi-client support)
+//! - **Dual Queues**: Uses two queues per connection (counts against system queue limit)
 //! - **Message Size**: Limited by system configuration (typically 8KB default)
 //! - **Queue Depth**: Limited by system configuration (typically 10 messages)
 //! - **Platform**: Linux only (this transport is only selectable on Linux builds)
@@ -82,6 +89,25 @@ use tracing::{debug, error, warn};
 /// - **Performance Optimization**: Non-blocking I/O with intelligent retry logic
 /// - **System Integration**: Follows POSIX standards for portability
 ///
+/// ## Dual Queue Architecture
+///
+/// To support reliable bidirectional (round-trip) communication, this transport
+/// uses two separate queues:
+///
+/// ```text
+/// ┌─────────────┐    Request Queue     ┌─────────────┐
+/// │   Client    │─────────────────────▶│   Server    │
+/// │             │                      │             │
+/// │             │◀─────────────────────│             │
+/// └─────────────┘    Response Queue    └─────────────┘
+/// ```
+///
+/// - **Request Queue** (`_req`): Client sends requests, Server receives them
+/// - **Response Queue** (`_resp`): Server sends responses, Client receives them
+///
+/// This separation prevents race conditions where the client might read its own
+/// messages or the server might read responses intended for the client.
+///
 /// ## Queue Management
 ///
 /// The transport distinguishes between queue creators (servers) and queue users
@@ -104,11 +130,16 @@ pub struct PosixMessageQueueTransport {
     /// Current connection state of the transport
     state: TransportState,
 
-    /// POSIX message queue name (with "/" prefix)
+    /// Base POSIX message queue name (with "/" prefix)
     queue_name: String,
 
-    /// Message queue file descriptor for I/O operations
-    mq_fd: Option<MqdT>,
+    /// Request queue file descriptor (Client → Server)
+    /// Client writes to this, Server reads from this
+    request_queue_fd: Option<MqdT>,
+
+    /// Response queue file descriptor (Server → Client)
+    /// Server writes to this, Client reads from this
+    response_queue_fd: Option<MqdT>,
 
     /// Maximum size of individual messages in bytes
     max_msg_size: usize,
@@ -116,12 +147,11 @@ pub struct PosixMessageQueueTransport {
     /// Maximum number of messages that can be queued
     max_msg_count: usize,
 
-    /// Whether this instance created the queue (server) vs opened it (client)
+    /// Whether this instance is the server (creates queues) or client (opens them)
     ///
-    /// Only queue creators are responsible for unlinking the queue during cleanup.
-    /// This prevents clients from accidentally destroying queues that other
-    /// processes may still be using.
-    is_creator: bool,
+    /// - Server: Creates both queues, reads from request queue, writes to response queue
+    /// - Client: Opens both queues, writes to request queue, reads from response queue
+    is_server: bool,
 
     /// Flag to ensure the backpressure warning is only logged once.
     has_warned_backpressure: bool,
@@ -156,7 +186,7 @@ impl PosixMessageQueueTransport {
     /// - **State**: Uninitialized (requires explicit setup)
     /// - **Message Size**: 8KB (reasonable default for most use cases)
     /// - **Queue Depth**: 10 messages (typical system default)
-    /// - **Creator Status**: False (determined during initialization)
+    /// - **Server Status**: False (determined during initialization)
     ///
     /// ## Usage Pattern
     ///
@@ -174,10 +204,11 @@ impl PosixMessageQueueTransport {
         Self {
             state: TransportState::Uninitialized,
             queue_name: String::new(),
-            mq_fd: None,
+            request_queue_fd: None,
+            response_queue_fd: None,
             max_msg_size: 8192,
             max_msg_count: 10,
-            is_creator: false,
+            is_server: false,
             has_warned_backpressure: false,
             config: None,
         }
@@ -186,13 +217,13 @@ impl PosixMessageQueueTransport {
     /// Clean up message queue resources
     ///
     /// Performs proper cleanup of message queue resources, including closing
-    /// the file descriptor and unlinking the queue if this instance created it.
+    /// both queue file descriptors and unlinking queues if this instance created them.
     /// This method is idempotent and safe to call multiple times.
     ///
     /// ## Cleanup Strategy
     ///
-    /// 1. **Close File Descriptor**: Release the queue file descriptor
-    /// 2. **Conditional Unlink**: Only creators unlink queues from the system
+    /// 1. **Close File Descriptors**: Release both queue file descriptors
+    /// 2. **Conditional Unlink**: Only servers unlink queues from the system
     /// 3. **Error Tolerance**: Continues cleanup even if individual steps fail
     ///
     /// ## Resource Ownership
@@ -207,28 +238,54 @@ impl PosixMessageQueueTransport {
     /// Cleanup errors are logged as warnings rather than causing failures,
     /// ensuring that cleanup proceeds even if individual operations fail.
     fn cleanup_queue(&mut self) {
-        debug!("Cleaning up POSIX message queue");
+        debug!("Cleaning up POSIX message queues");
 
-        if let Some(fd) = self.mq_fd.take() {
-            debug!("Closing message queue with fd: {:?}", fd);
+        // Close request queue
+        if let Some(fd) = self.request_queue_fd.take() {
+            debug!("Closing request queue with fd: {:?}", fd);
             if let Err(e) = mq_close(fd) {
-                warn!("Failed to close message queue: {}", e);
+                warn!("Failed to close request queue: {}", e);
             } else {
-                debug!("Closed message queue");
+                debug!("Closed request queue");
             }
         }
 
-        // Only unlink the queue if this instance created it (server)
-        if self.is_creator && !self.queue_name.is_empty() {
-            match mq_unlink(self.queue_name.as_str()) {
-                Ok(()) => debug!("Unlinked message queue: {}", self.queue_name),
+        // Close response queue
+        if let Some(fd) = self.response_queue_fd.take() {
+            debug!("Closing response queue with fd: {:?}", fd);
+            if let Err(e) = mq_close(fd) {
+                warn!("Failed to close response queue: {}", e);
+            } else {
+                debug!("Closed response queue");
+            }
+        }
+
+        // Only unlink the queues if this instance created them (server)
+        if self.is_server && !self.queue_name.is_empty() {
+            let request_queue_name = format!("{}_req", self.queue_name);
+            let response_queue_name = format!("{}_resp", self.queue_name);
+
+            // Unlink request queue
+            match mq_unlink(request_queue_name.as_str()) {
+                Ok(()) => debug!("Unlinked request queue: {}", request_queue_name),
                 Err(nix::Error::ENOENT) => {
-                    // This is fine, the queue was already gone.
-                    debug!("Message queue already unlinked: {}", self.queue_name);
+                    debug!("Request queue already unlinked: {}", request_queue_name);
                 }
                 Err(e) => warn!(
-                    "Failed to unlink message queue '{}': {}",
-                    self.queue_name, e
+                    "Failed to unlink request queue '{}': {}",
+                    request_queue_name, e
+                ),
+            }
+
+            // Unlink response queue
+            match mq_unlink(response_queue_name.as_str()) {
+                Ok(()) => debug!("Unlinked response queue: {}", response_queue_name),
+                Err(nix::Error::ENOENT) => {
+                    debug!("Response queue already unlinked: {}", response_queue_name);
+                }
+                Err(e) => warn!(
+                    "Failed to unlink response queue '{}': {}",
+                    response_queue_name, e
                 ),
             }
         }
@@ -264,9 +321,9 @@ impl Drop for PosixMessageQueueTransport {
 impl IpcTransport for PosixMessageQueueTransport {
     /// Initialize the transport as a server
     ///
-    /// Creates a new POSIX message queue with the specified configuration
-    /// and prepares it to receive messages from clients. The server is
-    /// responsible for queue lifecycle management including creation and cleanup.
+    /// Creates two POSIX message queues (request and response) with the specified
+    /// configuration and prepares them for bidirectional communication. The server
+    /// is responsible for queue lifecycle management including creation and cleanup.
     ///
     /// ## Parameters
     /// - `config`: Transport configuration containing queue parameters
@@ -278,14 +335,20 @@ impl IpcTransport for PosixMessageQueueTransport {
     /// ## Initialization Process
     ///
     /// 1. **Configure Parameters**: Set queue name, size limits, and attributes
-    /// 2. **Create Queue**: Create new message queue with specified attributes
-    /// 3. **Set Creator Flag**: Mark this instance as responsible for cleanup
-    /// 4. **Enable Non-Blocking**: Configure for high-throughput operation
+    /// 2. **Create Request Queue**: For receiving messages from clients
+    /// 3. **Create Response Queue**: For sending responses to clients
+    /// 4. **Set Server Flag**: Mark this instance as responsible for cleanup
+    /// 5. **Enable Non-Blocking**: Configure for high-throughput operation
+    ///
+    /// ## Dual Queue Architecture
+    ///
+    /// - **Request Queue** (`{name}_req`): Client → Server messages
+    /// - **Response Queue** (`{name}_resp`): Server → Client messages
     ///
     /// ## Configuration Mapping
     ///
-    /// - `message_queue_name` → Queue identifier with "/" prefix
-    /// - `message_queue_depth` → Maximum queued messages
+    /// - `message_queue_name` → Base queue identifier with "/" prefix
+    /// - `message_queue_depth` → Maximum queued messages per queue
     /// - `buffer_size` → Maximum message size (minimum 1KB)
     ///
     /// ## Error Conditions
@@ -298,10 +361,10 @@ impl IpcTransport for PosixMessageQueueTransport {
     ///
     /// ## System Integration
     ///
-    /// The created queue persists in the system until explicitly unlinked,
+    /// The created queues persist in the system until explicitly unlinked,
     /// allowing clients to connect even if started after the server.
     async fn start_server(&mut self, config: &TransportConfig) -> Result<()> {
-        debug!("Starting POSIX Message Queue server");
+        debug!("Starting POSIX Message Queue server with dual queues");
 
         self.config = Some(config.clone());
         // Normalize to exactly one leading '/'
@@ -312,57 +375,95 @@ impl IpcTransport for PosixMessageQueueTransport {
         };
         self.max_msg_count = config.message_queue_depth;
         self.max_msg_size = config.buffer_size.max(1024);
-        self.is_creator = true; // Mark this instance as the creator
+        self.is_server = true; // Mark this instance as the server
 
-        // Open/create the message queue in a blocking task
-        let queue_name = self.queue_name.clone();
+        let base_name = self.queue_name.clone();
         let max_msg_count = self.max_msg_count;
         let max_msg_size = self.max_msg_size;
 
-        let mq_fd = tokio::task::spawn_blocking(move || {
-            debug!("Server creating message queue '{}'...", queue_name);
+        // Create both queues in a blocking task
+        let (request_fd, response_fd) = tokio::task::spawn_blocking(move || {
+            let request_queue_name = format!("{}_req", base_name);
+            let response_queue_name = format!("{}_resp", base_name);
             let attr = MqAttr::new(0, max_msg_count as i64, max_msg_size as i64, 0);
-            let result = match mq_open(
-                queue_name.as_str(),
+
+            // Create request queue (server reads from this)
+            debug!("Server creating request queue '{}'...", request_queue_name);
+            let request_fd = match mq_open(
+                request_queue_name.as_str(),
                 MQ_OFlag::O_CREAT | MQ_OFlag::O_RDWR | MQ_OFlag::O_NONBLOCK,
                 Mode::S_IRUSR | Mode::S_IWUSR,
                 Some(&attr),
             ) {
-                Ok(fd) => Ok(fd),
-                Err(nix::Error::EINVAL) => Err(anyhow!(
-                    "Failed to create server queue: Invalid argument (EINVAL). \\
-                     This may be due to a buffer size ({}) greater than the system limit.",
-                    max_msg_size
-                )),
-                Err(e) => Err(anyhow!("Failed to create server queue: {}", e)),
+                Ok(fd) => {
+                    debug!(
+                        "Server created request queue '{}' with fd: {:?}",
+                        request_queue_name, fd
+                    );
+                    fd
+                }
+                Err(nix::Error::EINVAL) => {
+                    return Err(anyhow!(
+                        "Failed to create request queue: Invalid argument (EINVAL). \
+                         Buffer size ({}) may exceed system limit.",
+                        max_msg_size
+                    ));
+                }
+                Err(e) => return Err(anyhow!("Failed to create request queue: {}", e)),
             };
 
-            match &result {
-                Ok(fd) => debug!(
-                    "Server successfully created queue '{}' with fd: {:?}",
-                    queue_name, fd
-                ),
-                Err(e) => debug!("Server failed to create queue '{}': {}", queue_name, e),
-            }
+            // Create response queue (server writes to this)
+            debug!("Server creating response queue '{}'...", response_queue_name);
+            let response_fd = match mq_open(
+                response_queue_name.as_str(),
+                MQ_OFlag::O_CREAT | MQ_OFlag::O_RDWR | MQ_OFlag::O_NONBLOCK,
+                Mode::S_IRUSR | Mode::S_IWUSR,
+                Some(&attr),
+            ) {
+                Ok(fd) => {
+                    debug!(
+                        "Server created response queue '{}' with fd: {:?}",
+                        response_queue_name, fd
+                    );
+                    fd
+                }
+                Err(nix::Error::EINVAL) => {
+                    // Clean up request queue before returning error
+                    let _ = mq_close(request_fd);
+                    let _ = mq_unlink(request_queue_name.as_str());
+                    return Err(anyhow!(
+                        "Failed to create response queue: Invalid argument (EINVAL). \
+                         Buffer size ({}) may exceed system limit.",
+                        max_msg_size
+                    ));
+                }
+                Err(e) => {
+                    // Clean up request queue before returning error
+                    let _ = mq_close(request_fd);
+                    let _ = mq_unlink(request_queue_name.as_str());
+                    return Err(anyhow!("Failed to create response queue: {}", e));
+                }
+            };
 
-            result
+            Ok((request_fd, response_fd))
         })
         .await??;
 
-        self.mq_fd = Some(mq_fd);
+        self.request_queue_fd = Some(request_fd);
+        self.response_queue_fd = Some(response_fd);
         self.state = TransportState::Connected;
         debug!(
-            "POSIX Message Queue server started with queue: {}",
-            self.queue_name
+            "POSIX Message Queue server started with dual queues: {}_req, {}_resp",
+            self.queue_name, self.queue_name
         );
         Ok(())
     }
 
     /// Initialize the transport as a client
     ///
-    /// Connects to an existing POSIX message queue created by a server.
-    /// The client waits for queue availability and establishes a connection
-    /// for bidirectional communication.
+    /// Connects to existing POSIX message queues (request and response) created
+    /// by a server. The client waits for queue availability and establishes
+    /// connections for bidirectional communication.
     ///
     /// ## Parameters
     /// - `config`: Transport configuration containing queue parameters
@@ -375,8 +476,9 @@ impl IpcTransport for PosixMessageQueueTransport {
     ///
     /// 1. **Configure Parameters**: Set queue name and size limits
     /// 2. **Retry Logic**: Wait for queue creation with exponential backoff
-    /// 3. **Open Queue**: Connect to existing queue in read/write mode
-    /// 4. **Set Client Flag**: Mark this instance as a queue user (not creator)
+    /// 3. **Open Request Queue**: For sending messages to server
+    /// 4. **Open Response Queue**: For receiving responses from server
+    /// 5. **Set Client Flag**: Mark this instance as a queue user (not creator)
     ///
     /// ## Retry Strategy
     ///
@@ -389,18 +491,18 @@ impl IpcTransport for PosixMessageQueueTransport {
     /// ## Configuration Consistency
     ///
     /// Client configuration should match server parameters:
-    /// - Queue name must exactly match server's queue
+    /// - Queue name must exactly match server's queue base name
     /// - Message size limits should be compatible
     /// - Queue depth affects client send behavior
     ///
     /// ## Error Conditions
     ///
-    /// - Server not started or queue not created
+    /// - Server not started or queues not created
     /// - Permission denied for queue access
     /// - Configuration mismatch with server
     /// - System resource limitations
     async fn start_client(&mut self, config: &TransportConfig) -> Result<()> {
-        debug!("Starting POSIX Message Queue client");
+        debug!("Starting POSIX Message Queue client with dual queues");
 
         self.config = Some(config.clone());
         // Normalize to exactly one leading '/'
@@ -411,86 +513,144 @@ impl IpcTransport for PosixMessageQueueTransport {
         };
         self.max_msg_count = config.message_queue_depth;
         self.max_msg_size = config.buffer_size.max(1024);
-        self.is_creator = false; // Mark this instance as a client
+        self.is_server = false; // Mark this instance as a client
 
-        // Open existing message queue with retry logic
-        let queue_name = self.queue_name.clone();
+        let base_name = self.queue_name.clone();
 
-        let mq_fd = tokio::task::spawn_blocking(move || {
-            // Retry opening the queue with exponential backoff
+        // Open both queues with retry logic
+        let (request_fd, response_fd) = tokio::task::spawn_blocking(move || {
+            let request_queue_name = format!("{}_req", base_name);
+            let response_queue_name = format!("{}_resp", base_name);
+
+            // Retry opening the queues with exponential backoff
             let mut attempts = 0;
             let max_attempts = 10;
             let mut delay_ms = 10;
 
-            loop {
+            // First, open request queue (client writes to this)
+            let request_fd = loop {
                 match mq_open(
-                    queue_name.as_str(),
-                    MQ_OFlag::O_RDWR | MQ_OFlag::O_NONBLOCK, // Add O_NONBLOCK
+                    request_queue_name.as_str(),
+                    MQ_OFlag::O_RDWR | MQ_OFlag::O_NONBLOCK,
                     Mode::empty(),
                     None,
                 ) {
                     Ok(fd) => {
                         debug!(
-                            "Client successfully opened queue '{}' with fd: {:?} after {} attempts",
-                            queue_name,
+                            "Client opened request queue '{}' with fd: {:?} after {} attempts",
+                            request_queue_name,
                             fd,
                             attempts + 1
                         );
-                        return Ok(fd);
+                        break fd;
                     }
                     Err(Errno::ENOENT) if attempts < max_attempts => {
                         debug!(
-                            "Queue '{}' not ready yet, retrying in {}ms (attempt {}/{})",
-                            queue_name,
+                            "Request queue '{}' not ready, retrying in {}ms (attempt {}/{})",
+                            request_queue_name,
                             delay_ms,
                             attempts + 1,
                             max_attempts
                         );
                         std::thread::sleep(Duration::from_millis(delay_ms));
                         attempts += 1;
-                        delay_ms = (delay_ms * 2).min(1000); // Cap at 1 second
+                        delay_ms = (delay_ms * 2).min(1000);
                         continue;
                     }
                     Err(e) => {
                         return Err(anyhow!(
-                            "Failed to open client queue after {} attempts: {}",
+                            "Failed to open request queue after {} attempts: {}",
                             attempts + 1,
                             e
                         ));
                     }
                 }
-            }
+            };
+
+            // Reset retry counters for response queue
+            attempts = 0;
+            delay_ms = 10;
+
+            // Open response queue (client reads from this)
+            let response_fd = loop {
+                match mq_open(
+                    response_queue_name.as_str(),
+                    MQ_OFlag::O_RDWR | MQ_OFlag::O_NONBLOCK,
+                    Mode::empty(),
+                    None,
+                ) {
+                    Ok(fd) => {
+                        debug!(
+                            "Client opened response queue '{}' with fd: {:?} after {} attempts",
+                            response_queue_name,
+                            fd,
+                            attempts + 1
+                        );
+                        break fd;
+                    }
+                    Err(Errno::ENOENT) if attempts < max_attempts => {
+                        debug!(
+                            "Response queue '{}' not ready, retrying in {}ms (attempt {}/{})",
+                            response_queue_name,
+                            delay_ms,
+                            attempts + 1,
+                            max_attempts
+                        );
+                        std::thread::sleep(Duration::from_millis(delay_ms));
+                        attempts += 1;
+                        delay_ms = (delay_ms * 2).min(1000);
+                        continue;
+                    }
+                    Err(e) => {
+                        // Clean up request queue before returning error
+                        let _ = mq_close(request_fd);
+                        return Err(anyhow!(
+                            "Failed to open response queue after {} attempts: {}",
+                            attempts + 1,
+                            e
+                        ));
+                    }
+                }
+            };
+
+            Ok((request_fd, response_fd))
         })
         .await??;
 
-        self.mq_fd = Some(mq_fd);
+        self.request_queue_fd = Some(request_fd);
+        self.response_queue_fd = Some(response_fd);
         self.state = TransportState::Connected;
         debug!(
-            "POSIX Message Queue client connected to queue: {}",
-            self.queue_name
+            "POSIX Message Queue client connected to dual queues: {}_req, {}_resp",
+            self.queue_name, self.queue_name
         );
         Ok(())
     }
 
-    /// Send a message through the message queue
+    /// Send a message through the appropriate message queue
     ///
-    /// Serializes and transmits a message through the POSIX message queue
-    /// using non-blocking I/O with intelligent retry logic for queue-full
+    /// Serializes and transmits a message through the correct POSIX message queue
+    /// based on the role of this transport instance:
+    /// - **Client**: Sends to request queue (client → server)
+    /// - **Server**: Sends to response queue (server → client)
+    ///
+    /// Uses non-blocking I/O with intelligent retry logic for queue-full
     /// conditions. Messages are sent atomically and preserve boundaries.
     ///
     /// ## Parameters
     /// - `message`: Message to transmit through the queue
     ///
     /// ## Returns
-    /// - `Ok(())`: Message sent successfully
+    /// - `Ok(bool)`: Message sent successfully, bool indicates backpressure detected
     /// - `Err(anyhow::Error)`: Send operation failed
     ///
     /// ## Send Process
     ///
-    /// 1. **Serialize Message**: Convert message to binary format using bincode
-    /// 2. **Non-Blocking Send**: Attempt immediate send without blocking
-    /// 3. **Retry Logic**: Handle queue-full conditions with backoff
-    /// 4. **Error Handling**: Distinguish between temporary and permanent failures
+    /// 1. **Select Queue**: Choose request or response queue based on role
+    /// 2. **Serialize Message**: Convert message to binary format using bincode
+    /// 3. **Non-Blocking Send**: Attempt immediate send without blocking
+    /// 4. **Retry Logic**: Handle queue-full conditions with backoff
+    /// 5. **Error Handling**: Distinguish between temporary and permanent failures
     ///
     /// ## Queue-Full Handling
     ///
@@ -507,24 +667,6 @@ impl IpcTransport for PosixMessageQueueTransport {
     /// - Message boundaries are preserved
     /// - No interleaving of concurrent sends
     ///
-    /// ## Performance Optimization
-    ///
-    /// - **Non-Blocking I/O**: Prevents thread blocking on full queues
-    /// - **Fast Retries**: Optimized for high-throughput scenarios
-    /// - **File Descriptor Reuse**: Efficient handling of queue descriptors
-    ///
-    /// ## Error Categories
-    ///
-    /// - **Temporary**: Queue full (EAGAIN) - retried automatically
-    /// - **Permanent**: Invalid parameters, permissions, or system errors
-    /// - **Resource**: No queue available or transport not initialized
-    /// ## Backpressure Detection
-    ///
-    /// Backpressure is detected when a send operation returns an `EAGAIN`
-    /// error, indicating that the message queue is full. The transport will
-    /// retry with a backoff, and a warning will be logged on the first
-    /// occurrence.
-    ///
     /// ## Timestamp Accuracy
     ///
     /// To ensure accurate one-way latency measurement, the timestamp is updated
@@ -533,10 +675,19 @@ impl IpcTransport for PosixMessageQueueTransport {
     async fn send(&mut self, message: &Message) -> Result<bool> {
         // Pre-serialize with current timestamp (will be updated before send)
         let data = message.to_bytes()?;
-        let fd_ref = self
-            .mq_fd
-            .as_ref()
-            .ok_or_else(|| anyhow!("No message queue available"))?;
+
+        // Select the appropriate queue based on role:
+        // - Client sends to request queue
+        // - Server sends to response queue
+        let fd_ref = if self.is_server {
+            self.response_queue_fd
+                .as_ref()
+                .ok_or_else(|| anyhow!("No response queue available"))?
+        } else {
+            self.request_queue_fd
+                .as_ref()
+                .ok_or_else(|| anyhow!("No request queue available"))?
+        };
 
         // Since MqdT is just a wrapper around an fd, we can extract its raw fd
         let raw_fd = fd_ref.as_raw_fd();
@@ -582,7 +733,8 @@ impl IpcTransport for PosixMessageQueueTransport {
                         backpressure_detected = true;
                         if !self.has_warned_backpressure {
                             warn!(
-                                "PMQ backpressure detected (send took {:?}). \n                                This may impact latency and throughput measurements.",
+                                "PMQ backpressure detected (send took {:?}). \
+                                This may impact latency and throughput measurements.",
                                 elapsed
                             );
                             self.has_warned_backpressure = true;
@@ -595,7 +747,8 @@ impl IpcTransport for PosixMessageQueueTransport {
                     backpressure_detected = true;
                     if !self.has_warned_backpressure {
                         warn!(
-                            "POSIX Message Queue is full; backpressure is occurring. \n                            This may impact latency and throughput measurements."
+                            "POSIX Message Queue is full; backpressure is occurring. \
+                            This may impact latency and throughput measurements."
                         );
                         self.has_warned_backpressure = true;
                     }
@@ -617,10 +770,14 @@ impl IpcTransport for PosixMessageQueueTransport {
         Err(anyhow!("Send failed after {} attempts", max_retries))
     }
 
-    /// Receive a message from the message queue
+    /// Receive a message from the appropriate message queue
     ///
-    /// Waits for and receives a message from the POSIX message queue using
-    /// non-blocking I/O with retry logic for empty queue conditions. Messages
+    /// Waits for and receives a message from the correct POSIX message queue
+    /// based on the role of this transport instance:
+    /// - **Client**: Receives from response queue (server → client)
+    /// - **Server**: Receives from request queue (client → server)
+    ///
+    /// Uses non-blocking I/O with retry logic for empty queue conditions. Messages
     /// are received atomically with preserved boundaries.
     ///
     /// ## Returns
@@ -629,17 +786,18 @@ impl IpcTransport for PosixMessageQueueTransport {
     ///
     /// ## Receive Process
     ///
-    /// 1. **Non-Blocking Receive**: Attempt immediate receive without blocking
-    /// 2. **Buffer Management**: Use appropriately sized receive buffer
-    /// 3. **Retry Logic**: Handle empty queue conditions with backoff
-    /// 4. **Deserialization**: Convert received bytes back to Message struct
+    /// 1. **Select Queue**: Choose request or response queue based on role
+    /// 2. **Non-Blocking Receive**: Attempt immediate receive without blocking
+    /// 3. **Buffer Management**: Use appropriately sized receive buffer
+    /// 4. **Retry Logic**: Handle empty queue conditions with backoff
+    /// 5. **Deserialization**: Convert received bytes back to Message struct
     ///
     /// ## Empty Queue Handling
     ///
     /// When the queue is empty (EAGAIN error):
-    /// - **Fast Retry**: Initial 1ms delay for quick message arrival
-    /// - **Exponential Backoff**: Doubles delay each attempt (max 10ms)
-    /// - **High Retry Count**: 100 attempts for responsiveness
+    /// - **Fast Retry**: Initial 100µs delay for quick message arrival
+    /// - **Exponential Backoff**: Doubles delay each attempt (max 500µs)
+    /// - **High Retry Count**: 1000 attempts for responsiveness
     /// - **Timeout Behavior**: Eventually fails if no messages arrive
     ///
     /// ## Message Integrity
@@ -650,23 +808,6 @@ impl IpcTransport for PosixMessageQueueTransport {
     /// - No partial or corrupted messages
     /// - FIFO ordering within priority levels
     ///
-    /// ## Buffer Management
-    ///
-    /// - **Size Allocation**: Buffer sized to maximum message size
-    /// - **Dynamic Truncation**: Buffer truncated to actual message size
-    /// - **Memory Efficiency**: Buffers allocated per operation, not cached
-    ///
-    /// ## Performance Considerations
-    ///
-    /// - **Non-Blocking I/O**: Prevents thread blocking on empty queues
-    /// - **Fast Polling**: Optimized retry timing for low latency
-    /// - **Zero-Copy**: Minimal data copying during receive operations
-    ///
-    /// ## Error Categories
-    ///
-    /// - **Temporary**: Queue empty (EAGAIN) - retried automatically
-    /// - **Permanent**: Invalid queue state or deserialization failure
-    /// - **Resource**: No queue available or transport not initialized
     /// ## Timestamp Accuracy
     ///
     /// To ensure accurate one-way latency measurement, the receive timestamp is
@@ -674,10 +815,18 @@ impl IpcTransport for PosixMessageQueueTransport {
     /// The one-way latency is calculated and stored in the message's `one_way_latency_ns`
     /// field, excluding async scheduling overhead from the measured latency.
     async fn receive(&mut self) -> Result<Message> {
-        let fd_ref = self
-            .mq_fd
-            .as_ref()
-            .ok_or_else(|| anyhow!("No message queue available"))?;
+        // Select the appropriate queue based on role:
+        // - Client receives from response queue
+        // - Server receives from request queue
+        let fd_ref = if self.is_server {
+            self.request_queue_fd
+                .as_ref()
+                .ok_or_else(|| anyhow!("No request queue available"))?
+        } else {
+            self.response_queue_fd
+                .as_ref()
+                .ok_or_else(|| anyhow!("No response queue available"))?
+        };
         let raw_fd = fd_ref.as_raw_fd();
         let max_msg_size = self.max_msg_size;
 
@@ -715,7 +864,11 @@ impl IpcTransport for PosixMessageQueueTransport {
 
                     // Calculate and store one-way latency using accurate receive timestamp
                     // captured inside spawn_blocking, before async overhead
-                    message.one_way_latency_ns = receive_time_ns.saturating_sub(message.timestamp);
+                    // Only for Request/OneWay messages - Response messages already have
+                    // one_way_latency_ns set by the server, so don't overwrite it
+                    if message.message_type != crate::ipc::MessageType::Response {
+                        message.one_way_latency_ns = receive_time_ns.saturating_sub(message.timestamp);
+                    }
 
                     return Ok(message);
                 }
@@ -743,8 +896,8 @@ impl IpcTransport for PosixMessageQueueTransport {
     /// Close the transport and clean up resources
     ///
     /// Performs graceful shutdown of the POSIX message queue transport,
-    /// including closing file descriptors and unlinking queues if this
-    /// instance created them. This operation is idempotent and safe to
+    /// including closing both queue file descriptors and unlinking queues if
+    /// this instance created them. This operation is idempotent and safe to
     /// call multiple times.
     ///
     /// ## Returns
@@ -753,16 +906,16 @@ impl IpcTransport for PosixMessageQueueTransport {
     ///
     /// ## Shutdown Process
     ///
-    /// 1. **Extract Resources**: Take ownership of queue descriptor and state
-    /// 2. **Close Descriptor**: Release the message queue file descriptor
-    /// 3. **Conditional Unlink**: Remove queue from system if this instance created it
+    /// 1. **Extract Resources**: Take ownership of both queue descriptors
+    /// 2. **Close Descriptors**: Release both message queue file descriptors
+    /// 3. **Conditional Unlink**: Remove queues from system if this is the server
     /// 4. **Update State**: Mark transport as disconnected
     ///
     /// ## Resource Ownership
     ///
-    /// Only queue creators (servers) unlink queues during close:
-    /// - **Server**: Unlinks queue, making it unavailable to new clients
-    /// - **Client**: Closes descriptor but leaves queue available for others
+    /// Only servers unlink queues during close:
+    /// - **Server**: Unlinks both queues, making them unavailable to new clients
+    /// - **Client**: Closes descriptors but leaves queues available for others
     ///
     /// ## Async Blocking Operation
     ///
@@ -782,21 +935,39 @@ impl IpcTransport for PosixMessageQueueTransport {
     async fn close(&mut self) -> Result<()> {
         debug!("Closing POSIX Message Queue transport");
         let queue_name = self.queue_name.clone();
-        let mq_fd = self.mq_fd.take();
-        let is_creator = self.is_creator;
+        let request_fd = self.request_queue_fd.take();
+        let response_fd = self.response_queue_fd.take();
+        let is_server = self.is_server;
 
         tokio::task::spawn_blocking(move || {
-            if let Some(fd) = mq_fd {
+            // Close request queue
+            if let Some(fd) = request_fd {
                 if let Err(e) = mq_close(fd) {
-                    warn!("Failed to close message queue: {}", e);
+                    warn!("Failed to close request queue: {}", e);
                 }
             }
 
-            // Only unlink if this instance created the queue
-            if is_creator && !queue_name.is_empty() {
-                if let Err(e) = mq_unlink(queue_name.as_str()) {
+            // Close response queue
+            if let Some(fd) = response_fd {
+                if let Err(e) = mq_close(fd) {
+                    warn!("Failed to close response queue: {}", e);
+                }
+            }
+
+            // Only unlink if this is the server
+            if is_server && !queue_name.is_empty() {
+                let request_queue_name = format!("{}_req", queue_name);
+                let response_queue_name = format!("{}_resp", queue_name);
+
+                if let Err(e) = mq_unlink(request_queue_name.as_str()) {
                     if e != nix::Error::ENOENT {
-                        warn!("Failed to unlink message queue '{}': {}", queue_name, e);
+                        warn!("Failed to unlink request queue '{}': {}", request_queue_name, e);
+                    }
+                }
+
+                if let Err(e) = mq_unlink(response_queue_name.as_str()) {
+                    if e != nix::Error::ENOENT {
+                        warn!("Failed to unlink response queue '{}': {}", response_queue_name, e);
                     }
                 }
             }
@@ -859,11 +1030,11 @@ impl IpcTransport for PosixMessageQueueTransport {
         false
     }
 
-    /// Start multi-client server mode (single queue simulation)
+    /// Start multi-client server mode (dual queue simulation)
     ///
     /// Implements the multi-client interface for POSIX message queues by
-    /// using a single shared queue and simulating multiple connections
-    /// through message routing. All clients share the same queue.
+    /// using the dual queue architecture and simulating multiple connections
+    /// through message routing. All clients share the same queues.
     ///
     /// ## Parameters
     /// - `config`: Transport configuration for queue setup
@@ -874,22 +1045,22 @@ impl IpcTransport for PosixMessageQueueTransport {
     ///
     /// ## Implementation Strategy
     ///
-    /// 1. **Start Standard Server**: Initialize single message queue
+    /// 1. **Start Standard Server**: Initialize dual message queues
     /// 2. **Create Message Channel**: Set up internal message routing
-    /// 3. **Spawn Receiver Task**: Continuously read from queue and forward messages
+    /// 3. **Spawn Receiver Task**: Continuously read from request queue
     /// 4. **Assign Connection ID**: Use fixed connection ID for all messages
     ///
     /// ## Multi-Client Simulation
     ///
     /// Since POSIX queues don't distinguish between clients:
-    /// - All clients share the same queue
+    /// - All clients share the same queues
     /// - Messages are assigned a fixed connection ID (1)
     /// - No true isolation between different clients
-    /// - All responses go to the shared queue
+    /// - All responses go to the shared response queue
     ///
     /// ## Performance Characteristics
     ///
-    /// - **Throughput**: Limited by single queue capacity
+    /// - **Throughput**: Limited by queue capacity
     /// - **Latency**: No routing overhead beyond queue operations
     /// - **Scalability**: Poor due to shared queue contention
     /// - **Reliability**: High due to kernel message management
@@ -904,15 +1075,16 @@ impl IpcTransport for PosixMessageQueueTransport {
         &mut self,
         config: &TransportConfig,
     ) -> Result<mpsc::Receiver<(ConnectionId, Message)>> {
-        debug!("POSIX Message Queue multi-server mode - using single connection");
+        debug!("POSIX Message Queue multi-server mode - using dual queues");
 
         self.start_server(config).await?;
 
         let (tx, rx) = mpsc::channel(1000);
+        // Server receives from request queue
         let fd_ref = self
-            .mq_fd
+            .request_queue_fd
             .as_ref()
-            .ok_or_else(|| anyhow!("No message queue available"))?;
+            .ok_or_else(|| anyhow!("No request queue available"))?;
         let raw_fd = fd_ref.as_raw_fd();
         let max_msg_size = self.max_msg_size;
 
@@ -1177,7 +1349,8 @@ mod tests {
             tx.send(()).unwrap();
 
             // Receive message and check its priority, with retries for EAGAIN.
-            let fd = server.mq_fd.as_ref().unwrap();
+            // Server receives from request queue
+            let fd = server.request_queue_fd.as_ref().unwrap();
             let mut buffer = vec![0u8; server.max_msg_size];
             let mut received_priority = 0u32;
 

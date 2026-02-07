@@ -13,35 +13,49 @@ use tokio::sync::{mpsc, Notify};
 use tokio::time::sleep;
 use tracing::{debug, warn};
 
-/// Shared memory ring buffer structure
+/// Header for dual ring buffer shared memory layout.
+/// Contains coordination flags shared by both directions.
 #[repr(C)]
-struct SharedMemoryRingBuffer {
-    // Ring buffer metadata
-    capacity: AtomicUsize,
+struct DualRingBufferHeader {
+    /// Capacity of each individual ring buffer (not total)
+    buffer_capacity: AtomicUsize,
+    /// Server is ready to communicate
+    server_ready: AtomicBool,
+    /// Client is ready to communicate
+    client_ready: AtomicBool,
+    /// Shutdown signal
+    shutdown: AtomicBool,
+}
+
+impl DualRingBufferHeader {
+    const SIZE: usize = std::mem::size_of::<Self>();
+
+    fn new(buffer_capacity: usize) -> Self {
+        Self {
+            buffer_capacity: AtomicUsize::new(buffer_capacity),
+            server_ready: AtomicBool::new(false),
+            client_ready: AtomicBool::new(false),
+            shutdown: AtomicBool::new(false),
+        }
+    }
+}
+
+/// Single direction ring buffer header (no coordination flags - those are in DualRingBufferHeader)
+#[repr(C)]
+struct SingleRingBuffer {
     read_pos: AtomicUsize,
     write_pos: AtomicUsize,
-
-    // Synchronization flags
-    server_ready: AtomicBool,
-    client_ready: AtomicBool,
-    shutdown: AtomicBool,
-
-    // Message count for coordination
     message_count: AtomicUsize,
     // Data follows after this header
 }
 
-impl SharedMemoryRingBuffer {
+impl SingleRingBuffer {
     const HEADER_SIZE: usize = std::mem::size_of::<Self>();
 
-    fn new(capacity: usize) -> Self {
+    fn new() -> Self {
         Self {
-            capacity: AtomicUsize::new(capacity),
             read_pos: AtomicUsize::new(0),
             write_pos: AtomicUsize::new(0),
-            server_ready: AtomicBool::new(false),
-            client_ready: AtomicBool::new(false),
-            shutdown: AtomicBool::new(false),
             message_count: AtomicUsize::new(0),
         }
     }
@@ -50,8 +64,7 @@ impl SharedMemoryRingBuffer {
         unsafe { (self as *const Self as *mut u8).add(Self::HEADER_SIZE) }
     }
 
-    fn available_write_space(&self) -> usize {
-        let capacity = self.capacity.load(Ordering::Acquire);
+    fn available_write_space(&self, capacity: usize) -> usize {
         let read_pos = self.read_pos.load(Ordering::Acquire);
         let write_pos = self.write_pos.load(Ordering::Acquire);
 
@@ -62,26 +75,25 @@ impl SharedMemoryRingBuffer {
         }
     }
 
-    fn available_read_data(&self) -> usize {
+    fn available_read_data(&self, capacity: usize) -> usize {
         let read_pos = self.read_pos.load(Ordering::Acquire);
         let write_pos = self.write_pos.load(Ordering::Acquire);
 
         if write_pos >= read_pos {
             write_pos - read_pos
         } else {
-            self.capacity.load(Ordering::Acquire) - (read_pos - write_pos)
+            capacity - (read_pos - write_pos)
         }
     }
 
-    fn write_data(&self, data: &[u8]) -> Result<()> {
+    fn write_data(&self, data: &[u8], capacity: usize) -> Result<()> {
         let data_len = data.len();
         let required_space = data_len + 4; // 4 bytes for length prefix
 
-        if self.available_write_space() < required_space {
+        if self.available_write_space(capacity) < required_space {
             return Err(anyhow!("Not enough space in ring buffer"));
         }
 
-        let capacity = self.capacity.load(Ordering::Acquire);
         let write_pos = self.write_pos.load(Ordering::Acquire);
         let data_ptr = self.data_ptr();
 
@@ -118,12 +130,11 @@ impl SharedMemoryRingBuffer {
         Ok(())
     }
 
-    fn read_data(&self) -> Result<Vec<u8>> {
-        if self.available_read_data() < 4 {
+    fn read_data(&self, capacity: usize) -> Result<Vec<u8>> {
+        if self.available_read_data(capacity) < 4 {
             return Err(anyhow!("No data available"));
         }
 
-        let capacity = self.capacity.load(Ordering::Acquire);
         let read_pos = self.read_pos.load(Ordering::Acquire);
         let data_ptr = self.data_ptr();
 
@@ -141,7 +152,7 @@ impl SharedMemoryRingBuffer {
             return Err(anyhow!("Invalid message length: {}", data_len));
         }
 
-        if self.available_read_data() < data_len + 4 {
+        if self.available_read_data(capacity) < data_len + 4 {
             return Err(anyhow!("Incomplete message"));
         }
 
@@ -171,10 +182,24 @@ impl SharedMemoryRingBuffer {
     }
 }
 
+
+/// Dual ring buffer connection for bidirectional communication.
+/// 
+/// Memory layout:
+/// [DualRingBufferHeader] - coordination flags
+/// [SingleRingBuffer for client→server] - header + data
+/// [SingleRingBuffer for server→client] - header + data
 #[derive(Clone)]
 struct SharedMemoryConnection {
     connection_id: ConnectionId,
-    ring_buffer: *mut SharedMemoryRingBuffer,
+    /// Pointer to the dual ring buffer header (coordination flags)
+    header: *mut DualRingBufferHeader,
+    /// Pointer to client→server ring buffer (client writes, server reads)
+    client_to_server: *mut SingleRingBuffer,
+    /// Pointer to server→client ring buffer (server writes, client reads)
+    server_to_client: *mut SingleRingBuffer,
+    /// Capacity of each ring buffer's data area
+    buffer_capacity: usize,
     role: ConnectionRole,
     _shmem: Arc<Mutex<Shmem>>,
     // Async notification primitives for efficient waiting (replaces sleep loops)
@@ -187,6 +212,13 @@ unsafe impl Sync for SharedMemoryConnection {}
 
 #[allow(clippy::arc_with_non_send_sync)]
 impl SharedMemoryConnection {
+    /// Calculate total shared memory size needed for dual ring buffers
+    fn total_size(buffer_capacity: usize) -> usize {
+        DualRingBufferHeader::SIZE 
+            + SingleRingBuffer::HEADER_SIZE + buffer_capacity  // client→server
+            + SingleRingBuffer::HEADER_SIZE + buffer_capacity  // server→client
+    }
+
     fn new(
         connection_id: ConnectionId,
         segment_name: String,
@@ -194,7 +226,7 @@ impl SharedMemoryConnection {
         role: ConnectionRole,
         create: bool,
     ) -> Result<Self> {
-        let total_size = SharedMemoryRingBuffer::HEADER_SIZE + buffer_size;
+        let total_size = Self::total_size(buffer_size);
 
         let shmem = if create {
             ShmemConf::new()
@@ -205,18 +237,38 @@ impl SharedMemoryConnection {
             ShmemConf::new().os_id(&segment_name).open()?
         };
 
-        let ring_buffer_ptr = shmem.as_ptr() as *mut SharedMemoryRingBuffer;
+        let base_ptr = shmem.as_ptr();
+        
+        // Calculate pointers to each section
+        let header_ptr = base_ptr as *mut DualRingBufferHeader;
+        let c2s_ptr = unsafe { 
+            base_ptr.add(DualRingBufferHeader::SIZE) as *mut SingleRingBuffer 
+        };
+        let s2c_ptr = unsafe { 
+            base_ptr.add(
+                DualRingBufferHeader::SIZE 
+                + SingleRingBuffer::HEADER_SIZE 
+                + buffer_size
+            ) as *mut SingleRingBuffer 
+        };
 
         if create {
-            // Initialize ring buffer for new segment
+            // Initialize all structures for new segment
             unsafe {
-                *ring_buffer_ptr = SharedMemoryRingBuffer::new(buffer_size);
+                *header_ptr = DualRingBufferHeader::new(buffer_size);
+                *c2s_ptr = SingleRingBuffer::new();
+                *s2c_ptr = SingleRingBuffer::new();
             }
+            debug!("Created dual ring buffer shared memory: {} bytes total, {} per buffer", 
+                   total_size, buffer_size);
         }
 
         Ok(Self {
             connection_id,
-            ring_buffer: ring_buffer_ptr,
+            header: header_ptr,
+            client_to_server: c2s_ptr,
+            server_to_client: s2c_ptr,
+            buffer_capacity: buffer_size,
             role,
             _shmem: Arc::new(Mutex::new(shmem)),
             notify_data_ready: Arc::new(Notify::new()),
@@ -224,23 +276,43 @@ impl SharedMemoryConnection {
         })
     }
 
-    fn get_ring_buffer(&self) -> &SharedMemoryRingBuffer {
-        unsafe { &*self.ring_buffer }
+    fn get_header(&self) -> &DualRingBufferHeader {
+        unsafe { &*self.header }
+    }
+
+    /// Get the ring buffer to use for sending (based on role)
+    fn send_buffer(&self) -> &SingleRingBuffer {
+        unsafe {
+            match self.role {
+                ConnectionRole::Client => &*self.client_to_server,
+                ConnectionRole::Server => &*self.server_to_client,
+            }
+        }
+    }
+
+    /// Get the ring buffer to use for receiving (based on role)
+    fn receive_buffer(&self) -> &SingleRingBuffer {
+        unsafe {
+            match self.role {
+                ConnectionRole::Client => &*self.server_to_client,
+                ConnectionRole::Server => &*self.client_to_server,
+            }
+        }
     }
 
     async fn wait_for_peer(&self, timeout_duration: Duration) -> Result<()> {
         let start = std::time::Instant::now();
-        let ring_buffer = self.get_ring_buffer();
+        let header = self.get_header();
 
         loop {
             match self.role {
                 ConnectionRole::Server => {
-                    if ring_buffer.client_ready.load(Ordering::Acquire) {
+                    if header.client_ready.load(Ordering::Acquire) {
                         return Ok(());
                     }
                 }
                 ConnectionRole::Client => {
-                    if ring_buffer.server_ready.load(Ordering::Acquire) {
+                    if header.server_ready.load(Ordering::Acquire) {
                         return Ok(());
                     }
                 }
@@ -256,10 +328,10 @@ impl SharedMemoryConnection {
     }
 
     fn mark_ready(&self) {
-        let ring_buffer = self.get_ring_buffer();
+        let header = self.get_header();
         match self.role {
-            ConnectionRole::Server => ring_buffer.server_ready.store(true, Ordering::Release),
-            ConnectionRole::Client => ring_buffer.client_ready.store(true, Ordering::Release),
+            ConnectionRole::Server => header.server_ready.store(true, Ordering::Release),
+            ConnectionRole::Client => header.client_ready.store(true, Ordering::Release),
         }
     }
 
@@ -271,8 +343,13 @@ impl SharedMemoryConnection {
     ///
     /// Uses adaptive spinning: tight spin for immediate write, then short pause to
     /// reduce CPU contention in sustained high-throughput scenarios.
+    ///
+    /// With dual ring buffers:
+    /// - Client sends on client_to_server buffer
+    /// - Server sends on server_to_client buffer
     async fn send_message(&self, message: &Message) -> Result<bool, IpcError> {
-        let ring_buffer = self.get_ring_buffer();
+        let ring_buffer = self.send_buffer();
+        let capacity = self.buffer_capacity;
 
         // Pre-serialize with current timestamp (will be updated before write)
         let mut message_bytes =
@@ -288,20 +365,21 @@ impl SharedMemoryConnection {
         let mut spin_count: u32 = 0;
         const SPIN_LIMIT: u32 = 1000; // Spin for quick space availability
 
-        loop {
-            // CRITICAL: Update timestamp immediately before write to shared memory
-            // This ensures accurate latency measurement by excluding async overhead
-            let ts_now = crate::ipc::get_monotonic_time_ns();
-            let ts_bytes = ts_now.to_le_bytes();
-            if message_bytes.len() >= ts_offset.end {
-                message_bytes[ts_offset.clone()].copy_from_slice(&ts_bytes);
-            }
+        // CRITICAL: Capture timestamp ONCE before the retry loop
+        // This ensures accurate latency measurement - the timestamp reflects when
+        // the send was initiated, not when it finally succeeded after backpressure
+        let ts_now = crate::ipc::get_monotonic_time_ns();
+        let ts_bytes = ts_now.to_le_bytes();
+        if message_bytes.len() >= ts_offset.end {
+            message_bytes[ts_offset].copy_from_slice(&ts_bytes);
+        }
 
-            match ring_buffer.write_data(&message_bytes) {
+        loop {
+            match ring_buffer.write_data(&message_bytes, capacity) {
                 Ok(()) => {
                     debug!(
-                        "Sent message {} via connection {}",
-                        message.id, self.connection_id
+                        "Sent message {} via connection {} ({:?})",
+                        message.id, self.connection_id, self.role
                     );
                     // Signal reader that data is available (for in-process use)
                     self.notify_data_ready.notify_one();
@@ -338,8 +416,13 @@ impl SharedMemoryConnection {
     ///
     /// Uses adaptive spinning: tight spin for immediate data, then short pause to
     /// reduce CPU contention in sustained high-throughput scenarios.
+    ///
+    /// With dual ring buffers:
+    /// - Client receives from server_to_client buffer
+    /// - Server receives from client_to_server buffer
     async fn receive_message(&self) -> Result<Message> {
-        let ring_buffer = self.get_ring_buffer();
+        let ring_buffer = self.receive_buffer();
+        let capacity = self.buffer_capacity;
 
         // Try to read with timeout
         let start = std::time::Instant::now();
@@ -348,7 +431,7 @@ impl SharedMemoryConnection {
         const SPIN_LIMIT: u32 = 1000; // Spin for quick data availability
 
         loop {
-            match ring_buffer.read_data() {
+            match ring_buffer.read_data(capacity) {
                 Ok(data) => {
                     // CRITICAL: Capture receive timestamp immediately after read
                     // This ensures accurate latency measurement
@@ -356,12 +439,16 @@ impl SharedMemoryConnection {
 
                     let mut message = Message::from_bytes(&data)?;
                     debug!(
-                        "Received message {} via connection {}",
-                        message.id, self.connection_id
+                        "Received message {} via connection {} ({:?})",
+                        message.id, self.connection_id, self.role
                     );
 
                     // Calculate and store one-way latency using accurate receive timestamp
-                    message.one_way_latency_ns = receive_time_ns.saturating_sub(message.timestamp);
+                    // Only for Request/OneWay messages - Response messages already have
+                    // one_way_latency_ns set by the server, so don't overwrite it
+                    if message.message_type != crate::ipc::MessageType::Response {
+                        message.one_way_latency_ns = receive_time_ns.saturating_sub(message.timestamp);
+                    }
 
                     // Signal writer that space is available (for in-process use)
                     self.notify_space_ready.notify_one();
@@ -643,6 +730,30 @@ impl IpcTransport for SharedMemoryTransport {
         {
             let mut conns = self.connections.lock();
             conns.clear();
+        }
+
+        // Unlink shared memory segment if we're the server (creator)
+        // This releases the system resource so it can be reclaimed
+        if self.role == Some(ConnectionRole::Server) && !self.shared_memory_name.is_empty() {
+            #[cfg(unix)]
+            {
+                use std::ffi::CString;
+                if let Ok(name) = CString::new(self.shared_memory_name.as_str()) {
+                    unsafe {
+                        let result = libc::shm_unlink(name.as_ptr());
+                        if result == 0 {
+                            debug!("Unlinked shared memory segment: {}", self.shared_memory_name);
+                        } else {
+                            // Not a critical error - segment may already be unlinked
+                            debug!(
+                                "shm_unlink failed for {}: {} (may already be unlinked)",
+                                self.shared_memory_name,
+                                std::io::Error::last_os_error()
+                            );
+                        }
+                    }
+                }
+            }
         }
 
         self.single_connection = None;
