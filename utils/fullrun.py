@@ -884,15 +884,22 @@ def generate_csv_summary():
         try:
             with open(jf) as f:
                 data = json.load(f)
-            # Extract key metrics
+            # Extract key metrics from the results array
+            # The JSON structure has: results[0].test_config, results[0].one_way_results, etc.
+            results = data.get("results", [{}])[0] if data.get("results") else {}
+            test_config = results.get("test_config", {})
+            one_way = results.get("one_way_results", {}).get("latency", {})
+            round_trip = results.get("round_trip_results", {}).get("latency", {})
+            summary = results.get("summary", {})
+            
             row = {
                 "file": jf.name,
-                "mechanism": data.get("config", {}).get("mechanism", ""),
-                "size": data.get("config", {}).get("message_size", ""),
-                "iterations": data.get("config", {}).get("iterations", ""),
-                "one_way_mean_ns": data.get("one_way_latency", {}).get("mean_ns", ""),
-                "round_trip_mean_ns": data.get("round_trip_latency", {}).get("mean_ns", ""),
-                "throughput_mbps": data.get("throughput", {}).get("mbps", ""),
+                "mechanism": results.get("mechanism", ""),
+                "size": test_config.get("message_size", ""),
+                "iterations": test_config.get("msg_count", ""),
+                "one_way_mean_ns": one_way.get("mean_ns", ""),
+                "round_trip_mean_ns": round_trip.get("mean_ns", ""),
+                "throughput_mb_s": summary.get("average_throughput_mb_s", ""),
             }
             rows.append(row)
         except Exception as e:
@@ -902,7 +909,7 @@ def generate_csv_summary():
         return None
     
     # Write CSV
-    fieldnames = ["file", "mechanism", "size", "iterations", "one_way_mean_ns", "round_trip_mean_ns", "throughput_mbps"]
+    fieldnames = ["file", "mechanism", "size", "iterations", "one_way_mean_ns", "round_trip_mean_ns", "throughput_mb_s"]
     with open(csv_file, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()

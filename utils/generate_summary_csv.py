@@ -128,7 +128,7 @@ def extract_metrics(data: Dict[str, Any]) -> Dict[str, Any]:
     """Extract relevant metrics from JSON data."""
     metrics = {
         "total_messages_sent": "",
-        "average_throughput_mbps": "",
+        "average_throughput_mb_s": "",
         # One-way latency
         "ow_min_ns": "",
         "ow_max_ns": "",
@@ -166,9 +166,9 @@ def extract_metrics(data: Dict[str, Any]) -> Dict[str, Any]:
             throughput = round_trip.get("throughput", {})
             metrics["total_messages_sent"] = throughput.get("total_messages", "")
     
-    # Get average_throughput_mbps from result summary
+    # Get average_throughput_mb_s from result summary
     result_summary = result.get("summary", {})
-    metrics["average_throughput_mbps"] = result_summary.get("average_throughput_mbps", "")
+    metrics["average_throughput_mb_s"] = result_summary.get("average_throughput_mb_s", "")
     
     return metrics
 
@@ -242,7 +242,7 @@ def main():
         "mechanism",
         "message_size",
         "total_messages_sent",
-        "average_throughput_mbps",
+        "average_throughput_mb_s",
         # One-way latency
         "ow_min_ns",
         "ow_max_ns",
@@ -268,7 +268,7 @@ def main():
     # Print preview
     print("\nPreview (first 10 rows):")
     print("-" * 140)
-    header = f"{'type':<5} {'mode':<10} {'var':<10} {'mech':<4} {'size':<6} {'msgs':<8} {'mbps':<10} {'ow_mean':<12} {'rt_mean':<12}"
+    header = f"{'type':<5} {'mode':<10} {'var':<10} {'mech':<4} {'size':<6} {'msgs':<8} {'MB/s':<10} {'ow_mean':<12} {'rt_mean':<12}"
     print(header)
     print("-" * 140)
     
@@ -281,7 +281,7 @@ def main():
         line = f"{row.get('test_type', ''):<5} {row.get('mode', ''):<10} {row.get('variant', ''):<10} "
         line += f"{row.get('mechanism', ''):<4} {row.get('message_size', ''):<6} "
         line += f"{str(row.get('total_messages_sent', '')):<8} "
-        line += f"{str(row.get('average_throughput_mbps', ''))[:8]:<10} "
+        line += f"{str(row.get('average_throughput_mb_s', ''))[:8]:<10} "
         line += f"{ow_str:<12} {rt_str:<12}"
         print(line)
     

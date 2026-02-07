@@ -1008,7 +1008,7 @@ impl BlockingResultsManager {
                 result.mechanism.to_string(),
                 MechanismSummary {
                     mechanism: result.mechanism,
-                    average_throughput_mbps: result.summary.average_throughput_mbps,
+                    average_throughput_mb_s: result.summary.average_throughput_mb_s,
                     p95_latency_ns: result.summary.p95_latency_ns,
                     p99_latency_ns: result.summary.p99_latency_ns,
                     total_messages: result.summary.total_messages_sent,
@@ -1038,7 +1038,7 @@ impl BlockingResultsManager {
     ///
     /// ## Comparison Method
     ///
-    /// Comparison is based on average throughput in megabits per second,
+    /// Comparison is based on average throughput in megabytes per second,
     /// which provides a consistent measure across different message sizes
     /// and test configurations.
     fn find_fastest_mechanism(&self) -> Option<String> {
@@ -1046,8 +1046,8 @@ impl BlockingResultsManager {
             .iter()
             .max_by(|a, b| {
                 a.summary
-                    .average_throughput_mbps
-                    .partial_cmp(&b.summary.average_throughput_mbps)
+                    .average_throughput_mb_s
+                    .partial_cmp(&b.summary.average_throughput_mb_s)
                     .unwrap()
             })
             .map(|result| result.mechanism.to_string())
@@ -1264,11 +1264,9 @@ impl BlockingResultsManager {
         let summary = &result.summary;
 
         println!("{}Throughput:", indent);
-        // Note: The summary field is named _mbps, but the calculation in update_summary
-        // produces MB/s (Megabytes per second). The label reflects the calculation.
         println!(
             "{}{:<8} Average: {:.2} MB/s, Peak: {:.2} MB/s",
-            indent, "  ", summary.average_throughput_mbps, summary.peak_throughput_mbps
+            indent, "  ", summary.average_throughput_mb_s, summary.peak_throughput_mb_s
         );
 
         println!("{}Totals:", indent);
@@ -2194,7 +2192,7 @@ mod tests {
 
         // Add results with different throughputs
         let mut results1 = create_test_results();
-        results1.summary.average_throughput_mbps = 100.0;
+        results1.summary.average_throughput_mb_s = 100.0;
         manager.add_results(results1).unwrap();
 
         // Create a second result with higher throughput
@@ -2209,7 +2207,7 @@ mod tests {
             true, // one_way
             true, // round_trip
         );
-        results2.summary.average_throughput_mbps = 200.0; // Higher
+        results2.summary.average_throughput_mb_s = 200.0; // Higher
         manager.add_results(results2).unwrap();
 
         // The fastest should be SharedMemory
