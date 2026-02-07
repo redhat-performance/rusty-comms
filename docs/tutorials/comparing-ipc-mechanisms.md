@@ -98,7 +98,7 @@ cat comparison.json | jq -r '.results[] | "\(.mechanism): \(.one_way_results.lat
 cat comparison.json | jq -r '.results[] | "\(.mechanism): P99 = \(.one_way_results.latency.percentiles[] | select(.percentile == 99.0) | .value_ns / 1000 | floor) µs"'
 
 # Compare throughput
-cat comparison.json | jq -r '.results[] | "\(.mechanism): \(.summary.average_throughput_mbps | floor) MB/s"'
+cat comparison.json | jq -r '.results[] | "\(.mechanism): \(.summary.average_throughput_mb_s | floor) MB/s"'
 ```
 
 ## Step 6: Compare Message Sizes

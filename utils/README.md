@@ -121,7 +121,7 @@ The generated CSV includes:
 | `mechanism` | `uds`, `tcp`, `shm`, `pmq` |
 | `message_size` | Size in bytes |
 | `total_messages_sent` | Number of messages |
-| `average_throughput_mbps` | Throughput in MB/s |
+| `average_throughput_mb_s` | Throughput in MB/s |
 | `ow_min_ns` | One-way minimum latency |
 | `ow_max_ns` | One-way maximum latency |
 | `ow_mean_ns` | One-way mean latency |

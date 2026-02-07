@@ -160,7 +160,7 @@ Both `one_way_results` and `round_trip_results` share this structure:
   "summary": {
     "total_messages_sent": 20000,
     "total_bytes_transferred": 20480000,
-    "average_throughput_mbps": 305.17,
+    "average_throughput_mb_s": 305.17,
     "p95_latency_ns": 5200,
     "p99_latency_ns": 8500
   }
@@ -266,7 +266,7 @@ cat results.json | jq '.results[0].one_way_results.latency.mean_ns'
 cat results.json | jq '.results[].one_way_results.latency.percentiles[] | select(.percentile == 99.0) | .value_ns'
 
 # Get throughput in MB/s
-cat results.json | jq '.results[0].summary.average_throughput_mbps'
+cat results.json | jq '.results[0].summary.average_throughput_mb_s'
 ```
 
 ## Example: Processing with Python

@@ -19,7 +19,7 @@ header = [
     'one_way_messages_per_second', 'one_way_total_messages',
     'round_trip_max_ns', 'round_trip_mean_ns', 'round_trip_p99_ns',
     'round_trip_messages_per_second', 'round_trip_total_messages',
-    'average_throughput_mbps', 'total_messages_sent'
+    'average_throughput_mb_s', 'total_messages_sent'
 ]
 
 results = []
@@ -115,10 +115,10 @@ for json_file in sorted(glob.glob(f'{OUTPUT_DIR}/*.json')):
         total_msgs = len(one_way_latencies) + len(round_trip_latencies)
         result['total_messages_sent'] = total_msgs
         
-        # Calculate throughput in Mbps
+        # Calculate throughput in MB/s (megabytes per second)
         throughput_bytes = total_msgs * message_size
-        throughput_mbps = (throughput_bytes * 8) / (duration_s * 1e6) if duration_s > 0 else 0
-        result['average_throughput_mbps'] = throughput_mbps
+        throughput_mb_s = throughput_bytes / (duration_s * 1e6) if duration_s > 0 else 0
+        result['average_throughput_mb_s'] = throughput_mb_s
         
         results.append(result)
         print(f"Parsed {filename}: {total_msgs} messages, mean={result.get('one_way_mean_ns', 'N/A'):.2f}ns")
