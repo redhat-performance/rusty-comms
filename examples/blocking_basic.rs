@@ -163,7 +163,7 @@ fn main() -> Result<()> {
                 println!("  {:.2} msg/s", one_way.throughput.messages_per_second);
                 println!(
                     "  {:.2} MB/s",
-                    one_way.throughput.bytes_per_second / 1_000_000.0
+                    one_way.throughput.bytes_per_second / 1_048_576.0
                 );
             }
 
@@ -189,7 +189,7 @@ fn main() -> Result<()> {
                 println!("  {:.2} msg/s", round_trip.throughput.messages_per_second);
                 println!(
                     "  {:.2} MB/s",
-                    round_trip.throughput.bytes_per_second / 1_000_000.0
+                    round_trip.throughput.bytes_per_second / 1_048_576.0
                 );
             }
 

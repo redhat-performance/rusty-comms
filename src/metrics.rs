@@ -389,6 +389,28 @@ impl LatencyCollector {
     /// Percentile calculation is efficient in HDR histograms, with
     /// O(1) performance for each percentile requested.
     pub fn get_metrics(&self, percentiles: &[f64]) -> LatencyMetrics {
+        // Guard against empty histogram — return zeroed metrics if no samples recorded
+        if self.sample_count == 0 {
+            let percentile_values = percentiles
+                .iter()
+                .map(|&p| PercentileValue {
+                    percentile: p,
+                    value_ns: 0,
+                })
+                .collect();
+            return LatencyMetrics {
+                latency_type: self.latency_type,
+                min_ns: 0,
+                max_ns: 0,
+                mean_ns: 0.0,
+                median_ns: 0.0,
+                std_dev_ns: 0.0,
+                percentiles: percentile_values,
+                total_samples: 0,
+                histogram_data: Vec::new(),
+            };
+        }
+
         // Calculate requested percentiles
         let mut percentile_values = Vec::new();
         for &p in percentiles {

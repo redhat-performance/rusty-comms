@@ -837,7 +837,7 @@ impl BlockingBenchmarkRunner {
 
         let payload = vec![0u8; self.config.message_size];
         for i in 0..self.config.warmup_iterations {
-            let message = Message::new(i as u64, payload.clone(), MessageType::OneWay);
+            let message = Message::new_lazy(i as u64, payload.clone(), MessageType::OneWay);
             client_transport
                 .send_blocking(&message)
                 .context("Failed to send warmup message")?;
@@ -1048,11 +1048,18 @@ impl BlockingBenchmarkRunner {
                 }
             }
 
+            let streaming = results_manager.is_some();
+
             while start_time.elapsed() < duration {
-                let send_timestamp_ns =
-                    crate::results::MessageLatencyRecord::current_timestamp_ns();
+                // Only capture wall-clock timestamp when streaming records are enabled,
+                // to avoid an extra SystemTime::now() syscall on every message
+                let send_timestamp_ns = if streaming {
+                    crate::results::MessageLatencyRecord::current_timestamp_ns()
+                } else {
+                    0
+                };
                 let send_time = Instant::now();
-                let message = Message::new(i, payload.clone(), MessageType::Request);
+                let message = Message::new_lazy(i, payload.clone(), MessageType::Request);
 
                 match client_transport.send_blocking(&message) {
                     Ok(_) => {
@@ -1118,11 +1125,16 @@ impl BlockingBenchmarkRunner {
                 }
             }
 
+            let streaming = results_manager.is_some();
+
             for i in 0..msg_count {
-                let send_timestamp_ns =
-                    crate::results::MessageLatencyRecord::current_timestamp_ns();
+                let send_timestamp_ns = if streaming {
+                    crate::results::MessageLatencyRecord::current_timestamp_ns()
+                } else {
+                    0
+                };
                 let send_time = Instant::now();
-                let message = Message::new(i as u64, payload.clone(), MessageType::Request);
+                let message = Message::new_lazy(i as u64, payload.clone(), MessageType::Request);
                 client_transport.send_blocking(&message)?;
 
                 if let Some(delay) = self.config.send_delay {
@@ -1292,7 +1304,7 @@ impl BlockingBenchmarkRunner {
             }
 
             while start_time.elapsed() < duration {
-                let message = Message::new(i, payload.clone(), MessageType::OneWay);
+                let message = Message::new_lazy(i, payload.clone(), MessageType::OneWay);
 
                 match client_transport.send_blocking(&message) {
                     Ok(_) => {
@@ -1464,12 +1476,16 @@ impl BlockingBenchmarkRunner {
                 }
             }
 
+            let streaming = results_manager.is_some();
+
             while start_time.elapsed() < duration {
-                // Capture send timestamp for streaming record (wall clock)
-                let send_timestamp_ns =
-                    crate::results::MessageLatencyRecord::current_timestamp_ns();
+                let send_timestamp_ns = if streaming {
+                    crate::results::MessageLatencyRecord::current_timestamp_ns()
+                } else {
+                    0
+                };
                 let send_time = Instant::now();
-                let message = Message::new(i, payload.clone(), MessageType::Request);
+                let message = Message::new_lazy(i, payload.clone(), MessageType::Request);
 
                 match client_transport.send_blocking(&message) {
                     Ok(_) => {
@@ -1513,12 +1529,16 @@ impl BlockingBenchmarkRunner {
                 }
             }
 
+            let streaming = results_manager.is_some();
+
             for i in 0..msg_count {
-                // Capture send timestamp for streaming record (wall clock)
-                let send_timestamp_ns =
-                    crate::results::MessageLatencyRecord::current_timestamp_ns();
+                let send_timestamp_ns = if streaming {
+                    crate::results::MessageLatencyRecord::current_timestamp_ns()
+                } else {
+                    0
+                };
                 let send_time = Instant::now();
-                let message = Message::new(i as u64, payload.clone(), MessageType::Request);
+                let message = Message::new_lazy(i as u64, payload.clone(), MessageType::Request);
                 client_transport.send_blocking(&message)?;
 
                 if let Some(delay) = self.config.send_delay {
@@ -1529,24 +1549,21 @@ impl BlockingBenchmarkRunner {
 
                 let latency = send_time.elapsed();
 
-                // Record latency for all measured messages
-                if true {
-                    // Stream latency if enabled
-                    if let Some(ref mut manager) = results_manager {
-                        let record = crate::results::MessageLatencyRecord::new(
-                            i as u64,
-                            self.mechanism,
-                            self.config.message_size,
-                            crate::metrics::LatencyType::RoundTrip,
-                            latency,
-                            send_timestamp_ns,
-                        );
-                        let _ = manager.stream_latency_record(&record);
-                    }
-
-                    // Record in metrics collector
-                    metrics_collector.record_message(self.config.message_size, Some(latency))?;
+                // Stream latency if enabled
+                if let Some(ref mut manager) = results_manager {
+                    let record = crate::results::MessageLatencyRecord::new(
+                        i as u64,
+                        self.mechanism,
+                        self.config.message_size,
+                        crate::metrics::LatencyType::RoundTrip,
+                        latency,
+                        send_timestamp_ns,
+                    );
+                    let _ = manager.stream_latency_record(&record);
                 }
+
+                // Record in metrics collector
+                metrics_collector.record_message(self.config.message_size, Some(latency))?;
             }
         }
 

@@ -251,7 +251,7 @@ impl BlockingPosixMessageQueue {
     /// Open an existing message queue with retry logic
     fn open_queue(&self, queue_name: &str) -> Result<MqdT> {
         let start = std::time::Instant::now();
-        let timeout = Duration::from_secs(30);
+        let timeout = Duration::from_secs(10);
         let flags = MQ_OFlag::O_RDWR; // Read-write, no create
 
         loop {
@@ -415,18 +415,21 @@ impl BlockingTransport for BlockingPosixMessageQueue {
         // Pre-compute the timestamp offset for efficient in-place updates
         let ts_offset = Message::timestamp_offset();
 
-        // Send with retry loop - update timestamp on each attempt
-        // Use a retry loop with timeouts since mq_send can fail with EAGAIN
+        // CRITICAL: Capture timestamp ONCE before the retry loop.
+        // This ensures accurate latency measurement - the timestamp reflects when
+        // the send was initiated, not when it finally succeeded after backpressure.
+        // This is consistent with how shared_memory.rs handles timestamps.
+        let ts_now = crate::ipc::get_monotonic_time_ns();
+        let timestamp_bytes = ts_now.to_le_bytes();
+        if serialized.len() >= ts_offset.end {
+            serialized[ts_offset].copy_from_slice(&timestamp_bytes);
+        }
+
+        // Send with retry loop and timeouts since mq_send can fail with EAGAIN
         let start = std::time::Instant::now();
         let timeout = Duration::from_secs(5);
 
         loop {
-            // CRITICAL: Capture timestamp immediately before each send attempt
-            // This ensures accurate latency measurement even under backpressure
-            let ts_now = crate::ipc::get_monotonic_time_ns();
-            let timestamp_bytes = ts_now.to_le_bytes();
-            serialized[ts_offset.clone()].copy_from_slice(&timestamp_bytes);
-
             match mq_send(fd, &serialized, self.priority) {
                 Ok(()) => {
                     trace!("Message ID {} sent successfully", message.id);
@@ -439,7 +442,7 @@ impl BlockingTransport for BlockingPosixMessageQueue {
                             "Timeout: message queue full, possible backpressure"
                         ));
                     }
-                    // Yield and retry - timestamp will be updated on next iteration
+                    // Yield and retry
                     std::thread::yield_now();
                     std::thread::sleep(Duration::from_millis(10));
                 }

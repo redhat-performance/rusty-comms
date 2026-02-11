@@ -109,7 +109,7 @@ pub mod cli;
 /// The benchmark supports both Tokio-based async I/O and standard library
 /// blocking I/O, allowing for direct performance comparison between the two
 /// approaches. The mode is selected at runtime via CLI flags.
-pub mod execution_mode;
+// execution_mode module removed — main.rs uses args.blocking directly
 
 /// IPC transport implementations and abstractions
 ///

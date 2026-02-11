@@ -327,47 +327,34 @@ impl Message {
     /// ## Timestamp Generation
     ///
     /// The timestamp is captured at creation time using high-precision
-    /// system timing, providing the baseline for latency calculations.
-    ///
-    /// ## Note for Blocking Mode
-    ///
-    /// For accurate IPC latency measurement in blocking mode, use
-    /// `new_for_blocking()` instead which captures the timestamp using
-    /// a monotonic clock right before serialization.
+    /// monotonic timing. For messages where the transport will overwrite
+    /// the timestamp just before sending (all blocking transports do this),
+    /// use `new_lazy()` instead to avoid a redundant clock read.
     pub fn new(id: u64, payload: Vec<u8>, message_type: MessageType) -> Self {
         Self {
             id,
-            timestamp: get_monotonic_time_ns(), // Use monotonic clock for both async and blocking
+            timestamp: get_monotonic_time_ns(),
             payload,
             message_type,
             one_way_latency_ns: 0,
         }
     }
 
-    /// Create a new message for blocking mode with monotonic timestamp
+    /// Create a new message without capturing a timestamp
     ///
-    /// This method creates a message and captures the timestamp using a
-    /// monotonic clock (CLOCK_MONOTONIC on Linux). The monotonic clock is
-    /// not affected by NTP adjustments or system time changes.
+    /// This is an optimization for hot paths where the transport layer
+    /// will overwrite the timestamp immediately before the IPC syscall.
+    /// All blocking transports patch the timestamp in the serialized
+    /// buffer right before sending, making the initial timestamp from
+    /// `new()` wasted work.
     ///
-    /// ## Parameters
-    /// - `id`: Unique identifier for the message
-    /// - `payload`: Message content as byte vector
-    /// - `message_type`: Type classification for the message
-    ///
-    /// ## Returns
-    /// Message with monotonic timestamp captured at creation time
-    ///
-    /// ## Use Case
-    ///
-    /// This method should be used by blocking transport implementations
-    /// to capture timestamps right before serialization, providing accurate
-    /// IPC latency measurements that exclude serialization overhead from
-    /// the measurement.
-    pub fn new_for_blocking(id: u64, payload: Vec<u8>, message_type: MessageType) -> Self {
+    /// Use `new()` instead when the timestamp at creation time matters
+    /// (e.g., shutdown messages, canary messages, or async transports
+    /// that don't patch timestamps).
+    pub fn new_lazy(id: u64, payload: Vec<u8>, message_type: MessageType) -> Self {
         Self {
             id,
-            timestamp: get_monotonic_time_ns(),
+            timestamp: 0,
             payload,
             message_type,
             one_way_latency_ns: 0,
@@ -416,32 +403,6 @@ impl Message {
     /// immediately before IPC syscall without re-serializing entire message.
     pub fn timestamp_offset() -> std::ops::Range<usize> {
         8..16
-    }
-
-    /// Get the message size in bytes
-    ///
-    /// Calculates the approximate serialized size of the message,
-    /// useful for bandwidth calculations and buffer sizing.
-    ///
-    /// ## Returns
-    /// Estimated message size in bytes including all fields
-    ///
-    /// ## Size Calculation
-    ///
-    /// The calculation includes:
-    /// - 8 bytes for message ID (u64)
-    /// - 8 bytes for timestamp (u64)  
-    /// - Variable payload length
-    /// - 1 byte for message type enum discriminant
-    ///
-    /// Note: This is an approximation; actual serialized size may
-    /// vary slightly due to encoding overhead.
-    pub fn size(&self) -> usize {
-        // Approximate size calculation
-        8 + // id
-        8 + // timestamp
-        self.payload.len() + // payload
-        1 // message_type (enum discriminant)
     }
 
     /// Serialize the message to bytes
@@ -1539,18 +1500,6 @@ mod tests {
     }
 
     // ===== Message Tests =====
-
-    #[test]
-    fn test_message_new_for_blocking() {
-        let payload = vec![1, 2, 3, 4, 5];
-        let msg = Message::new_for_blocking(42, payload.clone(), MessageType::Request);
-
-        assert_eq!(msg.id, 42);
-        assert_eq!(msg.payload, payload);
-        assert_eq!(msg.message_type, MessageType::Request);
-        // Timestamp should be set (non-zero)
-        assert!(msg.timestamp > 0);
-    }
 
     #[test]
     fn test_message_set_timestamp_now() {

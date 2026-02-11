@@ -84,6 +84,10 @@ pub struct BlockingUnixDomainSocket {
     /// Connected socket stream for sending/receiving data.
     /// Populated after accept() in server mode or connect() in client mode.
     stream: Option<UnixStream>,
+
+    /// Socket file path for cleanup on close/drop.
+    /// Only populated in server mode (the server owns the socket file).
+    socket_path: Option<String>,
 }
 
 impl BlockingUnixDomainSocket {
@@ -104,6 +108,19 @@ impl BlockingUnixDomainSocket {
         Self {
             listener: None,
             stream: None,
+            socket_path: None,
+        }
+    }
+
+    /// Remove the socket file if it exists.
+    /// Called on close and drop to prevent stale socket files.
+    fn cleanup_socket(&self) {
+        if let Some(ref path) = self.socket_path {
+            if let Err(e) = std::fs::remove_file(path) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!("Failed to remove socket file {}: {}", path, e);
+                }
+            }
         }
     }
 
@@ -205,10 +222,11 @@ impl BlockingTransport for BlockingUnixDomainSocket {
             }
         }
 
-        // Store the listener but don't accept yet.
+        // Store the listener and the path (for cleanup on close/drop).
         // The accept() will happen on the first send/receive via ensure_connection().
         // This allows the server to signal readiness before blocking on accept.
         self.listener = Some(listener);
+        self.socket_path = Some(config.socket_path.clone());
 
         Ok(())
     }
@@ -264,44 +282,21 @@ impl BlockingTransport for BlockingUnixDomainSocket {
         message_with_timestamp.set_timestamp_now();
         let timestamp_bytes = message_with_timestamp.timestamp.to_le_bytes();
         let ts_offset = Message::timestamp_offset();
-        serialized[ts_offset].copy_from_slice(&timestamp_bytes);
-
-        // Use writev for scatter-gather I/O: single syscall, no extra allocation
-        let len_bytes = (serialized.len() as u32).to_le_bytes();
-        let fd = stream.as_raw_fd();
-
-        let iov = [
-            libc::iovec {
-                iov_base: len_bytes.as_ptr() as *mut libc::c_void,
-                iov_len: 4,
-            },
-            libc::iovec {
-                iov_base: serialized.as_ptr() as *mut libc::c_void,
-                iov_len: serialized.len(),
-            },
-        ];
-
-        let total_len = 4 + serialized.len();
-        let mut written = 0usize;
-
-        // writev may not write everything in one call, so loop until complete
-        while written < total_len {
-            let result = unsafe { libc::writev(fd, iov.as_ptr(), 2) };
-            if result < 0 {
-                return Err(std::io::Error::last_os_error())
-                    .context("Failed to write message via writev");
-            }
-            written += result as usize;
-            if written < total_len {
-                // Partial write - fall back to regular write for remainder
-                // This is rare for small messages on UDS
-                let remaining = &serialized[written.saturating_sub(4)..];
-                stream
-                    .write_all(remaining)
-                    .context("Failed to write remaining data")?;
-                break;
-            }
+        if serialized.len() >= ts_offset.end {
+            serialized[ts_offset].copy_from_slice(&timestamp_bytes);
         }
+
+        // Build a single contiguous buffer: 4-byte length prefix + serialized data
+        // This avoids writev partial-write edge cases where the fallback logic
+        // must track which iov segment was partially written.
+        let len_bytes = (serialized.len() as u32).to_le_bytes();
+        let mut send_buf = Vec::with_capacity(4 + serialized.len());
+        send_buf.extend_from_slice(&len_bytes);
+        send_buf.extend_from_slice(&serialized);
+
+        stream
+            .write_all(&send_buf)
+            .context("Failed to write message")?;
 
         trace!("Message ID {} sent successfully", message.id);
         Ok(())
@@ -362,6 +357,9 @@ impl BlockingTransport for BlockingUnixDomainSocket {
         // Close listener (if server). Drop handles cleanup automatically.
         self.listener = None;
 
+        // Remove socket file to prevent stale files from accumulating
+        self.cleanup_socket();
+
         debug!("Blocking UDS transport closed");
         Ok(())
     }
@@ -371,6 +369,13 @@ impl BlockingTransport for BlockingUnixDomainSocket {
 impl Default for BlockingUnixDomainSocket {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Drop for BlockingUnixDomainSocket {
+    fn drop(&mut self) {
+        // Clean up socket file on drop to prevent stale files
+        self.cleanup_socket();
     }
 }
 

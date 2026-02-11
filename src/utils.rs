@@ -22,7 +22,6 @@
 //! - **Extensibility**: Easy to add new formatters and validators
 
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Returns the system-appropriate temporary directory for IPC files.
 ///
@@ -167,39 +166,6 @@ where
     receiver
         .await
         .map_err(|e| anyhow::anyhow!("Thread communication error: {}", e))?
-}
-
-/// Get current timestamp as nanoseconds since Unix epoch
-///
-/// Provides high-precision timing information for performance measurement
-/// and result correlation. The nanosecond precision enables accurate timing
-/// even for very fast operations.
-///
-/// ## Returns
-/// Number of nanoseconds since January 1, 1970, 00:00:00 UTC
-///
-/// ## Precision
-///
-/// The returned value has nanosecond precision on systems that support it,
-/// though the actual resolution depends on system capabilities. Most modern
-/// systems provide microsecond or better resolution.
-///
-/// ## Error Handling
-///
-/// If the system time is before the Unix epoch (very rare), returns 0
-/// to provide a safe fallback rather than panicking.
-///
-/// ## Usage
-///
-/// - Timestamping measurement data
-/// - Calculating time differences
-/// - Correlating events across different system components
-/// - High-precision performance measurement
-pub fn current_timestamp_ns() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64
 }
 
 #[cfg(test)]

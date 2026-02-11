@@ -1659,6 +1659,17 @@ port={}",
                 .await?;
 
             let payload = vec![0u8; client_config.message_size];
+
+            // Send canary message if first message should not be included
+            // This warms up the connection so the first recorded message
+            // doesn't include setup overhead
+            if !client_config.include_first_message {
+                let canary = Message::new(u64::MAX, payload.clone(), MessageType::Request);
+                if client_transport.send(&canary).await.is_ok() {
+                    let _ = client_transport.receive().await;
+                }
+            }
+
             let start_time = Instant::now();
 
             if let Some(duration) = client_config.duration {

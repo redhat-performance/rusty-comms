@@ -70,10 +70,22 @@ use async_trait::async_trait;
 use nix::errno::Errno;
 use nix::mqueue::{mq_close, mq_open, mq_receive, mq_send, mq_unlink, MQ_OFlag, MqAttr, MqdT};
 use nix::sys::stat::Mode;
-use std::os::unix::io::{AsRawFd, FromRawFd};
+use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::time::Duration;
+use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
+
+/// Thin wrapper around a raw file descriptor that implements `AsRawFd`
+/// without owning the descriptor (does not close on drop).
+/// Used to register POSIX message queue FDs with tokio's `AsyncFd`.
+struct RawFdWrapper(RawFd);
+
+impl AsRawFd for RawFdWrapper {
+    fn as_raw_fd(&self) -> RawFd {
+        self.0
+    }
+}
 
 /// POSIX Message Queue transport implementation
 ///
@@ -163,6 +175,14 @@ pub struct PosixMessageQueueTransport {
     /// called. Storing the configuration allows the transport to access
     /// parameters like `pmq_priority` during its operation.
     config: Option<TransportConfig>,
+
+    /// AsyncFd wrapper for the send queue (request queue for client, response queue for server).
+    /// Allows epoll-based async waiting instead of polling with sleep.
+    async_send_fd: Option<AsyncFd<RawFdWrapper>>,
+
+    /// AsyncFd wrapper for the receive queue (response queue for client, request queue for server).
+    /// Allows epoll-based async waiting instead of polling with sleep.
+    async_recv_fd: Option<AsyncFd<RawFdWrapper>>,
 }
 
 impl Default for PosixMessageQueueTransport {
@@ -211,6 +231,8 @@ impl PosixMessageQueueTransport {
             is_server: false,
             has_warned_backpressure: false,
             config: None,
+            async_send_fd: None,
+            async_recv_fd: None,
         }
     }
 
@@ -239,6 +261,10 @@ impl PosixMessageQueueTransport {
     /// ensuring that cleanup proceeds even if individual operations fail.
     fn cleanup_queue(&mut self) {
         debug!("Cleaning up POSIX message queues");
+
+        // Drop AsyncFd wrappers first to deregister from epoll before closing FDs
+        self.async_send_fd.take();
+        self.async_recv_fd.take();
 
         // Close request queue
         if let Some(fd) = self.request_queue_fd.take() {
@@ -451,6 +477,14 @@ impl IpcTransport for PosixMessageQueueTransport {
 
         self.request_queue_fd = Some(request_fd);
         self.response_queue_fd = Some(response_fd);
+
+        // Register FDs with tokio's epoll reactor for efficient async I/O.
+        // Server sends on response queue and receives from request queue.
+        let send_raw_fd = self.response_queue_fd.as_ref().unwrap().as_raw_fd();
+        let recv_raw_fd = self.request_queue_fd.as_ref().unwrap().as_raw_fd();
+        self.async_send_fd = Some(AsyncFd::new(RawFdWrapper(send_raw_fd))?);
+        self.async_recv_fd = Some(AsyncFd::new(RawFdWrapper(recv_raw_fd))?);
+
         self.state = TransportState::Connected;
         debug!(
             "POSIX Message Queue server started with dual queues: {}_req, {}_resp",
@@ -619,6 +653,14 @@ impl IpcTransport for PosixMessageQueueTransport {
 
         self.request_queue_fd = Some(request_fd);
         self.response_queue_fd = Some(response_fd);
+
+        // Register FDs with tokio's epoll reactor for efficient async I/O.
+        // Client sends on request queue and receives from response queue.
+        let send_raw_fd = self.request_queue_fd.as_ref().unwrap().as_raw_fd();
+        let recv_raw_fd = self.response_queue_fd.as_ref().unwrap().as_raw_fd();
+        self.async_send_fd = Some(AsyncFd::new(RawFdWrapper(send_raw_fd))?);
+        self.async_recv_fd = Some(AsyncFd::new(RawFdWrapper(recv_raw_fd))?);
+
         self.state = TransportState::Connected;
         debug!(
             "POSIX Message Queue client connected to dual queues: {}_req, {}_resp",
@@ -670,28 +712,12 @@ impl IpcTransport for PosixMessageQueueTransport {
     /// ## Timestamp Accuracy
     ///
     /// To ensure accurate one-way latency measurement, the timestamp is updated
-    /// immediately before the `mq_send` syscall inside the blocking task. This
-    /// excludes async scheduling overhead from the measured latency.
+    /// immediately before the `mq_send` syscall. Since the queue is non-blocking
+    /// and we call `mq_send` directly (no spawn_blocking), there is minimal
+    /// overhead between timestamp capture and the actual kernel send.
     async fn send(&mut self, message: &Message) -> Result<bool> {
-        // Pre-serialize with current timestamp (will be updated before send)
-        let data = message.to_bytes()?;
-
-        // Select the appropriate queue based on role:
-        // - Client sends to request queue
-        // - Server sends to response queue
-        let fd_ref = if self.is_server {
-            self.response_queue_fd
-                .as_ref()
-                .ok_or_else(|| anyhow!("No response queue available"))?
-        } else {
-            self.request_queue_fd
-                .as_ref()
-                .ok_or_else(|| anyhow!("No request queue available"))?
-        };
-
-        // Since MqdT is just a wrapper around an fd, we can extract its raw fd
-        let raw_fd = fd_ref.as_raw_fd();
-        let mut backpressure_detected = false;
+        // Pre-serialize the message
+        let mut data = message.to_bytes()?;
 
         // Get the priority from the config, which was set during transport creation.
         let priority = self.config.as_ref().map_or(0, |c| c.pmq_priority);
@@ -699,51 +725,38 @@ impl IpcTransport for PosixMessageQueueTransport {
         // Pre-compute timestamp offset for efficient in-place updates
         let ts_offset = Message::timestamp_offset();
 
-        // Use non-blocking send with exponential backoff for queue-full conditions
-        let mut retry_delay_ms = 1;
-        let max_retries = 100; // More retries since each one is much faster
+        let async_fd = self
+            .async_send_fd
+            .as_ref()
+            .ok_or_else(|| anyhow!("Send queue not initialized"))?;
 
-        for attempt in 0..max_retries {
-            let start_time = std::time::Instant::now();
-            let result = tokio::task::spawn_blocking({
-                let mut data = data.clone();
-                let ts_range = ts_offset.clone();
-                move || {
-                    // CRITICAL: Update timestamp immediately before mq_send syscall
-                    // This ensures accurate latency measurement by excluding async
-                    // scheduling overhead from the measured one-way latency.
-                    let ts_now = crate::ipc::get_monotonic_time_ns();
-                    let ts_bytes = ts_now.to_le_bytes();
-                    data[ts_range].copy_from_slice(&ts_bytes);
+        let raw_fd = async_fd.get_ref().as_raw_fd();
 
-                    // Reconstruct MqdT from raw fd for the blocking operation
-                    let fd = unsafe { MqdT::from_raw_fd(raw_fd) };
-                    // std::mem::forget(fd); // Don't close the fd when this MqdT drops
-                    mq_send(&fd, &data, priority)
-                }
-            })
-            .await?;
+        let mut backpressure_detected = false;
+        let start_time = std::time::Instant::now();
+        let send_timeout = Duration::from_secs(5);
+
+        loop {
+            // CRITICAL: Update timestamp immediately before mq_send syscall.
+            // No spawn_blocking overhead between timestamp and kernel send.
+            let ts_now = crate::ipc::get_monotonic_time_ns();
+            let ts_bytes = ts_now.to_le_bytes();
+            if data.len() >= ts_offset.end {
+                data[ts_offset.clone()].copy_from_slice(&ts_bytes);
+            }
+
+            // Call mq_send directly -- the queue is O_NONBLOCK so this never blocks.
+            let fd = unsafe { MqdT::from_raw_fd(raw_fd) };
+            let result = mq_send(&fd, &data, priority);
+            std::mem::forget(fd);
 
             match result {
                 Ok(()) => {
-                    let elapsed = start_time.elapsed();
-                    // A send operation taking longer than a few milliseconds is a strong
-                    // indicator of the OS send buffer being full.
-                    if elapsed > std::time::Duration::from_millis(5) {
-                        backpressure_detected = true;
-                        if !self.has_warned_backpressure {
-                            warn!(
-                                "PMQ backpressure detected (send took {:?}). \
-                                This may impact latency and throughput measurements.",
-                                elapsed
-                            );
-                            self.has_warned_backpressure = true;
-                        }
-                    }
                     debug!("Sent message {} bytes via POSIX message queue", data.len());
                     return Ok(backpressure_detected);
                 }
                 Err(Errno::EAGAIN) => {
+                    // Queue is full -- use epoll to wait for space efficiently
                     backpressure_detected = true;
                     if !self.has_warned_backpressure {
                         warn!(
@@ -752,22 +765,31 @@ impl IpcTransport for PosixMessageQueueTransport {
                         );
                         self.has_warned_backpressure = true;
                     }
-                    // Queue is full, wait and retry
-                    if attempt == max_retries - 1 {
-                        return Err(anyhow!(IpcError::BackpressureTimeout));
+                    let remaining = send_timeout.checked_sub(start_time.elapsed());
+                    match remaining {
+                        None | Some(Duration::ZERO) => {
+                            return Err(anyhow!(IpcError::BackpressureTimeout));
+                        }
+                        Some(remaining) => {
+                            // Wait for the queue to become writable via epoll,
+                            // bounded by the remaining time to avoid indefinite hangs.
+                            match tokio::time::timeout(remaining, async_fd.writable()).await {
+                                Ok(Ok(mut guard)) => guard.clear_ready(),
+                                Ok(Err(e)) => {
+                                    return Err(anyhow!("Writable wait error: {}", e));
+                                }
+                                Err(_) => {
+                                    return Err(anyhow!(IpcError::BackpressureTimeout));
+                                }
+                            }
+                        }
                     }
-                    // Justification: Short, exponentially increasing delay to wait for space to become available
-                    // in a full queue without busy-waiting.
-                    tokio::time::sleep(Duration::from_millis(retry_delay_ms)).await;
-                    retry_delay_ms = (retry_delay_ms * 2).min(10); // Cap at 10ms for faster throughput
                 }
                 Err(e) => {
                     return Err(anyhow!("Failed to send message: {}", e));
                 }
             }
         }
-
-        Err(anyhow!("Send failed after {} attempts", max_retries))
     }
 
     /// Receive a message from the appropriate message queue
@@ -811,86 +833,85 @@ impl IpcTransport for PosixMessageQueueTransport {
     /// ## Timestamp Accuracy
     ///
     /// To ensure accurate one-way latency measurement, the receive timestamp is
-    /// captured immediately after `mq_receive` completes inside the blocking task.
-    /// The one-way latency is calculated and stored in the message's `one_way_latency_ns`
-    /// field, excluding async scheduling overhead from the measured latency.
+    /// captured immediately after `mq_receive` completes. Since `mq_receive` is
+    /// called directly (no spawn_blocking), there is zero async scheduling overhead
+    /// between the kernel returning the message and the timestamp capture.
     async fn receive(&mut self) -> Result<Message> {
-        // Select the appropriate queue based on role:
-        // - Client receives from response queue
-        // - Server receives from request queue
-        let fd_ref = if self.is_server {
-            self.request_queue_fd
-                .as_ref()
-                .ok_or_else(|| anyhow!("No request queue available"))?
-        } else {
-            self.response_queue_fd
-                .as_ref()
-                .ok_or_else(|| anyhow!("No response queue available"))?
-        };
-        let raw_fd = fd_ref.as_raw_fd();
+        let async_fd = self
+            .async_recv_fd
+            .as_ref()
+            .ok_or_else(|| anyhow!("Receive queue not initialized"))?;
+
+        let raw_fd = async_fd.get_ref().as_raw_fd();
         let max_msg_size = self.max_msg_size;
 
-        // Use non-blocking receive with moderate polling
-        // Balance between latency impact and CPU usage
-        let mut retry_delay_us = 100; // Start with 100 microseconds
-        let max_retries = 1000; // Reasonable retry count
+        // Pre-allocate a receive buffer -- reused across retries
+        let mut buffer = vec![0u8; max_msg_size];
+        let timeout = Duration::from_secs(5);
+        let start = std::time::Instant::now();
 
-        for attempt in 0..max_retries {
-            let result = tokio::task::spawn_blocking({
-                move || {
-                    let fd = unsafe { MqdT::from_raw_fd(raw_fd) };
-                    let mut buffer = vec![0u8; max_msg_size];
-                    let mut priority = 0u32;
-                    // std::mem::forget(fd); // Don't close the fd when this M-q-dT drops
-                    mq_receive(&fd, &mut buffer, &mut priority).map(|bytes_read| {
-                        // CRITICAL: Capture receive timestamp immediately after mq_receive
-                        // This excludes async scheduling overhead from latency measurement
-                        let receive_time_ns = crate::ipc::get_monotonic_time_ns();
-
-                        buffer.truncate(bytes_read);
-                        (buffer, receive_time_ns)
-                    })
-                }
-            })
-            .await?;
+        loop {
+            // Call mq_receive directly -- the queue is O_NONBLOCK so this never blocks.
+            let fd = unsafe { MqdT::from_raw_fd(raw_fd) };
+            let mut priority = 0u32;
+            let result = mq_receive(&fd, &mut buffer, &mut priority);
+            std::mem::forget(fd);
 
             match result {
-                Ok((buffer, receive_time_ns)) => {
+                Ok(bytes_read) => {
+                    // CRITICAL: Capture receive timestamp immediately after mq_receive.
+                    // No spawn_blocking overhead -- this runs on the async task itself.
+                    let receive_time_ns = crate::ipc::get_monotonic_time_ns();
+
                     debug!(
                         "Received message {} bytes via POSIX message queue",
-                        buffer.len()
+                        bytes_read
                     );
-                    let mut message = Message::from_bytes(&buffer)?;
+                    let mut message = Message::from_bytes(&buffer[..bytes_read])?;
 
-                    // Calculate and store one-way latency using accurate receive timestamp
-                    // captured inside spawn_blocking, before async overhead
+                    // Calculate and store one-way latency
                     // Only for Request/OneWay messages - Response messages already have
                     // one_way_latency_ns set by the server, so don't overwrite it
                     if message.message_type != crate::ipc::MessageType::Response {
-                        message.one_way_latency_ns = receive_time_ns.saturating_sub(message.timestamp);
+                        message.one_way_latency_ns =
+                            receive_time_ns.saturating_sub(message.timestamp);
                     }
 
                     return Ok(message);
                 }
                 Err(Errno::EAGAIN) => {
-                    // Queue is empty, wait and retry
-                    if attempt == max_retries - 1 {
-                        return Err(anyhow!(
-                            "Receive failed after {} attempts - queue consistently empty",
-                            max_retries
-                        ));
+                    // Queue is empty -- use epoll to wait for data efficiently
+                    let remaining = timeout.checked_sub(start.elapsed());
+                    match remaining {
+                        None | Some(Duration::ZERO) => {
+                            return Err(anyhow!(
+                                "Receive timed out after {:?} - queue consistently empty",
+                                timeout
+                            ));
+                        }
+                        Some(remaining) => {
+                            // Wait for the queue to become readable via epoll,
+                            // bounded by the remaining time to avoid indefinite hangs.
+                            match tokio::time::timeout(remaining, async_fd.readable()).await {
+                                Ok(Ok(mut guard)) => guard.clear_ready(),
+                                Ok(Err(e)) => {
+                                    return Err(anyhow!("Readable wait error: {}", e));
+                                }
+                                Err(_) => {
+                                    return Err(anyhow!(
+                                        "Receive timed out after {:?} - queue consistently empty",
+                                        timeout
+                                    ));
+                                }
+                            }
+                        }
                     }
-                    // Use moderate delays (100-500 microseconds) to balance latency and CPU
-                    tokio::time::sleep(Duration::from_micros(retry_delay_us)).await;
-                    retry_delay_us = (retry_delay_us * 2).min(500); // Cap at 500µs
                 }
                 Err(e) => {
                     return Err(anyhow!("Failed to receive message: {}", e));
                 }
             }
         }
-
-        Err(anyhow!("Receive failed after {} attempts", max_retries))
     }
 
     /// Close the transport and clean up resources
@@ -934,6 +955,12 @@ impl IpcTransport for PosixMessageQueueTransport {
     /// operation success, preventing further use of an invalid transport.
     async fn close(&mut self) -> Result<()> {
         debug!("Closing POSIX Message Queue transport");
+
+        // Drop AsyncFd wrappers FIRST to deregister from epoll before closing
+        // the underlying file descriptors.
+        self.async_send_fd.take();
+        self.async_recv_fd.take();
+
         let queue_name = self.queue_name.clone();
         let request_fd = self.request_queue_fd.take();
         let response_fd = self.response_queue_fd.take();
@@ -1095,14 +1122,17 @@ impl IpcTransport for PosixMessageQueueTransport {
                 let result = tokio::task::spawn_blocking({
                     let raw_fd_copy = raw_fd;
                     move || {
+                        // IMPORTANT: We must forget the fd afterwards to prevent MqdT's
+                        // Drop impl from closing the underlying file descriptor.
                         let fd = unsafe { MqdT::from_raw_fd(raw_fd_copy) };
                         let mut buffer = vec![0u8; max_msg_size];
                         let mut priority = 0u32;
-                        // std::mem::forget(fd); // Don't close the fd when this MqdT drops
-                        mq_receive(&fd, &mut buffer, &mut priority).map(|bytes_read| {
+                        let result = mq_receive(&fd, &mut buffer, &mut priority).map(|bytes_read| {
                             buffer.truncate(bytes_read);
                             buffer
-                        })
+                        });
+                        std::mem::forget(fd);
+                        result
                     }
                 })
                 .await;

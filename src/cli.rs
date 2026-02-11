@@ -260,10 +260,9 @@ pub struct Args {
     /// Increase diagnostic log verbosity on stderr.
     ///
     /// Can be used multiple times to increase detail:
-    ///  -v: info
-    ///  -vv: debug
-    ///  -vvv: trace
-    /// By default, only WARNING and ERROR messages are shown.
+    ///  -v: debug
+    ///  -vv: trace
+    /// By default, INFO and above messages are shown.
     #[arg(short, long, action = clap::ArgAction::Count, help_heading = OUTPUT_AND_LOGGING)]
     pub verbose: u8,
 

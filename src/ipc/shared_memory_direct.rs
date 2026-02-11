@@ -206,11 +206,19 @@ struct RawSharedMessage {
     /// Initialized with `PTHREAD_PROCESS_SHARED` to work across processes.
     mutex: libc::pthread_mutex_t,
 
-    /// Condition variable for signaling.
+    /// Condition variable for the Client → Server direction.
     ///
-    /// Used for pthread-based synchronization on non-Linux platforms
-    /// and as fallback.
-    cond: libc::pthread_cond_t,
+    /// Signaled when:
+    /// - Client writes to `client_to_server` (wakes server waiting for a request)
+    /// - Server clears `client_to_server.ready` (wakes client waiting for send space)
+    cond_c2s: libc::pthread_cond_t,
+
+    /// Condition variable for the Server → Client direction.
+    ///
+    /// Signaled when:
+    /// - Server writes to `server_to_client` (wakes client waiting for a response)
+    /// - Client clears `server_to_client.ready` (wakes server waiting for send space)
+    cond_s2c: libc::pthread_cond_t,
 
     /// Client ready flag (used as futex on Linux).
     ///
@@ -264,15 +272,23 @@ impl RawSharedMessage {
         libc::pthread_mutexattr_destroy(mutex_attr.as_mut_ptr());
         self.mutex = mutex.assume_init();
 
-        // Initialize condition variable with PTHREAD_PROCESS_SHARED
+        // Initialize per-direction condition variables with PTHREAD_PROCESS_SHARED.
+        // Using separate condvars per direction prevents spurious wakeups during
+        // round-trip tests (e.g., server finishing a receive would previously wake
+        // the client waiting for a response on the other slot).
         let mut cond_attr = MaybeUninit::uninit();
         libc::pthread_condattr_init(cond_attr.as_mut_ptr());
         libc::pthread_condattr_setpshared(cond_attr.as_mut_ptr(), libc::PTHREAD_PROCESS_SHARED);
 
-        let mut cond = MaybeUninit::uninit();
-        libc::pthread_cond_init(cond.as_mut_ptr(), cond_attr.as_ptr());
+        let mut cond_c2s = MaybeUninit::uninit();
+        libc::pthread_cond_init(cond_c2s.as_mut_ptr(), cond_attr.as_ptr());
+        self.cond_c2s = cond_c2s.assume_init();
+
+        let mut cond_s2c = MaybeUninit::uninit();
+        libc::pthread_cond_init(cond_s2c.as_mut_ptr(), cond_attr.as_ptr());
+        self.cond_s2c = cond_s2c.assume_init();
+
         libc::pthread_condattr_destroy(cond_attr.as_mut_ptr());
-        self.cond = cond.assume_init();
 
         // Initialize client ready flag
         std::ptr::write(&mut self.client_ready, AtomicI32::new(0));
@@ -300,9 +316,10 @@ impl RawSharedMessage {
     /// - Assumes no other threads are using these primitives
     /// - Should only be called once during cleanup
     unsafe fn destroy(&mut self) {
-        libc::pthread_cond_destroy(&mut self.cond);
+        libc::pthread_cond_destroy(&mut self.cond_c2s);
+        libc::pthread_cond_destroy(&mut self.cond_s2c);
         libc::pthread_mutex_destroy(&mut self.mutex);
-        debug!("RawSharedMessage destroyed (mutex + cond var)");
+        debug!("RawSharedMessage destroyed (mutex + 2 cond vars)");
     }
 }
 
@@ -567,7 +584,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
         let shmem = if open_existing {
             // Open existing segment (created by host)
             let start = std::time::Instant::now();
-            let timeout = std::time::Duration::from_secs(30);
+            let timeout = std::time::Duration::from_secs(10);
             loop {
                 match ShmemConf::new()
                     .size(RawSharedMessage::SIZE)
@@ -665,7 +682,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
         // Open existing shared memory with retry loop (matches ring buffer pattern)
         // The server needs time to create the segment before client can open it
         let start = std::time::Instant::now();
-        let timeout = std::time::Duration::from_secs(30);
+        let timeout = std::time::Duration::from_secs(10);
         let shmem = loop {
             match ShmemConf::new()
                 .size(RawSharedMessage::SIZE)
@@ -709,7 +726,9 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
 
             #[cfg(not(target_os = "linux"))]
             {
-                libc::pthread_cond_broadcast(&mut (*ptr).cond);
+                // Broadcast on both condvars to wake the server from any wait
+                libc::pthread_cond_broadcast(&mut (*ptr).cond_c2s);
+                libc::pthread_cond_broadcast(&mut (*ptr).cond_s2c);
             }
         }
 
@@ -727,20 +746,20 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
         unsafe {
             let ptr = self.get_raw_message_ptr();
 
-            // Select the appropriate slot based on role:
-            // - Client sends on client_to_server slot
-            // - Server sends on server_to_client slot
-            let slot = if self.is_server {
-                &mut (*ptr).server_to_client
+            // Select the appropriate slot and condvar based on role:
+            // - Client sends on client_to_server slot → cond_c2s
+            // - Server sends on server_to_client slot → cond_s2c
+            let (slot, cond) = if self.is_server {
+                (&mut (*ptr).server_to_client, &mut (*ptr).cond_s2c as *mut _)
             } else {
-                &mut (*ptr).client_to_server
+                (&mut (*ptr).client_to_server, &mut (*ptr).cond_c2s as *mut _)
             };
 
             // Backpressure: Wait if previous message hasn't been consumed yet
             if self.cross_container {
                 // Container-safe path: Use futex/timedwait with short timeouts
                 let loop_start = Instant::now();
-                let timeout = Duration::from_secs(30);
+                let timeout = Duration::from_secs(10);
 
                 #[cfg(target_os = "linux")]
                 {
@@ -774,7 +793,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                             ts.tv_sec += 1;
                             ts.tv_nsec -= 1_000_000_000;
                         }
-                        libc::pthread_cond_timedwait(&mut (*ptr).cond, &mut (*ptr).mutex, &ts);
+                        libc::pthread_cond_timedwait(cond, &mut (*ptr).mutex, &ts);
                     }
                 }
             } else {
@@ -797,7 +816,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
 
                     while slot.ready.load(Ordering::Acquire) == 1 {
                         let ret = libc::pthread_cond_timedwait(
-                            &mut (*ptr).cond,
+                            cond,
                             &mut (*ptr).mutex,
                             &timespec,
                         );
@@ -856,12 +875,12 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
 
                 #[cfg(not(target_os = "linux"))]
                 {
-                    libc::pthread_cond_signal(&mut (*ptr).cond);
+                    libc::pthread_cond_signal(cond);
                     libc::pthread_mutex_unlock(&mut (*ptr).mutex);
                 }
             } else {
                 // Fast path: signal and unlock mutex
-                libc::pthread_cond_signal(&mut (*ptr).cond);
+                libc::pthread_cond_signal(cond);
                 libc::pthread_mutex_unlock(&mut (*ptr).mutex);
             }
         }
@@ -882,7 +901,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 let ptr = self.get_raw_message_ptr();
                 if (*ptr).client_ready.load(Ordering::Acquire) == 0 {
                     debug!("Waiting for client to connect to shared memory");
-                    self.wait_for_client_ready(std::time::Duration::from_secs(30))?;
+                    self.wait_for_client_ready(std::time::Duration::from_secs(10))?;
                     debug!("Client connected to shared memory");
                 }
             }
@@ -891,20 +910,20 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
         let message = unsafe {
             let ptr = self.get_raw_message_ptr();
 
-            // Select the appropriate slot based on role:
-            // - Server receives from client_to_server slot
-            // - Client receives from server_to_client slot
-            let slot = if self.is_server {
-                &mut (*ptr).client_to_server
+            // Select the appropriate slot and condvar based on role:
+            // - Server receives from client_to_server slot → cond_c2s
+            // - Client receives from server_to_client slot → cond_s2c
+            let (slot, cond) = if self.is_server {
+                (&mut (*ptr).client_to_server, &mut (*ptr).cond_c2s as *mut _)
             } else {
-                &mut (*ptr).server_to_client
+                (&mut (*ptr).server_to_client, &mut (*ptr).cond_s2c as *mut _)
             };
 
             // Wait for data to be ready
             if self.cross_container {
                 // Container-safe path: Use futex/timedwait with short timeouts
                 let loop_start = Instant::now();
-                let timeout = Duration::from_secs(30);
+                let timeout = Duration::from_secs(10);
 
                 #[cfg(target_os = "linux")]
                 {
@@ -938,7 +957,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                             ts.tv_sec += 1;
                             ts.tv_nsec -= 1_000_000_000;
                         }
-                        libc::pthread_cond_timedwait(&mut (*ptr).cond, &mut (*ptr).mutex, &ts);
+                        libc::pthread_cond_timedwait(cond, &mut (*ptr).mutex, &ts);
                     }
                 }
             } else {
@@ -948,24 +967,29 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                     return Err(anyhow!("Failed to lock mutex: {}", ret));
                 }
 
-                // Use timed wait (5 seconds) to avoid infinite blocking
-                let mut timespec = libc::timespec {
-                    tv_sec: 0,
-                    tv_nsec: 0,
-                };
-                libc::clock_gettime(libc::CLOCK_REALTIME, &mut timespec);
-                timespec.tv_sec += 5; // 5 second timeout
+                // Only compute timeout and enter condvar wait if data isn't ready yet.
+                // This avoids a wasted clock_gettime(CLOCK_REALTIME) syscall on every
+                // receive when the message is already waiting (the common case in
+                // round-trip benchmarks where server response is fast).
+                if slot.ready.load(Ordering::Acquire) == 0 {
+                    let mut timespec = libc::timespec {
+                        tv_sec: 0,
+                        tv_nsec: 0,
+                    };
+                    libc::clock_gettime(libc::CLOCK_REALTIME, &mut timespec);
+                    timespec.tv_sec += 5; // 5 second timeout
 
-                while slot.ready.load(Ordering::Acquire) == 0 {
-                    let ret = libc::pthread_cond_timedwait(
-                        &mut (*ptr).cond,
-                        &mut (*ptr).mutex,
-                        &timespec,
-                    );
+                    while slot.ready.load(Ordering::Acquire) == 0 {
+                        let ret = libc::pthread_cond_timedwait(
+                            cond,
+                            &mut (*ptr).mutex,
+                            &timespec,
+                        );
 
-                    if ret == libc::ETIMEDOUT {
-                        libc::pthread_mutex_unlock(&mut (*ptr).mutex);
-                        return Err(anyhow!("Timeout waiting for message"));
+                        if ret == libc::ETIMEDOUT {
+                            libc::pthread_mutex_unlock(&mut (*ptr).mutex);
+                            return Err(anyhow!("Timeout waiting for message"));
+                        }
                     }
                 }
             }
@@ -1022,12 +1046,12 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
 
                 #[cfg(not(target_os = "linux"))]
                 {
-                    libc::pthread_cond_signal(&mut (*ptr).cond);
+                    libc::pthread_cond_signal(cond);
                     libc::pthread_mutex_unlock(&mut (*ptr).mutex);
                 }
             } else {
                 // Fast path: signal and unlock mutex
-                libc::pthread_cond_signal(&mut (*ptr).cond);
+                libc::pthread_cond_signal(cond);
                 libc::pthread_mutex_unlock(&mut (*ptr).mutex);
             }
 
@@ -1439,5 +1463,135 @@ mod tests {
 
         client.close_blocking().unwrap();
         server_handle.join().unwrap();
+    }
+
+    /// Test that the round-trip / one-way latency ratio is reasonable.
+    ///
+    /// A healthy ratio is approximately 2× (one OW leg in each direction).
+    /// Before the per-direction condvar fix, this ratio was ~8× due to spurious
+    /// wakeups causing excessive context switches. This test ensures the fix
+    /// holds by asserting the ratio stays below 4×.
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn test_rt_ow_latency_ratio_shm_direct() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+        use std::time::Duration;
+        use uuid::Uuid;
+
+        let num_iterations = 1000;
+        let payload_size = 64;
+        let shm_name = format!("test_rtow_{}", Uuid::new_v4());
+        let barrier = Arc::new(Barrier::new(2));
+
+        // Server thread: receives Request, sends back Response with the OW latency embedded
+        let server_name = shm_name.clone();
+        let server_barrier = barrier.clone();
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingSharedMemoryDirect::new();
+            let config = TransportConfig {
+                shared_memory_name: server_name,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            // Signal ready
+            server_barrier.wait();
+
+            for _ in 0..num_iterations {
+                // Receive request from client
+                let request = server.receive_blocking().unwrap();
+                assert_eq!(request.message_type, MessageType::Request);
+
+                // Send response back, embedding the measured one_way_latency_ns
+                let mut response = Message::new_lazy(
+                    request.id,
+                    request.payload.clone(),
+                    MessageType::Response,
+                );
+                response.one_way_latency_ns = request.one_way_latency_ns;
+                server.send_blocking(&response).unwrap();
+            }
+
+            server.close_blocking().unwrap();
+        });
+
+        // Wait for server to be ready
+        barrier.wait();
+        thread::sleep(Duration::from_millis(10));
+
+        // Client: connect, do round-trips, measure OW and RT
+        let mut client = BlockingSharedMemoryDirect::new();
+        let config = TransportConfig {
+            shared_memory_name: shm_name,
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        let mut ow_latencies = Vec::with_capacity(num_iterations);
+        let mut rt_latencies = Vec::with_capacity(num_iterations);
+
+        // Warmup: do a few iterations to stabilize caches / scheduling
+        let warmup = 50;
+        for i in 0..warmup {
+            let payload = vec![0xABu8; payload_size];
+            let msg = Message::new(i as u64, payload, MessageType::Request);
+            let send_time = crate::ipc::get_monotonic_time_ns();
+            client.send_blocking(&msg).unwrap();
+            let response = client.receive_blocking().unwrap();
+            let _rt = crate::ipc::get_monotonic_time_ns() - send_time;
+            let _ow = response.one_way_latency_ns;
+            // discard warmup
+        }
+
+        // Measured iterations
+        for i in warmup..num_iterations {
+            let payload = vec![0xABu8; payload_size];
+            let msg = Message::new(i as u64, payload, MessageType::Request);
+            let send_time = crate::ipc::get_monotonic_time_ns();
+            client.send_blocking(&msg).unwrap();
+            let response = client.receive_blocking().unwrap();
+            let rt = crate::ipc::get_monotonic_time_ns() - send_time;
+            let ow = response.one_way_latency_ns;
+
+            if ow > 0 {
+                ow_latencies.push(ow);
+                rt_latencies.push(rt);
+            }
+        }
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+
+        // Compute mean latencies
+        assert!(
+            !ow_latencies.is_empty(),
+            "Should have collected OW latency samples"
+        );
+
+        let mean_ow: f64 = ow_latencies.iter().sum::<u64>() as f64 / ow_latencies.len() as f64;
+        let mean_rt: f64 = rt_latencies.iter().sum::<u64>() as f64 / rt_latencies.len() as f64;
+        let ratio = mean_rt / mean_ow;
+
+        eprintln!(
+            "[shm_direct] Mean OW: {:.0} ns, Mean RT: {:.0} ns, Ratio RT/OW: {:.2}x ({} samples)",
+            mean_ow,
+            mean_rt,
+            ratio,
+            ow_latencies.len()
+        );
+
+        // The ratio should be approximately 2× (one OW in each direction).
+        // Allow up to 4× to account for scheduling jitter and test environment noise.
+        // Before the fix, this was consistently ~8×.
+        assert!(
+            ratio < 4.0,
+            "RT/OW ratio {:.2}x is too high (expected < 4.0x). \
+             Mean OW: {:.0} ns, Mean RT: {:.0} ns. \
+             This indicates the per-direction condvar fix may have regressed.",
+            ratio,
+            mean_ow,
+            mean_rt,
+        );
     }
 }

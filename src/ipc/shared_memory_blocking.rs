@@ -191,9 +191,8 @@ impl SharedMemoryRingBuffer {
 
     /// Write data to the ring buffer (non-blocking, returns error if no space)
     ///
-    /// Note: This method is currently unused as we've switched to the direct
-    /// memory implementation, but kept for potential future use or testing.
-    #[allow(dead_code)]
+    /// Used by the non-Unix fallback path in send_blocking().
+    #[cfg(not(unix))]
     fn write_data(&self, data: &[u8]) -> Result<()> {
         let data_len = data.len();
         let required_space = data_len + 4; // 4 bytes for length prefix
@@ -214,10 +213,21 @@ impl SharedMemoryRingBuffer {
             }
         }
 
-        // Write data
-        for (i, &byte) in data.iter().enumerate() {
-            unsafe {
-                *data_ptr.add((write_pos + 4 + i) % capacity) = byte;
+        // Write data using bulk copy (memcpy) when possible
+        let data_start = (write_pos + 4) % capacity;
+        unsafe {
+            if data_start + data_len <= capacity {
+                // Data fits contiguously - use fast memcpy
+                std::ptr::copy_nonoverlapping(data.as_ptr(), data_ptr.add(data_start), data_len);
+            } else {
+                // Data wraps around - copy in two parts
+                let first_part = capacity - data_start;
+                std::ptr::copy_nonoverlapping(data.as_ptr(), data_ptr.add(data_start), first_part);
+                std::ptr::copy_nonoverlapping(
+                    data.as_ptr().add(first_part),
+                    data_ptr,
+                    data_len - first_part,
+                );
             }
         }
 
@@ -230,9 +240,8 @@ impl SharedMemoryRingBuffer {
 
     /// Read data from the ring buffer (non-blocking, returns error if no data)
     ///
-    /// Note: This method is currently unused as we've switched to the direct
-    /// memory implementation, but kept for potential future use or testing.
-    #[allow(dead_code)]
+    /// Used by the non-Unix fallback path in receive_blocking().
+    #[cfg(not(unix))]
     fn read_data(&self) -> Result<Vec<u8>> {
         if self.available_read_data() < 4 {
             return Err(anyhow!("No data available"));
@@ -260,11 +269,22 @@ impl SharedMemoryRingBuffer {
             return Err(anyhow!("Incomplete message"));
         }
 
-        // Read data
+        // Read data using bulk copy (memcpy) when possible
         let mut data = vec![0u8; data_len];
-        for (i, byte) in data.iter_mut().enumerate() {
-            unsafe {
-                *byte = *data_ptr.add((read_pos + 4 + i) % capacity);
+        let data_start = (read_pos + 4) % capacity;
+        unsafe {
+            if data_start + data_len <= capacity {
+                // Data is contiguous - use fast memcpy
+                std::ptr::copy_nonoverlapping(data_ptr.add(data_start), data.as_mut_ptr(), data_len);
+            } else {
+                // Data wraps around - copy in two parts
+                let first_part = capacity - data_start;
+                std::ptr::copy_nonoverlapping(data_ptr.add(data_start), data.as_mut_ptr(), first_part);
+                std::ptr::copy_nonoverlapping(
+                    data_ptr,
+                    data.as_mut_ptr().add(first_part),
+                    data_len - first_part,
+                );
             }
         }
 
@@ -375,9 +395,22 @@ impl SharedMemoryRingBuffer {
             *data_ptr.add((write_pos + i) % capacity) = byte;
         }
 
-        // Write data
-        for (i, &byte) in data.iter().enumerate() {
-            *data_ptr.add((write_pos + 4 + i) % capacity) = byte;
+        // Write data using bulk copy (memcpy) when possible.
+        // This is dramatically faster than byte-by-byte copy with modular
+        // arithmetic, which prevents SIMD vectorization.
+        let data_start = (write_pos + 4) % capacity;
+        if data_start + data_len <= capacity {
+            // Data fits contiguously - use fast memcpy
+            std::ptr::copy_nonoverlapping(data.as_ptr(), data_ptr.add(data_start), data_len);
+        } else {
+            // Data wraps around - copy in two parts
+            let first_part = capacity - data_start;
+            std::ptr::copy_nonoverlapping(data.as_ptr(), data_ptr.add(data_start), first_part);
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr().add(first_part),
+                data_ptr,
+                data_len - first_part,
+            );
         }
 
         self.write_pos
@@ -411,7 +444,7 @@ impl SharedMemoryRingBuffer {
         let required_space = data_len + 4; // 4 bytes for length prefix
 
         let start = std::time::Instant::now();
-        let timeout = Duration::from_secs(30);
+        let timeout = Duration::from_secs(10);
 
         // Poll for space availability with sleep
         while self.available_write_space() < required_space {
@@ -448,9 +481,18 @@ impl SharedMemoryRingBuffer {
             *data_ptr.add((write_pos + i) % capacity) = byte;
         }
 
-        // Write data
-        for (i, &byte) in data.iter().enumerate() {
-            *data_ptr.add((write_pos + 4 + i) % capacity) = byte;
+        // Write data using bulk copy (memcpy) when possible
+        let data_start = (write_pos + 4) % capacity;
+        if data_start + data_len <= capacity {
+            std::ptr::copy_nonoverlapping(data.as_ptr(), data_ptr.add(data_start), data_len);
+        } else {
+            let first_part = capacity - data_start;
+            std::ptr::copy_nonoverlapping(data.as_ptr(), data_ptr.add(data_start), first_part);
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr().add(first_part),
+                data_ptr,
+                data_len - first_part,
+            );
         }
 
         self.write_pos
@@ -554,10 +596,29 @@ impl SharedMemoryRingBuffer {
             ));
         }
 
-        // Read data
+        // Read data using bulk copy (memcpy) when possible
         let mut data = vec![0u8; data_len];
-        for (i, byte) in data.iter_mut().enumerate() {
-            *byte = *data_ptr.add((read_pos + 4 + i) % capacity);
+        let data_start = (read_pos + 4) % capacity;
+        if data_start + data_len <= capacity {
+            // Data is contiguous - use fast memcpy
+            std::ptr::copy_nonoverlapping(
+                data_ptr.add(data_start),
+                data.as_mut_ptr(),
+                data_len,
+            );
+        } else {
+            // Data wraps around - copy in two parts
+            let first_part = capacity - data_start;
+            std::ptr::copy_nonoverlapping(
+                data_ptr.add(data_start),
+                data.as_mut_ptr(),
+                first_part,
+            );
+            std::ptr::copy_nonoverlapping(
+                data_ptr,
+                data.as_mut_ptr().add(first_part),
+                data_len - first_part,
+            );
         }
 
         self.read_pos
@@ -583,7 +644,7 @@ impl SharedMemoryRingBuffer {
     #[cfg(unix)]
     unsafe fn read_data_polling(&self) -> Result<Vec<u8>> {
         let start = std::time::Instant::now();
-        let timeout = Duration::from_secs(30);
+        let timeout = Duration::from_secs(10);
 
         // Poll for data availability with sleep
         while self.available_read_data() < 4 {
@@ -620,10 +681,27 @@ impl SharedMemoryRingBuffer {
             ));
         }
 
-        // Read data
+        // Read data using bulk copy (memcpy) when possible
         let mut data = vec![0u8; data_len];
-        for (i, byte) in data.iter_mut().enumerate() {
-            *byte = *data_ptr.add((read_pos + 4 + i) % capacity);
+        let data_start = (read_pos + 4) % capacity;
+        if data_start + data_len <= capacity {
+            std::ptr::copy_nonoverlapping(
+                data_ptr.add(data_start),
+                data.as_mut_ptr(),
+                data_len,
+            );
+        } else {
+            let first_part = capacity - data_start;
+            std::ptr::copy_nonoverlapping(
+                data_ptr.add(data_start),
+                data.as_mut_ptr(),
+                first_part,
+            );
+            std::ptr::copy_nonoverlapping(
+                data_ptr,
+                data.as_mut_ptr().add(first_part),
+                data_len - first_part,
+            );
         }
 
         self.read_pos
@@ -733,7 +811,7 @@ impl BlockingSharedMemory {
 
             if !client_ready {
                 debug!("Waiting for client to connect to shared memory");
-                self.wait_for_peer_ready(Duration::from_secs(30))?;
+                self.wait_for_peer_ready(Duration::from_secs(10))?;
                 debug!("Client connected to shared memory");
             }
         }
@@ -777,7 +855,7 @@ impl BlockingTransport for BlockingSharedMemory {
         let shmem = if open_existing {
             // Open existing segment (created by host)
             let start = std::time::Instant::now();
-            let timeout = Duration::from_secs(30);
+            let timeout = Duration::from_secs(10);
             loop {
                 match ShmemConf::new()
                     .size(total_size)
@@ -873,7 +951,7 @@ impl BlockingTransport for BlockingSharedMemory {
 
         // Open existing shared memory segment (retry with timeout)
         let start = std::time::Instant::now();
-        let timeout = Duration::from_secs(30);
+        let timeout = Duration::from_secs(10);
         let shmem = loop {
             match ShmemConf::new()
                 .size(total_size)
@@ -930,17 +1008,12 @@ impl BlockingTransport for BlockingSharedMemory {
             )
         })?;
 
-        // Capture timestamp immediately before IPC syscall with minimal
-        // intervening work for accurate latency measurement.
-        //
-        // Pre-serialize with dummy timestamp to get buffer structure, then update
-        // only the timestamp bytes immediately before send. This ensures any
-        // scheduling delays between timestamp capture and send are included in
-        // the measured latency.
-        let mut message_with_timestamp = message.clone();
-        message_with_timestamp.timestamp = 0; // Dummy timestamp for pre-serialization
+        // Serialize the message directly (no clone needed).
+        // The timestamp in the serialized bytes will be overwritten right before
+        // the actual memory write inside write_data_blocking, ensuring accurate
+        // latency measurement.
         let mut serialized =
-            bincode::serialize(&message_with_timestamp).context("Failed to serialize message")?;
+            bincode::serialize(message).context("Failed to serialize message")?;
 
         // Timestamp will be captured inside write_data_blocking right before
         // the actual memory write, ensuring accurate latency even under backpressure
@@ -1355,5 +1428,136 @@ mod tests {
 
         client.close_blocking().unwrap();
         server_handle.join().unwrap();
+    }
+
+    /// Test that the round-trip / one-way latency ratio is reasonable.
+    ///
+    /// A healthy ratio is approximately 2× (one OW leg in each direction).
+    /// Before the ring-buffer memcpy and timestamp fixes, this ratio was ~8×.
+    /// This test ensures the fix holds by asserting the ratio stays below 4×.
+    ///
+    /// NOTE: This test is currently `#[ignore]` because the blocking SHM ring buffer
+    /// uses a single `read_pos`/`write_pos` pair shared by both sides. In round-trip
+    /// mode (client sends, then reads; server reads, then sends), a side can read
+    /// its own message due to the race for the mutex, corrupting the exchange.
+    /// See also `test_round_trip_communication` which is ignored for the same reason.
+    /// This test will become active once the ring buffer supports bidirectional
+    /// communication (e.g., dual ring buffers or per-direction slots).
+    #[test]
+    #[ignore] // Ring buffer is unidirectional - both sides race for the same read_pos
+    fn test_rt_ow_latency_ratio_shm_blocking() {
+        use crate::ipc::MessageType;
+        use uuid::Uuid;
+
+        let num_iterations: usize = 1000;
+        let payload_size = 64;
+        let segment_name = format!("test_rtow_{}", Uuid::new_v4());
+
+        // Server thread: receives Request, sends back Response with the OW latency embedded
+        let server_name = segment_name.clone();
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingSharedMemory::new();
+            let config = TransportConfig {
+                shared_memory_name: server_name,
+                buffer_size: 65536,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            for _ in 0..num_iterations {
+                // Receive request from client
+                let request = server.receive_blocking().unwrap();
+                assert_eq!(request.message_type, MessageType::Request);
+
+                // Send response back, embedding the measured one_way_latency_ns
+                let mut response = Message::new(
+                    request.id,
+                    vec![0u8; payload_size],
+                    MessageType::Response,
+                );
+                response.one_way_latency_ns = request.one_way_latency_ns;
+                server.send_blocking(&response).unwrap();
+            }
+
+            server.close_blocking().unwrap();
+        });
+
+        // Give server time to create the segment
+        thread::sleep(Duration::from_millis(200));
+
+        // Client: connect, do round-trips, measure OW and RT
+        let mut client = BlockingSharedMemory::new();
+        let config = TransportConfig {
+            shared_memory_name: segment_name,
+            buffer_size: 65536,
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        let mut ow_latencies = Vec::with_capacity(num_iterations);
+        let mut rt_latencies = Vec::with_capacity(num_iterations);
+
+        // Warmup: do a few iterations to stabilize caches / scheduling
+        let warmup = 50;
+        for i in 0..warmup {
+            let payload = vec![0xABu8; payload_size];
+            let msg = Message::new(i as u64, payload, MessageType::Request);
+            let send_time = crate::ipc::get_monotonic_time_ns();
+            client.send_blocking(&msg).unwrap();
+            let response = client.receive_blocking().unwrap();
+            let _rt = crate::ipc::get_monotonic_time_ns() - send_time;
+            let _ow = response.one_way_latency_ns;
+            // discard warmup
+        }
+
+        // Measured iterations
+        for i in warmup..num_iterations {
+            let payload = vec![0xABu8; payload_size];
+            let msg = Message::new(i as u64, payload, MessageType::Request);
+            let send_time = crate::ipc::get_monotonic_time_ns();
+            client.send_blocking(&msg).unwrap();
+            let response = client.receive_blocking().unwrap();
+            let rt = crate::ipc::get_monotonic_time_ns() - send_time;
+            let ow = response.one_way_latency_ns;
+
+            if ow > 0 {
+                ow_latencies.push(ow);
+                rt_latencies.push(rt);
+            }
+        }
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+
+        // Compute mean latencies
+        assert!(
+            !ow_latencies.is_empty(),
+            "Should have collected OW latency samples"
+        );
+
+        let mean_ow: f64 = ow_latencies.iter().sum::<u64>() as f64 / ow_latencies.len() as f64;
+        let mean_rt: f64 = rt_latencies.iter().sum::<u64>() as f64 / rt_latencies.len() as f64;
+        let ratio = mean_rt / mean_ow;
+
+        eprintln!(
+            "[shm_blocking] Mean OW: {:.0} ns, Mean RT: {:.0} ns, Ratio RT/OW: {:.2}x ({} samples)",
+            mean_ow,
+            mean_rt,
+            ratio,
+            ow_latencies.len()
+        );
+
+        // The ratio should be approximately 2× (one OW in each direction).
+        // Allow up to 4× to account for scheduling jitter and test environment noise.
+        // Before the fix, this was consistently ~8×.
+        assert!(
+            ratio < 4.0,
+            "RT/OW ratio {:.2}x is too high (expected < 4.0x). \
+             Mean OW: {:.0} ns, Mean RT: {:.0} ns. \
+             This indicates the ring buffer latency fixes may have regressed.",
+            ratio,
+            mean_ow,
+            mean_rt,
+        );
     }
 }

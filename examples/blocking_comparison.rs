@@ -156,12 +156,12 @@ async fn main() -> Result<()> {
         println!(
             "  Async:    {:.2} msg/s ({:.2} MB/s)",
             async_ow.throughput.messages_per_second,
-            async_ow.throughput.bytes_per_second / 1_000_000.0
+            async_ow.throughput.bytes_per_second / 1_048_576.0
         );
         println!(
             "  Blocking: {:.2} msg/s ({:.2} MB/s)",
             blocking_ow.throughput.messages_per_second,
-            blocking_ow.throughput.bytes_per_second / 1_000_000.0
+            blocking_ow.throughput.bytes_per_second / 1_048_576.0
         );
 
         let throughput_diff = ((blocking_ow.throughput.messages_per_second
@@ -204,12 +204,12 @@ async fn main() -> Result<()> {
         println!(
             "  Async:    {:.2} msg/s ({:.2} MB/s)",
             async_rt.throughput.messages_per_second,
-            async_rt.throughput.bytes_per_second / 1_000_000.0
+            async_rt.throughput.bytes_per_second / 1_048_576.0
         );
         println!(
             "  Blocking: {:.2} msg/s ({:.2} MB/s)",
             blocking_rt.throughput.messages_per_second,
-            blocking_rt.throughput.bytes_per_second / 1_000_000.0
+            blocking_rt.throughput.bytes_per_second / 1_048_576.0
         );
 
         let throughput_diff = ((blocking_rt.throughput.messages_per_second

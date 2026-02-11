@@ -277,9 +277,11 @@ fn run_client_mode_blocking(args: Args) -> Result<()> {
                 // Handle different message types
                 match message.message_type {
                     MessageType::Request => {
-                        // Echo response for round-trip tests with one-way latency
+                        // Echo response for round-trip tests with one-way latency.
+                        // Use new_lazy() to avoid a wasted get_monotonic_time_ns() call --
+                        // send_blocking() will overwrite the timestamp before the IPC syscall.
                         let mut response =
-                            Message::new(message.id, Vec::new(), MessageType::Response);
+                            Message::new_lazy(message.id, Vec::new(), MessageType::Response);
                         response.one_way_latency_ns = latency_ns; // Include measured one-way latency
                         if let Err(e) = transport.send_blocking(&response) {
                             warn!("Failed to send response: {}. Exiting.", e);
@@ -287,7 +289,7 @@ fn run_client_mode_blocking(args: Args) -> Result<()> {
                         }
                     }
                     MessageType::Ping => {
-                        let pong = Message::new(message.id, Vec::new(), MessageType::Pong);
+                        let pong = Message::new_lazy(message.id, Vec::new(), MessageType::Pong);
                         if let Err(e) = transport.send_blocking(&pong) {
                             warn!("Failed to send pong: {}. Exiting.", e);
                             break;
@@ -509,16 +511,29 @@ fn run_sender_mode_blocking(args: Args) -> Result<()> {
     let payload = vec![0u8; config.message_size];
     let mut streaming_records: Vec<MessageLatencyRecord> = Vec::new();
 
+    // Send canary message to warm up the connection if first message should be excluded.
+    // Uses id=u64::MAX so the server can distinguish it from real measurement messages,
+    // consistent with how standalone mode (benchmark_blocking.rs) handles this.
+    if !config.include_first_message {
+        let canary_type = if config.round_trip {
+            MessageType::Request
+        } else {
+            MessageType::OneWay
+        };
+        let canary = Message::new(u64::MAX, payload.clone(), canary_type);
+        if transport.send_blocking(&canary).is_ok() && config.round_trip {
+            let _ = transport.receive_blocking();
+        }
+    }
+
     // Run the benchmark
     let start_time = Instant::now();
-    let mut skip_first = !config.include_first_message;
 
     if let Some(duration) = config.duration {
         // Duration-based mode
         let mut i: u64 = 0;
         while start_time.elapsed() < duration {
             let send_timestamp_ns = MessageLatencyRecord::current_timestamp_ns();
-            let send_time = get_monotonic_time_ns();
 
             // Send Request only if round-trip is enabled (to get responses)
             // For one-way only, send OneWay messages (no response expected)
@@ -528,8 +543,10 @@ fn run_sender_mode_blocking(args: Args) -> Result<()> {
             } else {
                 MessageType::OneWay
             };
-            let mut message = Message::new(i, payload.clone(), msg_type);
-            message.timestamp = send_time;
+            let message = Message::new(i, payload.clone(), msg_type);
+            // Capture send_time *after* message creation so it doesn't include
+            // payload clone and Message::new overhead in the latency measurement
+            let send_time = message.timestamp;
 
             transport
                 .send_blocking(&message)
@@ -551,12 +568,6 @@ fn run_sender_mode_blocking(args: Args) -> Result<()> {
                 (send_latency, 0)
             };
 
-            if skip_first && i == 0 {
-                skip_first = false;
-                i += 1;
-                continue;
-            }
-
             // Record one-way latency if enabled
             if let Some(ref mut ow_metrics) = one_way_metrics {
                 let latency = Duration::from_nanos(one_way_latency_ns);
@@ -569,24 +580,30 @@ fn run_sender_mode_blocking(args: Args) -> Result<()> {
                 rt_metrics.record_message(config.message_size, Some(latency))?;
             }
 
-            // For streaming, record the primary latency type
-            let primary_latency = if config.round_trip {
-                Duration::from_nanos(round_trip_latency_ns)
-            } else {
-                Duration::from_nanos(one_way_latency_ns)
-            };
-            streaming_records.push(MessageLatencyRecord::new(
-                i,
-                mechanism,
-                config.message_size,
-                if config.round_trip {
-                    LatencyType::RoundTrip
-                } else {
-                    LatencyType::OneWay
-                },
-                primary_latency,
-                send_timestamp_ns,
-            ));
+            // Emit streaming records for each enabled latency type.
+            // When both OW and RT are enabled, emit both records (matching
+            // standalone benchmark_blocking.rs behavior) so the streaming
+            // file contains the full picture.
+            if config.one_way {
+                streaming_records.push(MessageLatencyRecord::new(
+                    i,
+                    mechanism,
+                    config.message_size,
+                    LatencyType::OneWay,
+                    Duration::from_nanos(one_way_latency_ns),
+                    send_timestamp_ns,
+                ));
+            }
+            if config.round_trip {
+                streaming_records.push(MessageLatencyRecord::new(
+                    i,
+                    mechanism,
+                    config.message_size,
+                    LatencyType::RoundTrip,
+                    Duration::from_nanos(round_trip_latency_ns),
+                    send_timestamp_ns,
+                ));
+            }
 
             if let Some(delay) = config.send_delay {
                 std::thread::sleep(delay);
@@ -595,10 +612,9 @@ fn run_sender_mode_blocking(args: Args) -> Result<()> {
         }
     } else {
         // Message count mode
-        let msg_count = config.msg_count.unwrap_or(1000);
+        let msg_count = config.msg_count.unwrap_or(ipc_benchmark::defaults::MSG_COUNT);
         for i in 0..msg_count {
             let send_timestamp_ns = MessageLatencyRecord::current_timestamp_ns();
-            let send_time = get_monotonic_time_ns();
 
             // Send Request only if round-trip is enabled (to get responses)
             // For one-way only, send OneWay messages (no response expected)
@@ -608,8 +624,10 @@ fn run_sender_mode_blocking(args: Args) -> Result<()> {
             } else {
                 MessageType::OneWay
             };
-            let mut message = Message::new(i as u64, payload.clone(), msg_type);
-            message.timestamp = send_time;
+            let message = Message::new(i as u64, payload.clone(), msg_type);
+            // Capture send_time *after* message creation so it doesn't include
+            // payload clone and Message::new overhead in the latency measurement
+            let send_time = message.timestamp;
 
             transport
                 .send_blocking(&message)
@@ -631,11 +649,6 @@ fn run_sender_mode_blocking(args: Args) -> Result<()> {
                 (send_latency, 0)
             };
 
-            if skip_first && i == 0 {
-                skip_first = false;
-                continue;
-            }
-
             // Record one-way latency if enabled
             if let Some(ref mut ow_metrics) = one_way_metrics {
                 let latency = Duration::from_nanos(one_way_latency_ns);
@@ -648,24 +661,30 @@ fn run_sender_mode_blocking(args: Args) -> Result<()> {
                 rt_metrics.record_message(config.message_size, Some(latency))?;
             }
 
-            // For streaming, record the primary latency type
-            let primary_latency = if config.round_trip {
-                Duration::from_nanos(round_trip_latency_ns)
-            } else {
-                Duration::from_nanos(one_way_latency_ns)
-            };
-            streaming_records.push(MessageLatencyRecord::new(
-                i as u64,
-                mechanism,
-                config.message_size,
-                if config.round_trip {
-                    LatencyType::RoundTrip
-                } else {
-                    LatencyType::OneWay
-                },
-                primary_latency,
-                send_timestamp_ns,
-            ));
+            // Emit streaming records for each enabled latency type.
+            // When both OW and RT are enabled, emit both records (matching
+            // standalone benchmark_blocking.rs behavior) so the streaming
+            // file contains the full picture.
+            if config.one_way {
+                streaming_records.push(MessageLatencyRecord::new(
+                    i as u64,
+                    mechanism,
+                    config.message_size,
+                    LatencyType::OneWay,
+                    Duration::from_nanos(one_way_latency_ns),
+                    send_timestamp_ns,
+                ));
+            }
+            if config.round_trip {
+                streaming_records.push(MessageLatencyRecord::new(
+                    i as u64,
+                    mechanism,
+                    config.message_size,
+                    LatencyType::RoundTrip,
+                    Duration::from_nanos(round_trip_latency_ns),
+                    send_timestamp_ns,
+                ));
+            }
 
             if let Some(delay) = config.send_delay {
                 std::thread::sleep(delay);
@@ -1347,9 +1366,11 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
                     break;
                 }
 
-                // If it's a Request, send a Response back with one-way latency
+                // If it's a Request, send a Response back with one-way latency.
+                // Use new_lazy() to avoid a wasted get_monotonic_time_ns() call --
+                // send_blocking() will overwrite the timestamp before the IPC syscall.
                 if message.message_type == MessageType::Request {
-                    let mut response = Message::new(message.id, Vec::new(), MessageType::Response);
+                    let mut response = Message::new_lazy(message.id, Vec::new(), MessageType::Response);
                     response.one_way_latency_ns = latency_ns; // Include measured one-way latency
                     if let Err(e) = transport.send_blocking(&response) {
                         warn!(
@@ -1359,7 +1380,7 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
                         break;
                     }
                 } else if message.message_type == MessageType::Ping {
-                    let pong = Message::new(message.id, Vec::new(), MessageType::Pong);
+                    let pong = Message::new_lazy(message.id, Vec::new(), MessageType::Pong);
                     if let Err(e) = transport.send_blocking(&pong) {
                         warn!("Server failed to send pong: {}. Exiting server loop.", e);
                         break;
@@ -1606,7 +1627,9 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
                 match msg.message_type {
                     MessageType::Request => {
                         // Echo a response with one-way latency to complete round-trip flows.
-                        let mut resp = Message::new(msg.id, Vec::new(), MessageType::Response);
+                        // Use new_lazy() to avoid a wasted get_monotonic_time_ns() --
+                        // Response timestamps aren't used for latency measurement.
+                        let mut resp = Message::new_lazy(msg.id, Vec::new(), MessageType::Response);
                         resp.one_way_latency_ns = latency_ns; // Include measured one-way latency
                         if transport.send(&resp).await.is_err() {
                             info!("Client disconnected during send, exiting server loop.");
@@ -1614,11 +1637,15 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
                         }
                     }
                     MessageType::Ping => {
-                        let resp = Message::new(msg.id, Vec::new(), MessageType::Pong);
+                        let resp = Message::new_lazy(msg.id, Vec::new(), MessageType::Pong);
                         if transport.send(&resp).await.is_err() {
                             info!("Client disconnected during send, exiting server loop.");
                             break;
                         }
+                    }
+                    MessageType::Shutdown => {
+                        debug!("Server received shutdown message, exiting cleanly");
+                        break;
                     }
                     // OneWay and other types need no reply.
                     _ => {}

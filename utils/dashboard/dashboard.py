@@ -3639,12 +3639,12 @@ class DashboardApp:
         roundtrip_throughput_mb = roundtrip_throughput_data.copy()
         if not oneway_throughput_mb.empty:
             oneway_throughput_mb["bytes_per_sec"] = (
-                oneway_throughput_mb["bytes_per_sec"] / 1_000_000
-            )  # Convert to MB/s
+                oneway_throughput_mb["bytes_per_sec"] / 1_048_576
+            )  # Convert to MiB/s (binary MB/s)
         if not roundtrip_throughput_mb.empty:
             roundtrip_throughput_mb["bytes_per_sec"] = (
-                roundtrip_throughput_mb["bytes_per_sec"] / 1_000_000
-            )  # Convert to MB/s
+                roundtrip_throughput_mb["bytes_per_sec"] / 1_048_576
+            )  # Convert to MiB/s (binary MB/s)
 
         oneway_bytes_pivot = self.create_pivot_table(
             oneway_throughput_mb.to_dict("records"),
@@ -4776,12 +4776,12 @@ class DashboardApp:
             roundtrip_throughput_mb = roundtrip_throughput_data.copy()
             if not oneway_throughput_mb.empty:
                 oneway_throughput_mb["bytes_per_sec"] = (
-                    oneway_throughput_mb["bytes_per_sec"] / 1_000_000
-                )  # Convert to MB/s
+                    oneway_throughput_mb["bytes_per_sec"] / 1_048_576
+                )  # Convert to MiB/s (binary MB/s)
             if not roundtrip_throughput_mb.empty:
                 roundtrip_throughput_mb["bytes_per_sec"] = (
-                    roundtrip_throughput_mb["bytes_per_sec"] / 1_000_000
-                )  # Convert to MB/s
+                    roundtrip_throughput_mb["bytes_per_sec"] / 1_048_576
+                )  # Convert to MiB/s (binary MB/s)
 
             oneway_bytes_pivot = self.create_pivot_table(
                 oneway_throughput_mb.to_dict("records"),

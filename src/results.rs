@@ -1658,38 +1658,45 @@ impl BenchmarkResults {
     /// - **Latency**: Statistical analysis of distribution characteristics
     /// - **Volume**: Direct summation of counts
     fn update_summary(&mut self) {
-        let mut total_messages = 0;
-        let mut total_bytes = 0;
-        let mut throughput_values = Vec::new();
-        let mut latency_values = Vec::new();
+        // When both one-way and round-trip results exist, they come from a combined
+        // test measuring the SAME messages. Avoid double-counting by using throughput
+        // from only one result set (prefer round-trip since it reflects the full
+        // request-response cycle). Latency stats are kept from both since they
+        // measure different things (one-way vs round-trip).
+        let (total_messages, total_bytes, throughput_bytes_per_sec, peak_bytes_per_sec) =
+            match (&self.one_way_results, &self.round_trip_results) {
+                (Some(ow), Some(rt)) => {
+                    // Combined test: same messages, use RT throughput for average (avoids
+                    // double-counting). Peak is the max of OW and RT throughput.
+                    let peak = ow
+                        .throughput
+                        .bytes_per_second
+                        .max(rt.throughput.bytes_per_second);
+                    (
+                        rt.throughput.total_messages,
+                        rt.throughput.total_bytes,
+                        rt.throughput.bytes_per_second,
+                        peak,
+                    )
+                }
+                (Some(ow), None) => (
+                    ow.throughput.total_messages,
+                    ow.throughput.total_bytes,
+                    ow.throughput.bytes_per_second,
+                    ow.throughput.bytes_per_second,
+                ),
+                (None, Some(rt)) => (
+                    rt.throughput.total_messages,
+                    rt.throughput.total_bytes,
+                    rt.throughput.bytes_per_second,
+                    rt.throughput.bytes_per_second,
+                ),
+                (None, None) => (0, 0, 0.0, 0.0),
+            };
 
-        // Process one-way results if available
-        if let Some(ref results) = self.one_way_results {
-            total_messages += results.throughput.total_messages;
-            total_bytes += results.throughput.total_bytes;
-            throughput_values.push(results.throughput.bytes_per_second);
-
-            if let Some(ref latency) = results.latency {
-                latency_values.push(latency.mean_ns);
-            }
-        }
-
-        // Process round-trip results if available
-        if let Some(ref results) = self.round_trip_results {
-            total_messages += results.throughput.total_messages;
-            total_bytes += results.throughput.total_bytes;
-            throughput_values.push(results.throughput.bytes_per_second);
-
-            if let Some(ref latency) = results.latency {
-                latency_values.push(latency.mean_ns);
-            }
-        }
-
-        // Calculate summary metrics
-        let average_throughput_mb_s =
-            throughput_values.iter().sum::<f64>() / throughput_values.len() as f64 / 1_000_000.0;
-        let peak_throughput_mb_s =
-            throughput_values.iter().cloned().fold(0.0, f64::max) / 1_000_000.0;
+        // Use binary MiB (1,048,576 bytes) for MB/s — standard in systems/IPC benchmarking
+        let average_throughput_mb_s = throughput_bytes_per_sec / 1_048_576.0;
+        let peak_throughput_mb_s = peak_bytes_per_sec / 1_048_576.0;
 
         // Calculate properly weighted average latency across all test types
         let average_latency_ns = self.calculate_weighted_average_latency();

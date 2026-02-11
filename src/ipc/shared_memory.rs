@@ -561,7 +561,7 @@ impl SharedMemoryTransport {
                     };
 
                     // Wait for server to be ready
-                    connection.wait_for_peer(Duration::from_secs(30)).await?;
+                    connection.wait_for_peer(Duration::from_secs(10)).await?;
 
                     // Mark client as ready
                     connection.mark_ready();
@@ -587,7 +587,7 @@ impl SharedMemoryTransport {
         debug!("Handling shared memory connection {}", connection_id);
 
         // Wait for client to connect
-        if let Err(e) = connection.wait_for_peer(Duration::from_secs(30)).await {
+        if let Err(e) = connection.wait_for_peer(Duration::from_secs(10)).await {
             debug!(
                 "Failed to wait for peer on connection {}: {}",
                 connection_id, e

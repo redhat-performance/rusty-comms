@@ -11,8 +11,8 @@ Runs all mechanisms and configurations:
 - Test types: Iteration-based (50k) and Duration-based (10s)
 
 Message sizes:
-- PMQ: 512, 4096, 8100
-- Others: 64, 512, 1024, 4096, 8192
+- PMQ: 512, 1024, 4096, 8100
+- Others: 64, 512, 1024, 4096, 8192, 65536 (SHM --shm-direct: capped at 8192)
 
 Host-to-QM tests require:
 - QM container running with proper configuration
@@ -92,7 +92,7 @@ WARMUP = 100
 
 # Message sizes
 PMQ_SIZES = [512, 1024, 4096, 8100]
-GENERAL_SIZES = [64, 512, 1024, 4096, 8192]
+GENERAL_SIZES = [64, 512, 1024, 4096, 8192, 65536]
 
 # Runtime settings (set by main())
 STREAM_OUTPUT = False
@@ -810,6 +810,12 @@ def get_sizes_for_mechanism(mechanism: str, mode: Mode) -> List[int]:
     """
     if mechanism == "pmq":
         return PMQ_SIZES
+    
+    # SHM with --shm-direct has MAX_PAYLOAD_SIZE of 8192 bytes.
+    # All blocking/shm-direct modes add --shm-direct for SHM, so exclude 65536.
+    # Async SHM uses the ring buffer (no --shm-direct), so 65536 is fine.
+    if mechanism == "shm" and mode != Mode.STANDALONE_ASYNC:
+        return [s for s in GENERAL_SIZES if s <= 8192]
     
     return GENERAL_SIZES
 

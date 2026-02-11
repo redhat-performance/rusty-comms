@@ -230,7 +230,9 @@ impl BlockingTransport for BlockingTcpSocket {
         message_with_timestamp.set_timestamp_now();
         let timestamp_bytes = message_with_timestamp.timestamp.to_le_bytes();
         let ts_offset = Message::timestamp_offset();
-        serialized[ts_offset].copy_from_slice(&timestamp_bytes);
+        if serialized.len() >= ts_offset.end {
+            serialized[ts_offset].copy_from_slice(&timestamp_bytes);
+        }
 
         // Send immediately - no intervening work
         let len_bytes = (serialized.len() as u32).to_le_bytes();
