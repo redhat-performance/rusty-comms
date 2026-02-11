@@ -235,6 +235,11 @@ impl SharedMemoryRingBuffer {
             .store((write_pos + required_space) % capacity, Ordering::Release);
         self.message_count.fetch_add(1, Ordering::Release);
 
+        // Wake readers that may be blocked on the condvar path.
+        // This keeps mixed-mode operation (polling writer + blocking reader)
+        // from stalling when cross-container fallback is active on one side.
+        libc::pthread_cond_signal(&self.data_ready as *const _ as *mut _);
+
         Ok(())
     }
 
@@ -707,6 +712,11 @@ impl SharedMemoryRingBuffer {
         self.read_pos
             .store((read_pos + data_len + 4) % capacity, Ordering::Release);
 
+        // Wake writers that may be blocked on the condvar path.
+        // This keeps mixed-mode operation (polling reader + blocking writer)
+        // from stalling when cross-container fallback is active on one side.
+        libc::pthread_cond_signal(&self.space_ready as *const _ as *mut _);
+
         Ok(data)
     }
 }
@@ -733,6 +743,12 @@ pub struct BlockingSharedMemory {
 
     /// Whether this instance is the server (creator)
     is_server: bool,
+
+    /// Name of the active shared memory segment.
+    ///
+    /// Stored so close_blocking() can perform deterministic cleanup
+    /// (e.g., shm_unlink on server instances).
+    shared_memory_name: String,
 
     /// Cross-container mode flag
     ///
@@ -764,6 +780,7 @@ impl BlockingSharedMemory {
             ring_buffer: None,
             shmem: None,
             is_server: false,
+            shared_memory_name: String::new(),
             cross_container: false, // Default to fast same-host mode
         }
     }
@@ -932,6 +949,7 @@ impl BlockingTransport for BlockingSharedMemory {
         self.ring_buffer = Some(ptr);
         self.shmem = Some(Arc::new(Mutex::new(shmem)));
         self.is_server = true;
+        self.shared_memory_name = config.shared_memory_name.clone();
         self.cross_container = config.cross_container;
 
         // Don't wait for client here - do it on first send/receive.
@@ -986,6 +1004,7 @@ impl BlockingTransport for BlockingSharedMemory {
         self.ring_buffer = Some(ptr);
         self.shmem = Some(Arc::new(Mutex::new(shmem)));
         self.is_server = false;
+        self.shared_memory_name = config.shared_memory_name.clone();
         self.cross_container = config.cross_container;
 
         debug!("Client connected to shared memory successfully");
@@ -1113,6 +1132,10 @@ impl BlockingTransport for BlockingSharedMemory {
     fn close_blocking(&mut self) -> Result<()> {
         debug!("Closing blocking shared memory transport");
 
+        // Capture cleanup metadata before dropping local state.
+        let should_unlink = self.is_server && !self.shared_memory_name.is_empty();
+        let shm_name = self.shared_memory_name.clone();
+
         if let Some(ring_buffer) = self.ring_buffer {
             unsafe {
                 (*ring_buffer).shutdown.store(true, Ordering::Release);
@@ -1123,20 +1146,43 @@ impl BlockingTransport for BlockingSharedMemory {
                     libc::pthread_cond_broadcast(&(*ring_buffer).data_ready as *const _ as *mut _);
                     libc::pthread_cond_broadcast(&(*ring_buffer).space_ready as *const _ as *mut _);
                 }
-
-                // Only destroy synchronization primitives if we're the server
-                // (server created the shared memory)
-                #[cfg(unix)]
-                if self.is_server {
-                    libc::pthread_mutex_destroy(&(*ring_buffer).mutex as *const _ as *mut _);
-                    libc::pthread_cond_destroy(&(*ring_buffer).data_ready as *const _ as *mut _);
-                    libc::pthread_cond_destroy(&(*ring_buffer).space_ready as *const _ as *mut _);
-                }
             }
         }
 
         self.ring_buffer = None;
         self.shmem = None;
+        self.is_server = false;
+
+        // Best-effort unlink so stale SHM objects do not accumulate across runs.
+        #[cfg(target_os = "linux")]
+        if should_unlink {
+            use std::ffi::CString;
+            let posix_name = if shm_name.starts_with('/') {
+                shm_name
+            } else {
+                format!("/{}", shm_name)
+            };
+
+            match CString::new(posix_name.as_bytes()) {
+                Ok(c_name) => unsafe {
+                    let rc = libc::shm_unlink(c_name.as_ptr());
+                    if rc == 0 {
+                        debug!("Unlinked SHM segment on close: {}", posix_name);
+                    } else {
+                        debug!(
+                            "shm_unlink failed during close for {}: {}",
+                            posix_name,
+                            std::io::Error::last_os_error()
+                        );
+                    }
+                },
+                Err(_) => {
+                    debug!("Skipping shm_unlink: SHM name contains interior NUL");
+                }
+            }
+        }
+
+        self.shared_memory_name.clear();
 
         debug!("Blocking shared memory transport closed");
         Ok(())

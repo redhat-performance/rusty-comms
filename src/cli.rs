@@ -809,10 +809,11 @@ pub fn parse_duration(s: &str) -> Result<Duration, String> {
 
     // Convert to Duration based on the unit
     let duration = match unit {
-        "ms" => Duration::from_millis(num as u64),
-        "s" => Duration::from_secs(num as u64),
-        "m" => Duration::from_secs((num * 60.0) as u64),
-        "h" => Duration::from_secs((num * 3600.0) as u64),
+        // Use float-based conversion so fractional inputs like "1.5s" are preserved.
+        "ms" => Duration::from_secs_f64(num / 1000.0),
+        "s" => Duration::from_secs_f64(num),
+        "m" => Duration::from_secs_f64(num * 60.0),
+        "h" => Duration::from_secs_f64(num * 3600.0),
         _ => return Err(format!("Invalid duration unit: {}", unit)),
     };
 
@@ -896,6 +897,10 @@ mod tests {
         assert_eq!(parse_duration("5m").unwrap(), Duration::from_secs(300));
         assert_eq!(parse_duration("1h").unwrap(), Duration::from_secs(3600));
         assert_eq!(parse_duration("500ms").unwrap(), Duration::from_millis(500));
+        assert_eq!(parse_duration("1.5s").unwrap(), Duration::from_millis(1500));
+        assert_eq!(parse_duration("1.5m").unwrap(), Duration::from_secs(90));
+        assert_eq!(parse_duration("1.5h").unwrap(), Duration::from_secs(5400));
+        assert_eq!(parse_duration("1.5ms").unwrap(), Duration::from_micros(1500));
 
         // Test default unit (seconds)
         assert_eq!(parse_duration("10").unwrap(), Duration::from_secs(10));
