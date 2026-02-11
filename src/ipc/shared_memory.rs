@@ -738,16 +738,30 @@ impl IpcTransport for SharedMemoryTransport {
             #[cfg(unix)]
             {
                 use std::ffi::CString;
-                if let Ok(name) = CString::new(self.shared_memory_name.as_str()) {
+                // POSIX requires shm names to start with '/'.
+                // Normalize the name before calling shm_unlink to
+                // ensure the correct segment is removed.
+                let posix_name =
+                    if self.shared_memory_name.starts_with('/') {
+                        self.shared_memory_name.clone()
+                    } else {
+                        format!("/{}", self.shared_memory_name)
+                    };
+                if let Ok(name) = CString::new(posix_name.as_str()) {
                     unsafe {
                         let result = libc::shm_unlink(name.as_ptr());
                         if result == 0 {
-                            debug!("Unlinked shared memory segment: {}", self.shared_memory_name);
-                        } else {
-                            // Not a critical error - segment may already be unlinked
                             debug!(
-                                "shm_unlink failed for {}: {} (may already be unlinked)",
-                                self.shared_memory_name,
+                                "Unlinked shared memory segment: {}",
+                                posix_name
+                            );
+                        } else {
+                            // Not a critical error - segment may
+                            // already be unlinked
+                            debug!(
+                                "shm_unlink failed for {}: {} \
+                                 (may already be unlinked)",
+                                posix_name,
                                 std::io::Error::last_os_error()
                             );
                         }

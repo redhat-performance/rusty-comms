@@ -235,10 +235,8 @@ impl SharedMemoryRingBuffer {
             .store((write_pos + required_space) % capacity, Ordering::Release);
         self.message_count.fetch_add(1, Ordering::Release);
 
-        // Wake readers that may be blocked on the condvar path.
-        // This keeps mixed-mode operation (polling writer + blocking reader)
-        // from stalling when cross-container fallback is active on one side.
-        libc::pthread_cond_signal(&self.data_ready as *const _ as *mut _);
+        // On non-Unix there are no condvars; readers poll with
+        // yield + sleep, so no signal is needed here.
 
         Ok(())
     }
@@ -503,6 +501,14 @@ impl SharedMemoryRingBuffer {
         self.write_pos
             .store((write_pos + required_space) % capacity, Ordering::Release);
         self.message_count.fetch_add(1, Ordering::Release);
+
+        // Signal any reader blocked on the condvar path.
+        // Without this, a blocking reader (read_data_blocking) paired
+        // with a polling writer would never be woken, causing a
+        // deadlock in mixed-mode operation.
+        libc::pthread_cond_signal(
+            &self.data_ready as *const _ as *mut _,
+        );
 
         Ok(())
     }
@@ -997,8 +1003,14 @@ impl BlockingTransport for BlockingSharedMemory {
         // Mark client as ready
         unsafe {
             (*ptr).client_ready.store(true, Ordering::Release);
-            // Signal data_ready in case server is waiting
-            libc::pthread_cond_broadcast(&(*ptr).data_ready as *const _ as *mut _);
+            // Signal data_ready in case server is waiting on condvar.
+            // Only available on Unix where pthread condvars exist.
+            #[cfg(unix)]
+            {
+                libc::pthread_cond_broadcast(
+                    &(*ptr).data_ready as *const _ as *mut _,
+                );
+            }
         }
 
         self.ring_buffer = Some(ptr);
@@ -1186,6 +1198,24 @@ impl BlockingTransport for BlockingSharedMemory {
 
         debug!("Blocking shared memory transport closed");
         Ok(())
+    }
+}
+
+/// Ensure resources are cleaned up even if `close_blocking()` is never
+/// called (e.g. due to a panic or early return). Sets the shutdown flag,
+/// wakes any blocked readers/writers, and unlinks the SHM segment when
+/// this instance is the server (creator).
+impl Drop for BlockingSharedMemory {
+    fn drop(&mut self) {
+        // close_blocking() is idempotent; safe to call even if the
+        // transport was never started or was already closed.
+        if let Err(e) = self.close_blocking() {
+            tracing::debug!(
+                "BlockingSharedMemory::drop: close_blocking \
+                 returned error (best-effort cleanup): {}",
+                e
+            );
+        }
     }
 }
 

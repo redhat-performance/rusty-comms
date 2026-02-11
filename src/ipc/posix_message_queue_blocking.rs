@@ -513,6 +513,18 @@ impl BlockingTransport for BlockingPosixMessageQueue {
     }
 }
 
+/// Ensure message queue resources are cleaned up even if
+/// `close_blocking()` is never called (e.g. due to a panic or early
+/// return). Closes queue file descriptors and, if this instance is the
+/// creator (server), unlinks the queues from the system.
+impl Drop for BlockingPosixMessageQueue {
+    fn drop(&mut self) {
+        // cleanup_queues() is idempotent; safe to call even if the
+        // transport was never started or was already closed.
+        self.cleanup_queues();
+    }
+}
+
 // Implement Default for convenience
 impl Default for BlockingPosixMessageQueue {
     fn default() -> Self {

@@ -837,13 +837,30 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
             // Write message data directly to shared memory (no serialization!)
             // Validate message size - return error instead of silent truncation
             if message.payload.len() > MAX_PAYLOAD_SIZE {
-                // Unlock mutex before returning error
-                if !self.cross_container {
+                // Unlock mutex before returning error.
+                // The mutex is held in two cases:
+                //   1. !cross_container  (always uses mutex)
+                //   2.  cross_container on non-Linux (uses mutex fallback)
+                // On Linux + cross_container the futex path is used and no
+                // mutex is acquired, so we must not unlock.
+                #[cfg(target_os = "linux")]
+                {
+                    if !self.cross_container {
+                        libc::pthread_mutex_unlock(
+                            &mut (*ptr).mutex,
+                        );
+                    }
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    // On non-Linux, both paths lock the mutex
                     libc::pthread_mutex_unlock(&mut (*ptr).mutex);
                 }
                 return Err(anyhow!(
-                    "Message payload size {} exceeds MAX_PAYLOAD_SIZE {} for --shm-direct mode. \
-                     Use -m shm without --shm-direct for larger messages, or reduce message size.",
+                    "Message payload size {} exceeds MAX_PAYLOAD_SIZE {} \
+                     for --shm-direct mode. Use -m shm without \
+                     --shm-direct for larger messages, or reduce \
+                     message size.",
                     message.payload.len(),
                     MAX_PAYLOAD_SIZE
                 ));
@@ -1013,14 +1030,31 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 slot.one_way_latency_ns
             };
 
-            // Validate payload_len to prevent buffer overread from corrupted shared memory
+            // Validate payload_len to prevent buffer overread from
+            // corrupted shared memory.
             if payload_len > MAX_PAYLOAD_SIZE {
-                // Unlock mutex before returning error
-                if !self.cross_container {
+                // Unlock mutex before returning error.
+                // Same logic as send_blocking: the mutex is held when
+                // !cross_container OR cross_container on non-Linux.
+                // On Linux + cross_container we use the futex path
+                // and no mutex is held.
+                #[cfg(target_os = "linux")]
+                {
+                    if !self.cross_container {
+                        libc::pthread_mutex_unlock(
+                            &mut (*ptr).mutex,
+                        );
+                    }
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    // On non-Linux, both paths lock the mutex
                     libc::pthread_mutex_unlock(&mut (*ptr).mutex);
                 }
                 return Err(anyhow!(
-                    "Invalid payload_len {} exceeds MAX_PAYLOAD_SIZE {} - shared memory may be corrupted",
+                    "Invalid payload_len {} exceeds \
+                     MAX_PAYLOAD_SIZE {} - shared memory may be \
+                     corrupted",
                     payload_len,
                     MAX_PAYLOAD_SIZE
                 ));
