@@ -162,11 +162,19 @@ impl SingleRingBuffer {
         unsafe {
             if data_start + data_len <= capacity {
                 // Data is contiguous - use fast memcpy
-                std::ptr::copy_nonoverlapping(data_ptr.add(data_start), data.as_mut_ptr(), data_len);
+                std::ptr::copy_nonoverlapping(
+                    data_ptr.add(data_start),
+                    data.as_mut_ptr(),
+                    data_len,
+                );
             } else {
                 // Data wraps around - copy in two parts
                 let first_part = capacity - data_start;
-                std::ptr::copy_nonoverlapping(data_ptr.add(data_start), data.as_mut_ptr(), first_part);
+                std::ptr::copy_nonoverlapping(
+                    data_ptr.add(data_start),
+                    data.as_mut_ptr(),
+                    first_part,
+                );
                 std::ptr::copy_nonoverlapping(
                     data_ptr,
                     data.as_mut_ptr().add(first_part),
@@ -182,9 +190,8 @@ impl SingleRingBuffer {
     }
 }
 
-
 /// Dual ring buffer connection for bidirectional communication.
-/// 
+///
 /// Memory layout:
 /// [DualRingBufferHeader] - coordination flags
 /// [SingleRingBuffer for client→server] - header + data
@@ -214,9 +221,9 @@ unsafe impl Sync for SharedMemoryConnection {}
 impl SharedMemoryConnection {
     /// Calculate total shared memory size needed for dual ring buffers
     fn total_size(buffer_capacity: usize) -> usize {
-        DualRingBufferHeader::SIZE 
+        DualRingBufferHeader::SIZE
             + SingleRingBuffer::HEADER_SIZE + buffer_capacity  // client→server
-            + SingleRingBuffer::HEADER_SIZE + buffer_capacity  // server→client
+            + SingleRingBuffer::HEADER_SIZE + buffer_capacity // server→client
     }
 
     fn new(
@@ -238,18 +245,13 @@ impl SharedMemoryConnection {
         };
 
         let base_ptr = shmem.as_ptr();
-        
+
         // Calculate pointers to each section
         let header_ptr = base_ptr as *mut DualRingBufferHeader;
-        let c2s_ptr = unsafe { 
-            base_ptr.add(DualRingBufferHeader::SIZE) as *mut SingleRingBuffer 
-        };
-        let s2c_ptr = unsafe { 
-            base_ptr.add(
-                DualRingBufferHeader::SIZE 
-                + SingleRingBuffer::HEADER_SIZE 
-                + buffer_size
-            ) as *mut SingleRingBuffer 
+        let c2s_ptr = unsafe { base_ptr.add(DualRingBufferHeader::SIZE) as *mut SingleRingBuffer };
+        let s2c_ptr = unsafe {
+            base_ptr.add(DualRingBufferHeader::SIZE + SingleRingBuffer::HEADER_SIZE + buffer_size)
+                as *mut SingleRingBuffer
         };
 
         if create {
@@ -259,8 +261,10 @@ impl SharedMemoryConnection {
                 *c2s_ptr = SingleRingBuffer::new();
                 *s2c_ptr = SingleRingBuffer::new();
             }
-            debug!("Created dual ring buffer shared memory: {} bytes total, {} per buffer", 
-                   total_size, buffer_size);
+            debug!(
+                "Created dual ring buffer shared memory: {} bytes total, {} per buffer",
+                total_size, buffer_size
+            );
         }
 
         Ok(Self {
@@ -447,7 +451,8 @@ impl SharedMemoryConnection {
                     // Only for Request/OneWay messages - Response messages already have
                     // one_way_latency_ns set by the server, so don't overwrite it
                     if message.message_type != crate::ipc::MessageType::Response {
-                        message.one_way_latency_ns = receive_time_ns.saturating_sub(message.timestamp);
+                        message.one_way_latency_ns =
+                            receive_time_ns.saturating_sub(message.timestamp);
                     }
 
                     // Signal writer that space is available (for in-process use)
@@ -581,7 +586,7 @@ impl SharedMemoryTransport {
     async fn handle_connection(
         connection_id: ConnectionId,
         connection: SharedMemoryConnection,
-        _message_sender: mpsc::Sender<(ConnectionId, Message)>,
+        message_sender: mpsc::Sender<(ConnectionId, Message)>,
         connections: Arc<Mutex<HashMap<ConnectionId, SharedMemoryConnection>>>,
     ) {
         debug!("Handling shared memory connection {}", connection_id);
@@ -598,21 +603,42 @@ impl SharedMemoryTransport {
         // Mark server as ready
         connection.mark_ready();
 
-        // Add to active connections
+        // Add to active connections for response routing.
         {
             let mut conns = connections.lock();
-            conns.insert(connection_id, connection);
+            conns.insert(connection_id, connection.clone());
         }
 
-        // Get the connection back for receiving messages
-        {
-            let conns = connections.lock();
-            if let Some(_conn) = conns.get(&connection_id) {
-                // We can't easily clone the connection, so we'll work with the one in the map
-                // This is a limitation of the current design - we'd need a more sophisticated
-                // approach for true concurrent access
+        // Receive loop: forward every inbound message to the multi-server channel.
+        // Keep the connection alive across idle periods (receive timeout) and
+        // only exit on real connection/shutdown errors or when receiver closes.
+        loop {
+            match connection.receive_message().await {
+                Ok(message) => {
+                    if message_sender.send((connection_id, message)).await.is_err() {
+                        debug!(
+                            "Multi-server receiver dropped; stopping shared memory handler {}",
+                            connection_id
+                        );
+                        break;
+                    }
+                }
+                Err(e) => {
+                    if e.to_string().contains("Timeout receiving message") {
+                        continue;
+                    }
+                    debug!(
+                        "Shared memory connection {} receive loop exiting: {}",
+                        connection_id, e
+                    );
+                    break;
+                }
             }
-        };
+        }
+
+        // Remove stale connection entry when the handler exits.
+        let mut conns = connections.lock();
+        conns.remove(&connection_id);
     }
 }
 
@@ -741,20 +767,16 @@ impl IpcTransport for SharedMemoryTransport {
                 // POSIX requires shm names to start with '/'.
                 // Normalize the name before calling shm_unlink to
                 // ensure the correct segment is removed.
-                let posix_name =
-                    if self.shared_memory_name.starts_with('/') {
-                        self.shared_memory_name.clone()
-                    } else {
-                        format!("/{}", self.shared_memory_name)
-                    };
+                let posix_name = if self.shared_memory_name.starts_with('/') {
+                    self.shared_memory_name.clone()
+                } else {
+                    format!("/{}", self.shared_memory_name)
+                };
                 if let Ok(name) = CString::new(posix_name.as_str()) {
                     unsafe {
                         let result = libc::shm_unlink(name.as_ptr());
                         if result == 0 {
-                            debug!(
-                                "Unlinked shared memory segment: {}",
-                                posix_name
-                            );
+                            debug!("Unlinked shared memory segment: {}", posix_name);
                         } else {
                             // Not a critical error - segment may
                             // already be unlinked
@@ -1049,10 +1071,8 @@ mod tests {
     /// echoes back Responses.
     #[tokio::test]
     async fn test_shared_memory_round_trip() {
-        let shared_memory_name = format!(
-            "test-rt-{}",
-            &Uuid::new_v4().as_simple().to_string()[..18]
-        );
+        let shared_memory_name =
+            format!("test-rt-{}", &Uuid::new_v4().as_simple().to_string()[..18]);
         let config = TransportConfig {
             shared_memory_name: shared_memory_name.clone(),
             buffer_size: 8192,
@@ -1064,24 +1084,14 @@ mod tests {
 
         let server_config = config.clone();
         let server_handle = tokio::spawn(async move {
-            server
-                .start_server(&server_config)
-                .await
-                .unwrap();
+            server.start_server(&server_config).await.unwrap();
 
             for expected_id in 0u64..5 {
                 let msg = server.receive().await.unwrap();
                 assert_eq!(msg.id, expected_id);
-                assert_eq!(
-                    msg.message_type,
-                    MessageType::Request
-                );
+                assert_eq!(msg.message_type, MessageType::Request);
 
-                let resp = Message::new(
-                    msg.id,
-                    msg.payload.clone(),
-                    MessageType::Response,
-                );
+                let resp = Message::new(msg.id, msg.payload.clone(), MessageType::Response);
                 server.send(&resp).await.unwrap();
             }
 
@@ -1096,11 +1106,7 @@ mod tests {
 
         for id in 0u64..5 {
             let payload = vec![id as u8; 128];
-            let msg = Message::new(
-                id,
-                payload.clone(),
-                MessageType::Request,
-            );
+            let msg = Message::new(id, payload.clone(), MessageType::Request);
             client.send(&msg).await.unwrap();
 
             // Justification: Allow server to process the message
@@ -1110,10 +1116,7 @@ mod tests {
             let resp = client.receive().await.unwrap();
             assert_eq!(resp.id, id);
             assert_eq!(resp.payload, payload);
-            assert_eq!(
-                resp.message_type,
-                MessageType::Response
-            );
+            assert_eq!(resp.message_type, MessageType::Response);
         }
 
         client.close().await.unwrap();
@@ -1124,14 +1127,11 @@ mod tests {
     /// buffer with different payload lengths.
     #[tokio::test]
     async fn test_shared_memory_various_sizes() {
-        let sizes: Vec<usize> =
-            vec![1, 32, 128, 512, 2048];
+        let sizes: Vec<usize> = vec![1, 32, 128, 512, 2048];
         let sizes_clone = sizes.clone();
 
-        let shared_memory_name = format!(
-            "test-sz-{}",
-            &Uuid::new_v4().as_simple().to_string()[..18]
-        );
+        let shared_memory_name =
+            format!("test-sz-{}", &Uuid::new_v4().as_simple().to_string()[..18]);
         let config = TransportConfig {
             shared_memory_name: shared_memory_name.clone(),
             buffer_size: 65536,
@@ -1143,14 +1143,9 @@ mod tests {
 
         let server_config = config.clone();
         let server_handle = tokio::spawn(async move {
-            server
-                .start_server(&server_config)
-                .await
-                .unwrap();
+            server.start_server(&server_config).await.unwrap();
 
-            for (i, &expected_size) in
-                sizes_clone.iter().enumerate()
-            {
+            for (i, &expected_size) in sizes_clone.iter().enumerate() {
                 let msg = server.receive().await.unwrap();
                 assert_eq!(msg.id, i as u64);
                 assert_eq!(
@@ -1172,11 +1167,7 @@ mod tests {
 
         for (i, &size) in sizes.iter().enumerate() {
             let payload = vec![0xAB_u8; size];
-            let msg = Message::new(
-                i as u64,
-                payload,
-                MessageType::OneWay,
-            );
+            let msg = Message::new(i as u64, payload, MessageType::OneWay);
             client.send(&msg).await.unwrap();
         }
 

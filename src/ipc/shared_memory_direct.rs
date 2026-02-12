@@ -260,16 +260,38 @@ impl RawSharedMessage {
     /// Returns an error if pthread initialization fails.
     unsafe fn init(&mut self) -> Result<()> {
         use std::mem::MaybeUninit;
+        fn check_pthread_result(ret: i32, op: &str) -> Result<()> {
+            if ret == 0 {
+                return Ok(());
+            }
+            Err(anyhow!(
+                "{} failed with errno {} ({})",
+                op,
+                ret,
+                std::io::Error::from_raw_os_error(ret)
+            ))
+        }
 
         // Initialize mutex attributes with PTHREAD_PROCESS_SHARED
         let mut mutex_attr = MaybeUninit::uninit();
-        libc::pthread_mutexattr_init(mutex_attr.as_mut_ptr());
-        libc::pthread_mutexattr_setpshared(mutex_attr.as_mut_ptr(), libc::PTHREAD_PROCESS_SHARED);
+        check_pthread_result(
+            libc::pthread_mutexattr_init(mutex_attr.as_mut_ptr()),
+            "pthread_mutexattr_init",
+        )?;
+        check_pthread_result(
+            libc::pthread_mutexattr_setpshared(
+                mutex_attr.as_mut_ptr(),
+                libc::PTHREAD_PROCESS_SHARED,
+            ),
+            "pthread_mutexattr_setpshared",
+        )?;
 
         // Initialize the mutex
         let mut mutex = MaybeUninit::uninit();
-        libc::pthread_mutex_init(mutex.as_mut_ptr(), mutex_attr.as_ptr());
-        libc::pthread_mutexattr_destroy(mutex_attr.as_mut_ptr());
+        let mutex_init_ret = libc::pthread_mutex_init(mutex.as_mut_ptr(), mutex_attr.as_ptr());
+        let mutex_attr_destroy_ret = libc::pthread_mutexattr_destroy(mutex_attr.as_mut_ptr());
+        check_pthread_result(mutex_attr_destroy_ret, "pthread_mutexattr_destroy")?;
+        check_pthread_result(mutex_init_ret, "pthread_mutex_init")?;
         self.mutex = mutex.assume_init();
 
         // Initialize per-direction condition variables with PTHREAD_PROCESS_SHARED.
@@ -277,18 +299,36 @@ impl RawSharedMessage {
         // round-trip tests (e.g., server finishing a receive would previously wake
         // the client waiting for a response on the other slot).
         let mut cond_attr = MaybeUninit::uninit();
-        libc::pthread_condattr_init(cond_attr.as_mut_ptr());
-        libc::pthread_condattr_setpshared(cond_attr.as_mut_ptr(), libc::PTHREAD_PROCESS_SHARED);
+        check_pthread_result(
+            libc::pthread_condattr_init(cond_attr.as_mut_ptr()),
+            "pthread_condattr_init",
+        )?;
+        check_pthread_result(
+            libc::pthread_condattr_setpshared(cond_attr.as_mut_ptr(), libc::PTHREAD_PROCESS_SHARED),
+            "pthread_condattr_setpshared",
+        )?;
 
         let mut cond_c2s = MaybeUninit::uninit();
-        libc::pthread_cond_init(cond_c2s.as_mut_ptr(), cond_attr.as_ptr());
+        check_pthread_result(
+            libc::pthread_cond_init(cond_c2s.as_mut_ptr(), cond_attr.as_ptr()),
+            "pthread_cond_init(c2s)",
+        )?;
         self.cond_c2s = cond_c2s.assume_init();
 
         let mut cond_s2c = MaybeUninit::uninit();
-        libc::pthread_cond_init(cond_s2c.as_mut_ptr(), cond_attr.as_ptr());
+        let cond_s2c_init_ret = libc::pthread_cond_init(cond_s2c.as_mut_ptr(), cond_attr.as_ptr());
+        if cond_s2c_init_ret != 0 {
+            let _ = libc::pthread_cond_destroy(&mut self.cond_c2s);
+            let _ = libc::pthread_condattr_destroy(cond_attr.as_mut_ptr());
+            let _ = libc::pthread_mutex_destroy(&mut self.mutex);
+            check_pthread_result(cond_s2c_init_ret, "pthread_cond_init(s2c)")?;
+        }
         self.cond_s2c = cond_s2c.assume_init();
 
-        libc::pthread_condattr_destroy(cond_attr.as_mut_ptr());
+        check_pthread_result(
+            libc::pthread_condattr_destroy(cond_attr.as_mut_ptr()),
+            "pthread_condattr_destroy",
+        )?;
 
         // Initialize client ready flag
         std::ptr::write(&mut self.client_ready, AtomicI32::new(0));
@@ -470,11 +510,28 @@ impl BlockingSharedMemoryDirect {
             .with_context(|| format!("Failed to pre-create SHM-direct segment: {}", shm_name))?;
 
         // Initialize the RawSharedMessage structure
-        unsafe {
+        let init_result = unsafe {
             let ptr = shmem.as_ptr() as *mut RawSharedMessage;
             (*ptr)
                 .init()
-                .context("Failed to initialize RawSharedMessage")?;
+                .context("Failed to initialize RawSharedMessage")
+        };
+        if let Err(err) = init_result {
+            #[cfg(unix)]
+            {
+                use std::ffi::CString;
+                let normalized_name = if shm_name.starts_with('/') {
+                    shm_name.to_string()
+                } else {
+                    format!("/{}", shm_name)
+                };
+                if let Ok(c_name) = CString::new(normalized_name.as_bytes()) {
+                    unsafe {
+                        libc::shm_unlink(c_name.as_ptr());
+                    }
+                }
+            }
+            return Err(err);
         }
 
         // Set permissions to 777 so container can access
@@ -507,9 +564,7 @@ impl BlockingSharedMemoryDirect {
     /// Returns an error if shared memory is not initialized
     /// (i.e. `start_server_blocking` / `start_client_blocking`
     /// has not been called).
-    unsafe fn get_raw_message_ptr(
-        &self,
-    ) -> Result<*mut RawSharedMessage> {
+    unsafe fn get_raw_message_ptr(&self) -> Result<*mut RawSharedMessage> {
         Ok(self
             .shmem
             .as_ref()
@@ -826,11 +881,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                     timespec.tv_sec += 5; // 5 second timeout
 
                     while slot.ready.load(Ordering::Acquire) == 1 {
-                        let ret = libc::pthread_cond_timedwait(
-                            cond,
-                            &mut (*ptr).mutex,
-                            &timespec,
-                        );
+                        let ret = libc::pthread_cond_timedwait(cond, &mut (*ptr).mutex, &timespec);
 
                         if ret == libc::ETIMEDOUT {
                             libc::pthread_mutex_unlock(&mut (*ptr).mutex);
@@ -857,9 +908,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 #[cfg(target_os = "linux")]
                 {
                     if !self.cross_container {
-                        libc::pthread_mutex_unlock(
-                            &mut (*ptr).mutex,
-                        );
+                        libc::pthread_mutex_unlock(&mut (*ptr).mutex);
                     }
                 }
                 #[cfg(not(target_os = "linux"))]
@@ -885,11 +934,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
             // Copy the payload bytes
             let len = message.payload.len();
             slot.payload_len = len;
-            std::ptr::copy_nonoverlapping(
-                message.payload.as_ptr(),
-                slot.payload.as_mut_ptr(),
-                len,
-            );
+            std::ptr::copy_nonoverlapping(message.payload.as_ptr(), slot.payload.as_mut_ptr(), len);
 
             // Set ready flag with release ordering to ensure all writes are visible
             slot.ready.store(1, Ordering::Release);
@@ -1008,11 +1053,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                     timespec.tv_sec += 5; // 5 second timeout
 
                     while slot.ready.load(Ordering::Acquire) == 0 {
-                        let ret = libc::pthread_cond_timedwait(
-                            cond,
-                            &mut (*ptr).mutex,
-                            &timespec,
-                        );
+                        let ret = libc::pthread_cond_timedwait(cond, &mut (*ptr).mutex, &timespec);
 
                         if ret == libc::ETIMEDOUT {
                             libc::pthread_mutex_unlock(&mut (*ptr).mutex);
@@ -1052,9 +1093,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 #[cfg(target_os = "linux")]
                 {
                     if !self.cross_container {
-                        libc::pthread_mutex_unlock(
-                            &mut (*ptr).mutex,
-                        );
+                        libc::pthread_mutex_unlock(&mut (*ptr).mutex);
                     }
                 }
                 #[cfg(not(target_os = "linux"))]
@@ -1073,11 +1112,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
 
             // Copy only the valid payload bytes (variable length)
             let mut payload = vec![0u8; payload_len];
-            std::ptr::copy_nonoverlapping(
-                slot.payload.as_ptr(),
-                payload.as_mut_ptr(),
-                payload_len,
-            );
+            std::ptr::copy_nonoverlapping(slot.payload.as_ptr(), payload.as_mut_ptr(), payload_len);
 
             // Clear ready flag with release ordering
             slot.ready.store(0, Ordering::Release);
@@ -1118,12 +1153,18 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
         debug!("Closing direct memory SHM transport");
 
         if self.is_server {
-            // Server is responsible for cleanup
-            if let Some(ref shmem) = self.shmem {
-                unsafe {
-                    let ptr = shmem.0.as_ptr() as *mut RawSharedMessage;
-                    (*ptr).destroy();
+            // Destroy process-shared pthread primitives only when this instance
+            // created and owns the segment. In open-existing mode (cross-container),
+            // this process must not destroy primitives owned by another process.
+            if !self.shm_name.is_empty() {
+                if let Some(ref shmem) = self.shmem {
+                    unsafe {
+                        let ptr = shmem.0.as_ptr() as *mut RawSharedMessage;
+                        (*ptr).destroy();
+                    }
                 }
+            } else {
+                debug!("Skipping primitive destruction for non-owned SHM segment");
             }
 
             // Unlink the shared memory segment to free system resources.
@@ -1326,13 +1367,9 @@ mod tests {
     /// a shared memory segment.
     #[test]
     fn test_precreate_segment_creates_segment() {
-        let shm_name = format!(
-            "test_precreate_{}",
-            uuid::Uuid::new_v4()
-        );
+        let shm_name = format!("test_precreate_{}", uuid::Uuid::new_v4());
 
-        let result =
-            BlockingSharedMemoryDirect::precreate_segment(&shm_name);
+        let result = BlockingSharedMemoryDirect::precreate_segment(&shm_name);
         assert!(
             result.is_ok(),
             "precreate_segment should succeed: {:?}",
@@ -1358,9 +1395,7 @@ mod tests {
             } else {
                 format!("/{}", shm_name)
             };
-            if let Ok(c_name) =
-                std::ffi::CString::new(normalized.as_bytes())
-            {
+            if let Ok(c_name) = std::ffi::CString::new(normalized.as_bytes()) {
                 unsafe {
                     libc::shm_unlink(c_name.as_ptr());
                 }
@@ -1372,23 +1407,14 @@ mod tests {
     /// before creating a new one (idempotency).
     #[test]
     fn test_precreate_segment_idempotent() {
-        let shm_name = format!(
-            "test_precreate_idem_{}",
-            uuid::Uuid::new_v4()
-        );
+        let shm_name = format!("test_precreate_idem_{}", uuid::Uuid::new_v4());
 
         // Create the segment twice in succession.
-        let shmem1 =
-            BlockingSharedMemoryDirect::precreate_segment(
-                &shm_name,
-            )
+        let shmem1 = BlockingSharedMemoryDirect::precreate_segment(&shm_name)
             .expect("First precreate should succeed");
         drop(shmem1);
 
-        let shmem2 =
-            BlockingSharedMemoryDirect::precreate_segment(
-                &shm_name,
-            )
+        let shmem2 = BlockingSharedMemoryDirect::precreate_segment(&shm_name)
             .expect("Second precreate should also succeed");
         drop(shmem2);
 
@@ -1400,9 +1426,7 @@ mod tests {
             } else {
                 format!("/{}", shm_name)
             };
-            if let Ok(c_name) =
-                std::ffi::CString::new(normalized.as_bytes())
-            {
+            if let Ok(c_name) = std::ffi::CString::new(normalized.as_bytes()) {
                 unsafe {
                     libc::shm_unlink(c_name.as_ptr());
                 }
@@ -1439,10 +1463,7 @@ mod tests {
     #[test]
     #[cfg(not(target_os = "macos"))]
     fn test_drop_after_server_init() {
-        let shm_name = format!(
-            "test_drop_init_{}",
-            uuid::Uuid::new_v4()
-        );
+        let shm_name = format!("test_drop_init_{}", uuid::Uuid::new_v4());
         let config = TransportConfig {
             shared_memory_name: shm_name,
             ..Default::default()
@@ -1703,11 +1724,8 @@ mod tests {
                 assert_eq!(request.message_type, MessageType::Request);
 
                 // Send response back, embedding the measured one_way_latency_ns
-                let mut response = Message::new_lazy(
-                    request.id,
-                    request.payload.clone(),
-                    MessageType::Response,
-                );
+                let mut response =
+                    Message::new_lazy(request.id, request.payload.clone(), MessageType::Response);
                 response.one_way_latency_ns = request.one_way_latency_ns;
                 server.send_blocking(&response).unwrap();
             }

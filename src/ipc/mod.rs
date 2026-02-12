@@ -46,7 +46,7 @@
 //! - Concurrent worker support for scalability testing
 //! - Resource isolation between connections
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -788,19 +788,15 @@ pub trait IpcTransport: Send + Sync {
         &mut self,
         config: &TransportConfig,
     ) -> Result<mpsc::Receiver<(ConnectionId, Message)>> {
-        // Default implementation falls back to single connection
-        self.start_server(config).await?;
-
-        // Create a channel for forwarding messages
-        let (_tx, rx) = mpsc::channel(1000);
-
-        // For single-connection transports, we'll assign connection ID 0
-        tokio::spawn(async move {
-            // This is a placeholder - individual transports should override this
-            // The actual implementation should properly handle multiple connections
-        });
-
-        Ok(rx)
+        // Prevent silent misbehavior: transports that don't provide a real
+        // multi-server implementation must fail explicitly instead of returning
+        // an inert receiver that never yields messages.
+        let _ = config;
+        Err(anyhow!(
+            "Multi-server mode is not implemented for this transport. \
+             Use single-server mode or choose a transport that supports \
+             multiple connections."
+        ))
     }
 
     /// Send a message to a specific connection
