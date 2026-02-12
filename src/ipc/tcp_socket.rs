@@ -682,4 +682,169 @@ mod tests {
         }
         let _ = server.close().await;
     }
+
+    /// Test TCP round-trip: client sends Request, server echoes
+    /// back a Response, client verifies receipt.
+    #[tokio::test]
+    async fn test_tcp_round_trip() {
+        let config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port: 9093,
+            ..Default::default()
+        };
+
+        let mut server = TcpSocketTransport::new();
+        let mut client = TcpSocketTransport::new();
+
+        let server_config = config.clone();
+        let server_handle = tokio::spawn(async move {
+            server
+                .start_server(&server_config)
+                .await
+                .unwrap();
+
+            // Receive 3 requests and send back responses
+            for expected_id in 0u64..3 {
+                let msg = server.receive().await.unwrap();
+                assert_eq!(msg.id, expected_id);
+                assert_eq!(
+                    msg.message_type,
+                    MessageType::Request
+                );
+
+                let resp = Message::new(
+                    msg.id,
+                    msg.payload.clone(),
+                    MessageType::Response,
+                );
+                server.send(&resp).await.unwrap();
+            }
+
+            server.close().await.unwrap();
+        });
+
+        // Justification: Give the server task time to bind.
+        sleep(Duration::from_millis(100)).await;
+
+        client.start_client(&config).await.unwrap();
+
+        for id in 0u64..3 {
+            let payload = vec![id as u8; 64];
+            let msg = Message::new(
+                id,
+                payload.clone(),
+                MessageType::Request,
+            );
+            client.send(&msg).await.unwrap();
+
+            let resp = client.receive().await.unwrap();
+            assert_eq!(resp.id, id);
+            assert_eq!(resp.payload, payload);
+            assert_eq!(
+                resp.message_type,
+                MessageType::Response
+            );
+        }
+
+        client.close().await.unwrap();
+        server_handle.await.unwrap();
+    }
+
+    /// Test TCP communication with various message sizes to exercise
+    /// the length-prefix framing logic.
+    #[tokio::test]
+    async fn test_tcp_various_message_sizes() {
+        let config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port: 9094,
+            ..Default::default()
+        };
+
+        let sizes: Vec<usize> =
+            vec![1, 64, 256, 1024, 4096];
+        let sizes_clone = sizes.clone();
+
+        let mut server = TcpSocketTransport::new();
+        let mut client = TcpSocketTransport::new();
+
+        let server_config = config.clone();
+        let server_handle = tokio::spawn(async move {
+            server
+                .start_server(&server_config)
+                .await
+                .unwrap();
+
+            for (i, &expected_size) in
+                sizes_clone.iter().enumerate()
+            {
+                let msg = server.receive().await.unwrap();
+                assert_eq!(msg.id, i as u64);
+                assert_eq!(
+                    msg.payload.len(),
+                    expected_size,
+                    "Size mismatch for message {}",
+                    i
+                );
+            }
+
+            server.close().await.unwrap();
+        });
+
+        // Justification: Give the server task time to bind.
+        sleep(Duration::from_millis(100)).await;
+
+        client.start_client(&config).await.unwrap();
+
+        for (i, &size) in sizes.iter().enumerate() {
+            let payload = vec![0xAB_u8; size];
+            let msg = Message::new(
+                i as u64,
+                payload,
+                MessageType::OneWay,
+            );
+            client.send(&msg).await.unwrap();
+        }
+
+        client.close().await.unwrap();
+        server_handle.await.unwrap();
+    }
+
+    /// Test that closing a TCP transport twice does not panic.
+    #[tokio::test]
+    async fn test_tcp_close_idempotent() {
+        let config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port: 9095,
+            ..Default::default()
+        };
+
+        let mut server = TcpSocketTransport::new();
+        let mut client = TcpSocketTransport::new();
+
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let server_config = config.clone();
+        let server_handle = tokio::spawn(async move {
+            server
+                .start_server(&server_config)
+                .await
+                .unwrap();
+            // Wait until client signals it's connected
+            rx.await.unwrap();
+            server.close().await.unwrap();
+            // Second close should also succeed
+            server.close().await.unwrap();
+        });
+
+        // Justification: Give the server task time to bind.
+        sleep(Duration::from_millis(100)).await;
+
+        client.start_client(&config).await.unwrap();
+        // Signal server that client is connected
+        tx.send(()).unwrap();
+        client.close().await.unwrap();
+        // Second close
+        client.close().await.unwrap();
+
+        server_handle.await.unwrap();
+    }
 }

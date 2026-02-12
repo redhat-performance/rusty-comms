@@ -1044,4 +1044,147 @@ mod tests {
         server_handle.await.unwrap();
         client.close().await.unwrap();
     }
+
+    /// Test SHM round-trip: client sends multiple Requests, server
+    /// echoes back Responses.
+    #[tokio::test]
+    async fn test_shared_memory_round_trip() {
+        let shared_memory_name = format!(
+            "test-rt-{}",
+            &Uuid::new_v4().as_simple().to_string()[..18]
+        );
+        let config = TransportConfig {
+            shared_memory_name: shared_memory_name.clone(),
+            buffer_size: 8192,
+            ..Default::default()
+        };
+
+        let mut server = SharedMemoryTransport::new();
+        let mut client = SharedMemoryTransport::new();
+
+        let server_config = config.clone();
+        let server_handle = tokio::spawn(async move {
+            server
+                .start_server(&server_config)
+                .await
+                .unwrap();
+
+            for expected_id in 0u64..5 {
+                let msg = server.receive().await.unwrap();
+                assert_eq!(msg.id, expected_id);
+                assert_eq!(
+                    msg.message_type,
+                    MessageType::Request
+                );
+
+                let resp = Message::new(
+                    msg.id,
+                    msg.payload.clone(),
+                    MessageType::Response,
+                );
+                server.send(&resp).await.unwrap();
+            }
+
+            server.close().await.unwrap();
+        });
+
+        // Justification: Give the server task time to create the
+        // shared memory segment and start listening.
+        sleep(Duration::from_millis(500)).await;
+
+        client.start_client(&config).await.unwrap();
+
+        for id in 0u64..5 {
+            let payload = vec![id as u8; 128];
+            let msg = Message::new(
+                id,
+                payload.clone(),
+                MessageType::Request,
+            );
+            client.send(&msg).await.unwrap();
+
+            // Justification: Allow server to process the message
+            // and write its response to the ring buffer.
+            sleep(Duration::from_millis(50)).await;
+
+            let resp = client.receive().await.unwrap();
+            assert_eq!(resp.id, id);
+            assert_eq!(resp.payload, payload);
+            assert_eq!(
+                resp.message_type,
+                MessageType::Response
+            );
+        }
+
+        client.close().await.unwrap();
+        server_handle.await.unwrap();
+    }
+
+    /// Test SHM with various message sizes to exercise the ring
+    /// buffer with different payload lengths.
+    #[tokio::test]
+    async fn test_shared_memory_various_sizes() {
+        let sizes: Vec<usize> =
+            vec![1, 32, 128, 512, 2048];
+        let sizes_clone = sizes.clone();
+
+        let shared_memory_name = format!(
+            "test-sz-{}",
+            &Uuid::new_v4().as_simple().to_string()[..18]
+        );
+        let config = TransportConfig {
+            shared_memory_name: shared_memory_name.clone(),
+            buffer_size: 65536,
+            ..Default::default()
+        };
+
+        let mut server = SharedMemoryTransport::new();
+        let mut client = SharedMemoryTransport::new();
+
+        let server_config = config.clone();
+        let server_handle = tokio::spawn(async move {
+            server
+                .start_server(&server_config)
+                .await
+                .unwrap();
+
+            for (i, &expected_size) in
+                sizes_clone.iter().enumerate()
+            {
+                let msg = server.receive().await.unwrap();
+                assert_eq!(msg.id, i as u64);
+                assert_eq!(
+                    msg.payload.len(),
+                    expected_size,
+                    "Size mismatch for message {}",
+                    i
+                );
+            }
+
+            server.close().await.unwrap();
+        });
+
+        // Justification: Give the server task time to create the
+        // shared memory segment.
+        sleep(Duration::from_millis(500)).await;
+
+        client.start_client(&config).await.unwrap();
+
+        for (i, &size) in sizes.iter().enumerate() {
+            let payload = vec![0xAB_u8; size];
+            let msg = Message::new(
+                i as u64,
+                payload,
+                MessageType::OneWay,
+            );
+            client.send(&msg).await.unwrap();
+        }
+
+        // Justification: Allow time for all messages to be read
+        // by the server before closing.
+        sleep(Duration::from_millis(200)).await;
+
+        client.close().await.unwrap();
+        server_handle.await.unwrap();
+    }
 }

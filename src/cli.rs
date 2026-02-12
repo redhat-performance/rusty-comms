@@ -192,7 +192,13 @@ pub struct Args {
     /// scalability characteristics but may introduce resource contention.
     /// Note: Some mechanisms (like shared memory) may force concurrency to 1
     /// to avoid race conditions in the current implementation.
-    #[arg(short = 'c', long, default_value_t = crate::defaults::CONCURRENCY, help_heading = CONCURRENCY)]
+    #[arg(
+        short = 'c',
+        long,
+        default_value_t = crate::defaults::CONCURRENCY,
+        value_parser = parse_concurrency,
+        help_heading = CONCURRENCY
+    )]
     pub concurrency: usize,
 
     /// Pin the server process to a specific CPU core - the message receiver process
@@ -872,10 +878,12 @@ pub fn parse_duration_micros(s: &str) -> Result<Duration, String> {
         return Err("Duration cannot be negative".to_string());
     }
 
-    // Convert to Duration based on the unit
+    // Convert to Duration based on the unit.
+    // All paths use from_secs_f64 to preserve fractional values
+    // (e.g. "1.5us" or "0.5ms").
     let duration = match unit {
-        "us" => Duration::from_micros(num as u64),
-        "ms" => Duration::from_millis(num as u64),
+        "us" => Duration::from_secs_f64(num / 1_000_000.0),
+        "ms" => Duration::from_secs_f64(num / 1_000.0),
         "s" => Duration::from_secs_f64(num),
         "m" => Duration::from_secs_f64(num * 60.0),
         "h" => Duration::from_secs_f64(num * 3600.0),
@@ -883,6 +891,26 @@ pub fn parse_duration_micros(s: &str) -> Result<Duration, String> {
     };
 
     Ok(duration)
+}
+
+/// Parse and validate the concurrency value.
+///
+/// Ensures concurrency is at least 1 to prevent division-by-zero
+/// panics in the multi-threaded benchmark paths.
+///
+/// ## Returns
+/// - `Ok(usize)`: Valid concurrency value (>= 1)
+/// - `Err(String)`: Error if value is 0 or not a valid number
+fn parse_concurrency(s: &str) -> Result<usize, String> {
+    let value: usize = s
+        .parse()
+        .map_err(|_| format!("Invalid concurrency: {}", s))?;
+    if value == 0 {
+        return Err(
+            "Concurrency must be at least 1".to_string()
+        );
+    }
+    Ok(value)
 }
 
 #[cfg(test)]
@@ -973,9 +1001,23 @@ mod tests {
             Duration::from_millis(100)
         );
         // Test second unit
-        assert_eq!(parse_duration_micros("2s").unwrap(), Duration::from_secs(2));
+        assert_eq!(
+            parse_duration_micros("2s").unwrap(),
+            Duration::from_secs(2)
+        );
         // Test default unit (seconds)
-        assert_eq!(parse_duration_micros("5").unwrap(), Duration::from_secs(5));
+        assert_eq!(
+            parse_duration_micros("5").unwrap(),
+            Duration::from_secs(5)
+        );
+
+        // Test fractional values are preserved (not truncated)
+        let d = parse_duration_micros("1.5us").unwrap();
+        assert_eq!(d.as_nanos(), 1500);
+        let d = parse_duration_micros("0.5ms").unwrap();
+        assert_eq!(d.as_nanos(), 500_000);
+        let d = parse_duration_micros("1.5ms").unwrap();
+        assert_eq!(d.as_nanos(), 1_500_000);
 
         // Test error cases
         assert!(parse_duration_micros("").is_err());
@@ -1253,5 +1295,51 @@ mod tests {
         ]);
         assert_eq!(args.run_mode, RunMode::Sender);
         assert!(args.blocking);
+    }
+
+    #[test]
+    fn test_parse_concurrency_valid() {
+        // Valid concurrency values should parse successfully.
+        assert_eq!(parse_concurrency("1"), Ok(1));
+        assert_eq!(parse_concurrency("8"), Ok(8));
+        assert_eq!(parse_concurrency("100"), Ok(100));
+    }
+
+    #[test]
+    fn test_parse_concurrency_zero_rejected() {
+        // Zero concurrency would cause division-by-zero and
+        // must be rejected at parse time.
+        let result = parse_concurrency("0");
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .contains("at least 1")
+        );
+    }
+
+    #[test]
+    fn test_parse_concurrency_invalid_input() {
+        // Non-numeric input should be rejected.
+        assert!(parse_concurrency("abc").is_err());
+        assert!(parse_concurrency("-1").is_err());
+        assert!(parse_concurrency("").is_err());
+    }
+
+    #[test]
+    fn test_concurrency_zero_rejected_by_cli() {
+        // End-to-end: passing --concurrency 0 should fail
+        // at argument parsing time.
+        let result = Args::try_parse_from([
+            "ipc-benchmark",
+            "-m",
+            "tcp",
+            "--concurrency",
+            "0",
+        ]);
+        assert!(
+            result.is_err(),
+            "concurrency=0 should be rejected by clap"
+        );
     }
 }

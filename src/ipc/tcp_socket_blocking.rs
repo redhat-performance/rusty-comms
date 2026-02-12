@@ -589,4 +589,45 @@ mod tests {
             err_msg
         );
     }
+
+    /// Test that send_blocking fails when the transport is not
+    /// connected (no stream established).
+    #[test]
+    fn test_send_on_uninit_transport_fails() {
+        let mut transport = BlockingTcpSocket::new();
+        let msg = Message::new(
+            1,
+            vec![0u8; 10],
+            MessageType::OneWay,
+        );
+
+        let result = transport.send_blocking(&msg);
+        assert!(
+            result.is_err(),
+            "send on uninitialized transport should fail"
+        );
+    }
+
+    /// Test that receive_blocking fails when the transport is not
+    /// connected.
+    #[test]
+    fn test_receive_on_uninit_transport_fails() {
+        let mut transport = BlockingTcpSocket::new();
+        let result = transport.receive_blocking();
+        assert!(
+            result.is_err(),
+            "receive on uninitialized transport should fail"
+        );
+    }
+
+    /// Test that close_blocking is idempotent — calling it multiple
+    /// times on a transport that was never started should not panic.
+    #[test]
+    fn test_close_idempotent_uninit() {
+        let mut transport = BlockingTcpSocket::new();
+        transport.close_blocking().unwrap();
+        transport.close_blocking().unwrap();
+        assert!(transport.listener.is_none());
+        assert!(transport.stream.is_none());
+    }
 }

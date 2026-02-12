@@ -862,4 +862,44 @@ mod tests {
         let result = client.close_blocking();
         assert!(result.is_ok());
     }
+
+    /// Test that send_blocking fails when the transport is not
+    /// initialized (no queues opened).
+    #[test]
+    fn test_send_on_uninit_transport_fails() {
+        let mut transport = BlockingPosixMessageQueue::new();
+        let msg = Message::new(
+            1,
+            vec![0u8; 10],
+            MessageType::OneWay,
+        );
+
+        let result = transport.send_blocking(&msg);
+        assert!(
+            result.is_err(),
+            "send on uninitialized PMQ transport should fail"
+        );
+    }
+
+    /// Test that receive_blocking fails when the transport is not
+    /// initialized.
+    #[test]
+    fn test_receive_on_uninit_transport_fails() {
+        let mut transport = BlockingPosixMessageQueue::new();
+        let result = transport.receive_blocking();
+        assert!(
+            result.is_err(),
+            "receive on uninitialized PMQ should fail"
+        );
+    }
+
+    /// Test that close_blocking is idempotent on a fresh transport.
+    #[test]
+    fn test_close_idempotent_uninit() {
+        let mut transport = BlockingPosixMessageQueue::new();
+        transport.close_blocking().unwrap();
+        transport.close_blocking().unwrap();
+        assert!(transport.send_fd.is_none());
+        assert!(transport.recv_fd.is_none());
+    }
 }

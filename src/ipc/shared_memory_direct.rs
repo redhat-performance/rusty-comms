@@ -502,15 +502,26 @@ impl BlockingSharedMemoryDirect {
     /// - Points to memory that could be accessed by other processes
     /// - Requires proper synchronization (use the mutex!)
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if shared memory is not initialized.
-    unsafe fn get_raw_message_ptr(&self) -> *mut RawSharedMessage {
-        self.shmem
+    /// Returns an error if shared memory is not initialized
+    /// (i.e. `start_server_blocking` / `start_client_blocking`
+    /// has not been called).
+    unsafe fn get_raw_message_ptr(
+        &self,
+    ) -> Result<*mut RawSharedMessage> {
+        Ok(self
+            .shmem
             .as_ref()
-            .expect("Shared memory not initialized")
+            .ok_or_else(|| {
+                anyhow!(
+                    "Shared memory not initialized. Call \
+                     start_server_blocking() or \
+                     start_client_blocking() first."
+                )
+            })?
             .0
-            .as_ptr() as *mut RawSharedMessage
+            .as_ptr() as *mut RawSharedMessage)
     }
 
     /// Wait for the client to signal that it's ready.
@@ -531,7 +542,7 @@ impl BlockingSharedMemoryDirect {
         let start = std::time::Instant::now();
 
         unsafe {
-            let ptr = self.get_raw_message_ptr();
+            let ptr = self.get_raw_message_ptr()?;
 
             // Wait for client_ready flag using futex on Linux, polling otherwise
             loop {
@@ -715,7 +726,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
 
         // Signal to server that client is ready
         unsafe {
-            let ptr = self.get_raw_message_ptr();
+            let ptr = self.get_raw_message_ptr()?;
             (*ptr).client_ready.store(1, Ordering::Release);
 
             // Wake server if waiting on futex (Linux) or condvar (other)
@@ -744,7 +755,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
         );
 
         unsafe {
-            let ptr = self.get_raw_message_ptr();
+            let ptr = self.get_raw_message_ptr()?;
 
             // Select the appropriate slot and condvar based on role:
             // - Client sends on client_to_server slot → cond_c2s
@@ -915,7 +926,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
         // If we're the server, wait for client to be ready on first receive
         if self.is_server {
             unsafe {
-                let ptr = self.get_raw_message_ptr();
+                let ptr = self.get_raw_message_ptr()?;
                 if (*ptr).client_ready.load(Ordering::Acquire) == 0 {
                     debug!("Waiting for client to connect to shared memory");
                     self.wait_for_client_ready(std::time::Duration::from_secs(10))?;
@@ -925,7 +936,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
         }
 
         let message = unsafe {
-            let ptr = self.get_raw_message_ptr();
+            let ptr = self.get_raw_message_ptr()?;
 
             // Select the appropriate slot and condvar based on role:
             // - Server receives from client_to_server slot → cond_c2s
@@ -1145,6 +1156,25 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
     }
 }
 
+/// Ensure shared memory resources are cleaned up even if
+/// `close_blocking()` is never called (e.g. due to a panic or early
+/// return). Destroys pthread primitives, unlinks the SHM segment
+/// (when this instance is the server), and releases the mapping.
+impl Drop for BlockingSharedMemoryDirect {
+    fn drop(&mut self) {
+        // close_blocking() is idempotent; safe to call even if the
+        // transport was never started or was already closed.
+        if let Err(e) = self.close_blocking() {
+            tracing::debug!(
+                "BlockingSharedMemoryDirect::drop: \
+                 close_blocking returned error \
+                 (best-effort cleanup): {}",
+                e
+            );
+        }
+    }
+}
+
 impl Default for BlockingSharedMemoryDirect {
     fn default() -> Self {
         Self::new()
@@ -1290,6 +1320,141 @@ mod tests {
         // Close without initialization should succeed
         let result = transport.close_blocking();
         assert!(result.is_ok());
+    }
+
+    /// Test that `precreate_segment` successfully creates and initializes
+    /// a shared memory segment.
+    #[test]
+    fn test_precreate_segment_creates_segment() {
+        let shm_name = format!(
+            "test_precreate_{}",
+            uuid::Uuid::new_v4()
+        );
+
+        let result =
+            BlockingSharedMemoryDirect::precreate_segment(&shm_name);
+        assert!(
+            result.is_ok(),
+            "precreate_segment should succeed: {:?}",
+            result.err()
+        );
+
+        // The returned Shmem handle should be valid and have
+        // enough size to hold a RawSharedMessage.
+        let shmem = result.unwrap();
+        assert!(
+            shmem.len() >= RawSharedMessage::SIZE,
+            "Segment size ({}) should be >= RawSharedMessage::SIZE ({})",
+            shmem.len(),
+            RawSharedMessage::SIZE,
+        );
+
+        // Cleanup: drop the handle and unlink the segment.
+        drop(shmem);
+        #[cfg(unix)]
+        {
+            let normalized = if shm_name.starts_with('/') {
+                shm_name.clone()
+            } else {
+                format!("/{}", shm_name)
+            };
+            if let Ok(c_name) =
+                std::ffi::CString::new(normalized.as_bytes())
+            {
+                unsafe {
+                    libc::shm_unlink(c_name.as_ptr());
+                }
+            }
+        }
+    }
+
+    /// Test that `precreate_segment` cleans up a pre-existing segment
+    /// before creating a new one (idempotency).
+    #[test]
+    fn test_precreate_segment_idempotent() {
+        let shm_name = format!(
+            "test_precreate_idem_{}",
+            uuid::Uuid::new_v4()
+        );
+
+        // Create the segment twice in succession.
+        let shmem1 =
+            BlockingSharedMemoryDirect::precreate_segment(
+                &shm_name,
+            )
+            .expect("First precreate should succeed");
+        drop(shmem1);
+
+        let shmem2 =
+            BlockingSharedMemoryDirect::precreate_segment(
+                &shm_name,
+            )
+            .expect("Second precreate should also succeed");
+        drop(shmem2);
+
+        // Cleanup
+        #[cfg(unix)]
+        {
+            let normalized = if shm_name.starts_with('/') {
+                shm_name.clone()
+            } else {
+                format!("/{}", shm_name)
+            };
+            if let Ok(c_name) =
+                std::ffi::CString::new(normalized.as_bytes())
+            {
+                unsafe {
+                    libc::shm_unlink(c_name.as_ptr());
+                }
+            }
+        }
+    }
+
+    /// Test that `get_raw_message_ptr` returns an error when shared memory
+    /// is not initialized (i.e., before start_server or start_client).
+    #[test]
+    fn test_get_raw_message_ptr_uninit_returns_error() {
+        let transport = BlockingSharedMemoryDirect::new();
+        let result = unsafe { transport.get_raw_message_ptr() };
+        assert!(
+            result.is_err(),
+            "get_raw_message_ptr should fail before initialization"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("not initialized"),
+            "Error should mention 'not initialized', got: {}",
+            err_msg
+        );
+    }
+
+    /// Test that the Drop impl calls close_blocking without panicking.
+    #[test]
+    fn test_drop_without_init() {
+        // Creating and immediately dropping should not panic.
+        let _transport = BlockingSharedMemoryDirect::new();
+    }
+
+    /// Test that the Drop impl cleans up an initialized transport.
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn test_drop_after_server_init() {
+        let shm_name = format!(
+            "test_drop_init_{}",
+            uuid::Uuid::new_v4()
+        );
+        let config = TransportConfig {
+            shared_memory_name: shm_name,
+            ..Default::default()
+        };
+
+        let mut transport = BlockingSharedMemoryDirect::new();
+        transport
+            .start_server_blocking(&config)
+            .expect("Server start should succeed");
+
+        // Dropping should clean up without panicking.
+        drop(transport);
     }
 
     #[test]

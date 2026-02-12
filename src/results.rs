@@ -1177,7 +1177,9 @@ impl ResultsManager {
                 a.summary
                     .average_throughput_mb_s
                     .partial_cmp(&b.summary.average_throughput_mb_s)
-                    .unwrap()
+                    // NaN values are treated as equal to avoid
+                    // panicking on malformed data.
+                    .unwrap_or(std::cmp::Ordering::Equal)
             })
             .map(|result| result.mechanism.to_string())
     }
@@ -1204,7 +1206,9 @@ impl ResultsManager {
                 a.summary
                     .average_latency_ns
                     .partial_cmp(&b.summary.average_latency_ns)
-                    .unwrap()
+                    // NaN values are treated as equal to avoid
+                    // panicking on malformed data.
+                    .unwrap_or(std::cmp::Ordering::Equal)
             })
             .map(|result| result.mechanism.to_string())
     }
@@ -2388,5 +2392,244 @@ mod tests {
         assert_eq!(results.test_config.duration, Some(Duration::from_secs(10)));
         assert_eq!(results.test_config.concurrency, 2);
         assert_eq!(results.test_config.message_size, 512);
+    }
+
+    // ----- Streaming tests -----
+
+    /// Test that enable_per_message_streaming creates the file and
+    /// writes the JSON header.
+    #[test]
+    fn test_enable_per_message_streaming_creates_header() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        drop(tmp); // Release the file
+
+        let mut mgr = ResultsManager::new(None, None).unwrap();
+        mgr.enable_per_message_streaming(&path).unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("\"headings\""),
+            "File should contain headings key"
+        );
+        assert!(
+            content.contains("\"data\":"),
+            "File should contain data key"
+        );
+        assert!(
+            content.contains("timestamp_ns"),
+            "Headings should include timestamp_ns"
+        );
+    }
+
+    /// Test that enable_csv_streaming creates the file and writes
+    /// the CSV header row.
+    #[test]
+    fn test_enable_csv_streaming_creates_header() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        drop(tmp);
+
+        let mut mgr = ResultsManager::new(None, None).unwrap();
+        mgr.enable_csv_streaming(&path).unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+        let first_line = content.lines().next().unwrap_or("");
+        assert_eq!(
+            first_line,
+            MessageLatencyRecord::HEADINGS.join(","),
+            "First line should be CSV headings"
+        );
+    }
+
+    /// Test that enable_combined_streaming sets combined mode flag.
+    #[test]
+    fn test_enable_combined_streaming_sets_flag() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        drop(tmp);
+
+        let mut mgr = ResultsManager::new(None, None).unwrap();
+        mgr.enable_combined_streaming(&path, true).unwrap();
+
+        assert!(
+            mgr.both_tests_enabled,
+            "Combined mode should enable both_tests flag"
+        );
+        assert!(
+            mgr.streaming_enabled,
+            "Streaming should be enabled"
+        );
+        assert!(
+            mgr.per_message_streaming,
+            "Per-message streaming should be enabled"
+        );
+    }
+
+    /// Test that streaming a record to JSON produces valid JSON data
+    /// entries.
+    #[test]
+    fn test_stream_latency_record_json() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        drop(tmp);
+
+        let mut mgr = ResultsManager::new(None, None).unwrap();
+        mgr.enable_per_message_streaming(&path).unwrap();
+
+        let timestamp =
+            MessageLatencyRecord::current_timestamp_ns();
+        let record = MessageLatencyRecord::new(
+            1,
+            IpcMechanism::TcpSocket,
+            256,
+            LatencyType::OneWay,
+            Duration::from_micros(50),
+            timestamp,
+        );
+
+        let rt = Runtime::new().unwrap();
+        rt.block_on(mgr.stream_latency_record(&record))
+            .unwrap();
+
+        // Write a second record to exercise the comma logic
+        let record2 = MessageLatencyRecord::new(
+            2,
+            IpcMechanism::TcpSocket,
+            256,
+            LatencyType::OneWay,
+            Duration::from_micros(75),
+            timestamp,
+        );
+        rt.block_on(mgr.stream_latency_record(&record2))
+            .unwrap();
+
+        rt.block_on(mgr.finalize()).unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+        // Should be parseable as JSON
+        let parsed: serde_json::Value =
+            serde_json::from_str(&content).expect(
+                "Streamed output should be valid JSON",
+            );
+        let data = parsed["data"]
+            .as_array()
+            .expect("data should be an array");
+        assert_eq!(
+            data.len(),
+            2,
+            "Should have 2 records in data array"
+        );
+    }
+
+    /// Test that find_fastest_mechanism works when there are results.
+    #[test]
+    fn test_find_fastest_mechanism() {
+        let mut mgr = ResultsManager::new(None, None).unwrap();
+
+        // Add a result with throughput
+        let mut r1 = BenchmarkResults::new(
+            IpcMechanism::TcpSocket,
+            128,
+            8192,
+            1,
+            Some(10),
+            None,
+            0,
+            true,
+            false,
+        );
+        r1.summary.average_throughput_mb_s = 100.0;
+
+        let mut r2 = BenchmarkResults::new(
+            IpcMechanism::SharedMemory,
+            128,
+            8192,
+            1,
+            Some(10),
+            None,
+            0,
+            true,
+            false,
+        );
+        r2.summary.average_throughput_mb_s = 200.0;
+
+        let rt = Runtime::new().unwrap();
+        rt.block_on(mgr.add_results(r1)).unwrap();
+        rt.block_on(mgr.add_results(r2)).unwrap();
+
+        let fastest = mgr.find_fastest_mechanism();
+        assert!(fastest.is_some());
+        assert_eq!(fastest.unwrap(), "Shared Memory");
+    }
+
+    /// Test that find_lowest_latency_mechanism works when there
+    /// are results with latency data.
+    #[test]
+    fn test_find_lowest_latency_mechanism() {
+        let mut mgr = ResultsManager::new(None, None).unwrap();
+
+        let mut r1 = BenchmarkResults::new(
+            IpcMechanism::TcpSocket,
+            128,
+            8192,
+            1,
+            Some(10),
+            None,
+            0,
+            true,
+            false,
+        );
+        r1.summary.average_latency_ns = Some(5000.0);
+
+        let mut r2 = BenchmarkResults::new(
+            IpcMechanism::SharedMemory,
+            128,
+            8192,
+            1,
+            Some(10),
+            None,
+            0,
+            true,
+            false,
+        );
+        r2.summary.average_latency_ns = Some(2000.0);
+
+        let rt = Runtime::new().unwrap();
+        rt.block_on(mgr.add_results(r1)).unwrap();
+        rt.block_on(mgr.add_results(r2)).unwrap();
+
+        let lowest = mgr.find_lowest_latency_mechanism();
+        assert!(lowest.is_some());
+        assert_eq!(lowest.unwrap(), "Shared Memory");
+    }
+
+    /// Test that find_fastest_mechanism handles NaN throughput
+    /// values without panicking.
+    #[test]
+    fn test_find_fastest_mechanism_with_nan() {
+        let mut mgr = ResultsManager::new(None, None).unwrap();
+
+        let mut r1 = BenchmarkResults::new(
+            IpcMechanism::TcpSocket,
+            128,
+            8192,
+            1,
+            Some(10),
+            None,
+            0,
+            true,
+            false,
+        );
+        r1.summary.average_throughput_mb_s = f64::NAN;
+
+        let rt = Runtime::new().unwrap();
+        rt.block_on(mgr.add_results(r1)).unwrap();
+
+        // Should not panic even with NaN values
+        let result = mgr.find_fastest_mechanism();
+        // With a single NaN result, it may return Some or None
+        // but it must not panic.
+        let _ = result;
     }
 }

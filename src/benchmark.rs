@@ -2562,4 +2562,196 @@ mod tests {
             );
         }
     }
+
+    // ----- BenchmarkConfig::from_args validation tests -----
+
+    /// Test that from_args with default Args produces a valid config
+    /// with both one_way and round_trip enabled.
+    #[test]
+    fn test_from_args_defaults_both_tests() {
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            one_way: false,
+            round_trip: false,
+            ..Default::default()
+        };
+
+        let config =
+            BenchmarkConfig::from_args(&args).unwrap();
+        assert!(
+            config.one_way,
+            "Default should enable one_way"
+        );
+        assert!(
+            config.round_trip,
+            "Default should enable round_trip"
+        );
+    }
+
+    /// Test that from_args respects explicit one_way=true selection.
+    #[test]
+    fn test_from_args_explicit_one_way_only() {
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            one_way: true,
+            round_trip: false,
+            ..Default::default()
+        };
+
+        let config =
+            BenchmarkConfig::from_args(&args).unwrap();
+        assert!(config.one_way);
+        assert!(
+            !config.round_trip,
+            "round_trip should be false when only one_way selected"
+        );
+    }
+
+    /// Test that from_args respects explicit round_trip=true selection.
+    #[test]
+    fn test_from_args_explicit_round_trip_only() {
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            one_way: false,
+            round_trip: true,
+            ..Default::default()
+        };
+
+        let config =
+            BenchmarkConfig::from_args(&args).unwrap();
+        assert!(
+            !config.one_way,
+            "one_way should be false when only round_trip selected"
+        );
+        assert!(config.round_trip);
+    }
+
+    /// Test that duration takes precedence over msg_count: when
+    /// a duration is provided, msg_count should be None.
+    #[test]
+    fn test_from_args_duration_overrides_msg_count() {
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            msg_count: 5000,
+            duration: Some(std::time::Duration::from_secs(10)),
+            ..Default::default()
+        };
+
+        let config =
+            BenchmarkConfig::from_args(&args).unwrap();
+        assert_eq!(
+            config.msg_count, None,
+            "msg_count should be None when duration is set"
+        );
+        assert_eq!(
+            config.duration,
+            Some(std::time::Duration::from_secs(10))
+        );
+    }
+
+    /// Test that msg_count is preserved when no duration is set.
+    #[test]
+    fn test_from_args_msg_count_without_duration() {
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            msg_count: 42,
+            duration: None,
+            ..Default::default()
+        };
+
+        let config =
+            BenchmarkConfig::from_args(&args).unwrap();
+        assert_eq!(config.msg_count, Some(42));
+        assert_eq!(config.duration, None);
+    }
+
+    /// Test that from_args passes through all optional fields
+    /// correctly (affinity, send_delay, buffer_size, etc.).
+    #[test]
+    fn test_from_args_optional_fields() {
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            buffer_size: Some(16384),
+            host: "192.168.1.1".to_string(),
+            port: 9999,
+            warmup_iterations: 50,
+            percentiles: vec![50.0, 90.0, 99.0],
+            pmq_priority: 3,
+            include_first_message: true,
+            server_affinity: Some(0),
+            client_affinity: Some(1),
+            send_delay: Some(
+                std::time::Duration::from_micros(100),
+            ),
+            ..Default::default()
+        };
+
+        let config =
+            BenchmarkConfig::from_args(&args).unwrap();
+        assert_eq!(config.buffer_size, Some(16384));
+        assert_eq!(config.host, "192.168.1.1");
+        assert_eq!(config.port, 9999);
+        assert_eq!(config.warmup_iterations, 50);
+        assert_eq!(
+            config.percentiles,
+            vec![50.0, 90.0, 99.0]
+        );
+        assert_eq!(config.pmq_priority, 3);
+        assert!(config.include_first_message);
+        assert_eq!(config.server_affinity, Some(0));
+        assert_eq!(config.client_affinity, Some(1));
+        assert_eq!(
+            config.send_delay,
+            Some(std::time::Duration::from_micros(100))
+        );
+    }
+
+    /// Test that from_args handles zero message_size. This is a
+    /// potential edge case that could cause division-by-zero
+    /// in throughput calculations.
+    #[test]
+    fn test_from_args_zero_message_size() {
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            message_size: 0,
+            ..Default::default()
+        };
+
+        // from_args should succeed; zero-size messages are
+        // technically valid even if unusual.
+        let config =
+            BenchmarkConfig::from_args(&args).unwrap();
+        assert_eq!(config.message_size, 0);
+    }
+
+    /// Test that from_args handles zero msg_count. With msg_count=0
+    /// and no duration, the benchmark would do no work — but
+    /// from_args should still accept it.
+    #[test]
+    fn test_from_args_zero_msg_count() {
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            msg_count: 0,
+            duration: None,
+            ..Default::default()
+        };
+
+        let config =
+            BenchmarkConfig::from_args(&args).unwrap();
+        assert_eq!(config.msg_count, Some(0));
+    }
+
+    /// Test that from_args handles empty percentiles list.
+    #[test]
+    fn test_from_args_empty_percentiles() {
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            percentiles: vec![],
+            ..Default::default()
+        };
+
+        let config =
+            BenchmarkConfig::from_args(&args).unwrap();
+        assert!(config.percentiles.is_empty());
+    }
 }

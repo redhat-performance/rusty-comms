@@ -1048,7 +1048,9 @@ impl BlockingResultsManager {
                 a.summary
                     .average_throughput_mb_s
                     .partial_cmp(&b.summary.average_throughput_mb_s)
-                    .unwrap()
+                    // NaN values are treated as equal to avoid
+                    // panicking on malformed data.
+                    .unwrap_or(std::cmp::Ordering::Equal)
             })
             .map(|result| result.mechanism.to_string())
     }
@@ -1075,7 +1077,9 @@ impl BlockingResultsManager {
                 a.summary
                     .average_latency_ns
                     .partial_cmp(&b.summary.average_latency_ns)
-                    .unwrap()
+                    // NaN values are treated as equal to avoid
+                    // panicking on malformed data.
+                    .unwrap_or(std::cmp::Ordering::Equal)
             })
             .map(|result| result.mechanism.to_string())
     }

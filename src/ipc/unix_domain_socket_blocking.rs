@@ -1532,4 +1532,57 @@ mod tests {
 
         let _ = std::fs::remove_file(&socket_path);
     }
+
+    /// Test that send_blocking fails when the transport is not
+    /// connected (no stream established).
+    #[test]
+    fn test_send_on_uninit_transport_fails() {
+        let mut transport = BlockingUnixDomainSocket::new();
+        let msg = Message::new(
+            1,
+            vec![0u8; 10],
+            MessageType::OneWay,
+        );
+
+        let result = transport.send_blocking(&msg);
+        assert!(
+            result.is_err(),
+            "send on uninitialized transport should fail"
+        );
+    }
+
+    /// Test that receive_blocking fails when the transport is not
+    /// connected.
+    #[test]
+    fn test_receive_on_uninit_transport_fails() {
+        let mut transport = BlockingUnixDomainSocket::new();
+        let result = transport.receive_blocking();
+        assert!(
+            result.is_err(),
+            "receive on uninitialized transport should fail"
+        );
+    }
+
+    /// Test that start_client_blocking fails when connecting to
+    /// a non-existent socket path.
+    #[test]
+    fn test_client_connect_nonexistent_path_fails() {
+        let socket_path = get_temp_socket_path(
+            "test_uds_blocking_nonexistent.sock",
+        );
+        // Ensure the socket file does not exist.
+        let _ = std::fs::remove_file(&socket_path);
+
+        let mut client = BlockingUnixDomainSocket::new();
+        let config = TransportConfig {
+            socket_path,
+            ..Default::default()
+        };
+
+        let result = client.start_client_blocking(&config);
+        assert!(
+            result.is_err(),
+            "Connecting to nonexistent path should fail"
+        );
+    }
 }

@@ -1419,4 +1419,143 @@ mod tests {
         server_handle.await.unwrap();
         client.close().await.unwrap();
     }
+
+    /// Test PMQ round-trip: client sends Request, server echoes
+    /// back Response with the same payload.
+    #[tokio::test]
+    async fn test_pmq_round_trip() {
+        let queue_name = format!(
+            "test-pmq-rt-{}",
+            Uuid::new_v4().as_simple()
+        );
+        let config = TransportConfig {
+            message_queue_name: queue_name,
+            ..Default::default()
+        };
+
+        let mut server = PosixMessageQueueTransport::new();
+        let mut client = PosixMessageQueueTransport::new();
+
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let server_config = config.clone();
+        let server_handle = tokio::spawn(async move {
+            server
+                .start_server(&server_config)
+                .await
+                .unwrap();
+            tx.send(()).unwrap();
+
+            for expected_id in 0u64..3 {
+                let msg = server.receive().await.unwrap();
+                assert_eq!(msg.id, expected_id);
+                assert_eq!(
+                    msg.message_type,
+                    MessageType::Request
+                );
+
+                let resp = Message::new(
+                    msg.id,
+                    msg.payload.clone(),
+                    MessageType::Response,
+                );
+                server.send(&resp).await.unwrap();
+            }
+
+            server.close().await.unwrap();
+        });
+
+        rx.await.unwrap();
+        client.start_client(&config).await.unwrap();
+
+        for id in 0u64..3 {
+            let payload = vec![id as u8; 64];
+            let msg = Message::new(
+                id,
+                payload.clone(),
+                MessageType::Request,
+            );
+            client.send(&msg).await.unwrap();
+
+            // Justification: Allow server to process the message
+            // and write its response to the response queue. PMQ
+            // is single-queue per direction, so a brief wait
+            // avoids reading our own message.
+            sleep(Duration::from_millis(50)).await;
+
+            let resp = client.receive().await.unwrap();
+            assert_eq!(resp.id, id);
+            assert_eq!(resp.payload, payload);
+            assert_eq!(
+                resp.message_type,
+                MessageType::Response
+            );
+        }
+
+        client.close().await.unwrap();
+        server_handle.await.unwrap();
+    }
+
+    /// Test PMQ with various message sizes.
+    #[tokio::test]
+    async fn test_pmq_various_message_sizes() {
+        let sizes: Vec<usize> = vec![1, 32, 128, 512];
+        let sizes_clone = sizes.clone();
+
+        let queue_name = format!(
+            "test-pmq-sz-{}",
+            Uuid::new_v4().as_simple()
+        );
+        let config = TransportConfig {
+            message_queue_name: queue_name,
+            ..Default::default()
+        };
+
+        let mut server = PosixMessageQueueTransport::new();
+        let mut client = PosixMessageQueueTransport::new();
+
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let server_config = config.clone();
+        let server_handle = tokio::spawn(async move {
+            server
+                .start_server(&server_config)
+                .await
+                .unwrap();
+            tx.send(()).unwrap();
+
+            for (i, &expected_size) in
+                sizes_clone.iter().enumerate()
+            {
+                let msg = server.receive().await.unwrap();
+                assert_eq!(msg.id, i as u64);
+                assert_eq!(
+                    msg.payload.len(),
+                    expected_size,
+                    "Size mismatch for message {}",
+                    i
+                );
+            }
+
+            server.close().await.unwrap();
+        });
+
+        rx.await.unwrap();
+        client.start_client(&config).await.unwrap();
+
+        for (i, &size) in sizes.iter().enumerate() {
+            let payload = vec![0xCD_u8; size];
+            let msg = Message::new(
+                i as u64,
+                payload,
+                MessageType::OneWay,
+            );
+            client.send(&msg).await.unwrap();
+        }
+
+        // Justification: Allow time for server to drain all
+        // messages before we close.
+        sleep(Duration::from_millis(200)).await;
+
+        client.close().await.unwrap();
+        server_handle.await.unwrap();
+    }
 }

@@ -1506,6 +1506,52 @@ mod tests {
         server_handle.join().unwrap();
     }
 
+    /// Test that send_blocking fails when the transport is not
+    /// initialized (no shared memory segment).
+    #[test]
+    fn test_send_on_uninit_transport_fails() {
+        let mut transport = BlockingSharedMemory::new();
+        let msg = Message::new(
+            1,
+            vec![0u8; 10],
+            MessageType::OneWay,
+        );
+
+        let result = transport.send_blocking(&msg);
+        assert!(
+            result.is_err(),
+            "send on uninitialized SHM transport should fail"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("not initialized"),
+            "Error should mention 'not initialized', got: {}",
+            err_msg,
+        );
+    }
+
+    /// Test that receive_blocking fails when the transport is not
+    /// initialized.
+    #[test]
+    fn test_receive_on_uninit_transport_fails() {
+        let mut transport = BlockingSharedMemory::new();
+        let result = transport.receive_blocking();
+        assert!(
+            result.is_err(),
+            "receive on uninitialized SHM transport should fail"
+        );
+    }
+
+    /// Test that close_blocking is idempotent on a fresh transport.
+    #[test]
+    fn test_close_idempotent_uninit() {
+        let mut transport = BlockingSharedMemory::new();
+        transport.close_blocking().unwrap();
+        transport.close_blocking().unwrap();
+        assert!(transport.ring_buffer.is_none());
+        assert!(transport.shmem.is_none());
+    }
+
     /// Test that the round-trip / one-way latency ratio is reasonable.
     ///
     /// A healthy ratio is approximately 2× (one OW leg in each direction).
