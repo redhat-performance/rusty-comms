@@ -984,9 +984,12 @@ impl BenchmarkRunner {
     ) -> Result<()> {
         // SHM is unidirectional and PMQ has timing issues with async non-blocking I/O
         // Use file-based latency collection for these mechanisms
-        if self.mechanism == IpcMechanism::SharedMemory
-            || self.mechanism == IpcMechanism::PosixMessageQueue
-        {
+        #[cfg(target_os = "linux")]
+        let is_pmq = self.mechanism == IpcMechanism::PosixMessageQueue;
+        #[cfg(not(target_os = "linux"))]
+        let is_pmq = false;
+
+        if self.mechanism == IpcMechanism::SharedMemory || is_pmq {
             return self
                 .run_single_threaded_one_way_file_based(
                     transport_config,

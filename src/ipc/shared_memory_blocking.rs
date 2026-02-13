@@ -932,9 +932,8 @@ impl BlockingTransport for BlockingSharedMemory {
                     if result == 0 {
                         debug!("Set SHM permissions to 777");
                     } else {
-                        debug!("Failed to set SHM permissions: errno={}", unsafe {
-                            *libc::__errno_location()
-                        });
+                        let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(-1);
+                        debug!("Failed to set SHM permissions: errno={}", errno);
                     }
                 }
             }
@@ -1132,7 +1131,9 @@ impl BlockingTransport for BlockingSharedMemory {
         debug!("Closing blocking shared memory transport");
 
         // Capture cleanup metadata before dropping local state.
+        #[cfg(target_os = "linux")]
         let should_unlink = self.is_server && !self.shared_memory_name.is_empty();
+        #[cfg(target_os = "linux")]
         let shm_name = self.shared_memory_name.clone();
 
         if let Some(ring_buffer) = self.ring_buffer {

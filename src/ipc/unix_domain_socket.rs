@@ -228,9 +228,8 @@ impl IpcTransport for UnixDomainSocketTransport {
                 if result == 0 {
                     debug!("Set socket permissions to 777");
                 } else {
-                    debug!("Failed to set socket permissions: errno={}", unsafe {
-                        *libc::__errno_location()
-                    });
+                    let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(-1);
+                    debug!("Failed to set socket permissions: errno={}", errno);
                 }
             }
         }
@@ -418,9 +417,8 @@ impl IpcTransport for UnixDomainSocketTransport {
                 if result == 0 {
                     debug!("Set socket permissions to 777");
                 } else {
-                    debug!("Failed to set socket permissions: errno={}", unsafe {
-                        *libc::__errno_location()
-                    });
+                    let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(-1);
+                    debug!("Failed to set socket permissions: errno={}", errno);
                 }
             }
         }
