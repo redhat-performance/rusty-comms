@@ -1130,6 +1130,7 @@ mod tests {
         assert_eq!(args.run_mode, RunMode::Client);
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_run_mode_client_with_socket_path() {
         // Client mode (receiver in QM/container) with socket path for UDS
@@ -1149,6 +1150,25 @@ mod tests {
             Some("/tmp/rusty-comms/uds.sock".to_string())
         );
         assert!(args.blocking);
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn test_run_mode_client_with_socket_path_rejected_on_non_unix() {
+        let result = Args::try_parse_from([
+            "ipc-benchmark",
+            "-m",
+            "uds",
+            "--run-mode",
+            "client",
+            "--socket-path",
+            "/tmp/rusty-comms/uds.sock",
+            "--blocking",
+        ]);
+        assert!(
+            result.is_err(),
+            "uds should be rejected on non-Unix targets"
+        );
     }
 
     #[test]
@@ -1263,6 +1283,7 @@ mod tests {
         assert_eq!(args.run_mode, RunMode::Sender);
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_run_mode_sender_with_socket_path() {
         // Sender mode with socket path for UDS
@@ -1279,6 +1300,25 @@ mod tests {
         assert_eq!(args.run_mode, RunMode::Sender);
         assert_eq!(args.socket_path, Some("/tmp/test.sock".to_string()));
         assert!(args.blocking);
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn test_run_mode_sender_with_socket_path_rejected_on_non_unix() {
+        let result = Args::try_parse_from([
+            "ipc-benchmark",
+            "-m",
+            "uds",
+            "--run-mode",
+            "sender",
+            "--socket-path",
+            "/tmp/test.sock",
+            "--blocking",
+        ]);
+        assert!(
+            result.is_err(),
+            "uds should be rejected on non-Unix targets"
+        );
     }
 
     #[test]

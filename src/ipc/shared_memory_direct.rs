@@ -1368,7 +1368,10 @@ mod tests {
     /// a shared memory segment.
     #[test]
     fn test_precreate_segment_creates_segment() {
-        let shm_name = format!("test_precreate_{}", uuid::Uuid::new_v4());
+        // Keep test SHM names short for platforms with strict shm_open limits
+        // (e.g., macOS).
+        let suffix = (uuid::Uuid::new_v4().as_u128() & 0xffff_ffff) as u32;
+        let shm_name = format!("tp_{suffix:08x}");
 
         let result = BlockingSharedMemoryDirect::precreate_segment(&shm_name);
         assert!(
@@ -1408,7 +1411,10 @@ mod tests {
     /// before creating a new one (idempotency).
     #[test]
     fn test_precreate_segment_idempotent() {
-        let shm_name = format!("test_precreate_idem_{}", uuid::Uuid::new_v4());
+        // Keep test SHM names short for platforms with strict shm_open limits
+        // (e.g., macOS).
+        let suffix = (uuid::Uuid::new_v4().as_u128() & 0xffff_ffff) as u32;
+        let shm_name = format!("ti_{suffix:08x}");
 
         // Create the segment twice in succession.
         let shmem1 = BlockingSharedMemoryDirect::precreate_segment(&shm_name)
