@@ -1175,10 +1175,7 @@ mod tests {
         assert_eq!(utils::format_throughput(500.0), "500.00 B/s");
         assert_eq!(utils::format_throughput(1536.0), "1.50 KB/s");
         assert_eq!(utils::format_throughput(1572864.0), "1.50 MB/s");
-        assert_eq!(
-            utils::format_throughput(1610612736.0),
-            "1.50 GB/s"
-        );
+        assert_eq!(utils::format_throughput(1610612736.0), "1.50 GB/s");
     }
 
     // ----- MetricsCollector tests -----
@@ -1186,11 +1183,8 @@ mod tests {
     /// Test MetricsCollector with latency + throughput.
     #[test]
     fn test_metrics_collector_with_latency() {
-        let mut collector = MetricsCollector::new(
-            Some(LatencyType::RoundTrip),
-            vec![50.0, 99.0],
-        )
-        .unwrap();
+        let mut collector =
+            MetricsCollector::new(Some(LatencyType::RoundTrip), vec![50.0, 99.0]).unwrap();
 
         collector
             .record_message(256, Some(Duration::from_micros(50)))
@@ -1209,9 +1203,7 @@ mod tests {
         assert_eq!(metrics.throughput.total_bytes, 768);
 
         // Latency should be present with round-trip type
-        let latency = metrics
-            .latency
-            .expect("Latency should be present");
+        let latency = metrics.latency.expect("Latency should be present");
         assert_eq!(latency.latency_type, LatencyType::RoundTrip);
         assert_eq!(latency.total_samples, 3);
         assert!(latency.mean_ns > 0.0);
@@ -1224,8 +1216,7 @@ mod tests {
     /// Test MetricsCollector in throughput-only mode.
     #[test]
     fn test_metrics_collector_throughput_only() {
-        let mut collector =
-            MetricsCollector::new(None, vec![]).unwrap();
+        let mut collector = MetricsCollector::new(None, vec![]).unwrap();
 
         collector.record_message(1024, None).unwrap();
         collector.record_message(2048, None).unwrap();
@@ -1243,19 +1234,12 @@ mod tests {
     /// Test MetricsCollector::reset clears all state.
     #[test]
     fn test_metrics_collector_reset() {
-        let mut collector = MetricsCollector::new(
-            Some(LatencyType::OneWay),
-            vec![50.0],
-        )
-        .unwrap();
+        let mut collector = MetricsCollector::new(Some(LatencyType::OneWay), vec![50.0]).unwrap();
 
         collector
             .record_message(128, Some(Duration::from_micros(10)))
             .unwrap();
-        assert_eq!(
-            collector.throughput_calculator.message_count,
-            1
-        );
+        assert_eq!(collector.throughput_calculator.message_count, 1);
 
         collector.reset();
 
@@ -1273,8 +1257,7 @@ mod tests {
     /// zeroed metrics without panicking.
     #[test]
     fn test_latency_collector_empty() {
-        let collector =
-            LatencyCollector::new(LatencyType::OneWay).unwrap();
+        let collector = LatencyCollector::new(LatencyType::OneWay).unwrap();
         let metrics = collector.get_metrics(&[50.0, 99.0]);
 
         assert_eq!(metrics.total_samples, 0);
@@ -1287,29 +1270,21 @@ mod tests {
     /// Test LatencyCollector tracks exact min/max correctly.
     #[test]
     fn test_latency_collector_exact_min_max() {
-        let mut collector =
-            LatencyCollector::new(LatencyType::OneWay).unwrap();
+        let mut collector = LatencyCollector::new(LatencyType::OneWay).unwrap();
 
         collector.record(Duration::from_nanos(500)).unwrap();
         collector.record(Duration::from_nanos(100)).unwrap();
         collector.record(Duration::from_nanos(1000)).unwrap();
 
         let metrics = collector.get_metrics(&[]);
-        assert_eq!(
-            metrics.min_ns, 100,
-            "Exact observed min should be 100ns"
-        );
-        assert_eq!(
-            metrics.max_ns, 1000,
-            "Exact observed max should be 1000ns"
-        );
+        assert_eq!(metrics.min_ns, 100, "Exact observed min should be 100ns");
+        assert_eq!(metrics.max_ns, 1000, "Exact observed max should be 1000ns");
     }
 
     /// Test LatencyCollector::reset clears histogram and counters.
     #[test]
     fn test_latency_collector_reset() {
-        let mut collector =
-            LatencyCollector::new(LatencyType::RoundTrip).unwrap();
+        let mut collector = LatencyCollector::new(LatencyType::RoundTrip).unwrap();
 
         collector.record(Duration::from_millis(5)).unwrap();
         assert_eq!(collector.sample_count, 1);
@@ -1431,14 +1406,8 @@ mod tests {
     /// Test aggregate_worker_metrics with empty input returns error.
     #[test]
     fn test_aggregate_worker_metrics_empty() {
-        let result = MetricsCollector::aggregate_worker_metrics(
-            vec![],
-            &[50.0, 99.0],
-        );
-        assert!(
-            result.is_err(),
-            "Aggregating empty metrics should fail"
-        );
+        let result = MetricsCollector::aggregate_worker_metrics(vec![], &[50.0, 99.0]);
+        assert!(result.is_err(), "Aggregating empty metrics should fail");
     }
 
     /// Test aggregate_worker_metrics with a single worker returns
@@ -1463,25 +1432,14 @@ mod tests {
             ],
         );
 
-        let metrics = vec![make_perf_metrics(
-            100,
-            102400,
-            1_000_000_000,
-            Some(latency),
-        )];
+        let metrics = vec![make_perf_metrics(100, 102400, 1_000_000_000, Some(latency))];
 
-        let result =
-            MetricsCollector::aggregate_worker_metrics(
-                metrics,
-                &[50.0, 99.0],
-            )
+        let result = MetricsCollector::aggregate_worker_metrics(metrics, &[50.0, 99.0])
             .expect("Single-worker aggregation should succeed");
 
         assert_eq!(result.throughput.total_messages, 100);
         assert_eq!(result.throughput.total_bytes, 102400);
-        assert_eq!(
-            result.throughput.duration_ns, 1_000_000_000
-        );
+        assert_eq!(result.throughput.duration_ns, 1_000_000_000);
 
         let lat = result.latency.expect("Latency should exist");
         assert_eq!(lat.total_samples, 50);
@@ -1493,12 +1451,7 @@ mod tests {
     /// sums throughput and picks the max duration.
     #[test]
     fn test_aggregate_worker_metrics_throughput_sum() {
-        let worker1 = make_perf_metrics(
-            50,
-            51200,
-            1_000_000_000,
-            None,
-        );
+        let worker1 = make_perf_metrics(50, 51200, 1_000_000_000, None);
         let worker2 = make_perf_metrics(
             75,
             76800,
@@ -1506,11 +1459,7 @@ mod tests {
             None,
         );
 
-        let result =
-            MetricsCollector::aggregate_worker_metrics(
-                vec![worker1, worker2],
-                &[],
-            )
+        let result = MetricsCollector::aggregate_worker_metrics(vec![worker1, worker2], &[])
             .expect("Multi-worker aggregation should succeed");
 
         assert_eq!(
@@ -1570,44 +1519,21 @@ mod tests {
             ],
         );
 
-        let worker1 = make_perf_metrics(
-            100,
-            102400,
-            1_000_000_000,
-            Some(lat1),
-        );
-        let worker2 = make_perf_metrics(
-            200,
-            204800,
-            1_000_000_000,
-            Some(lat2),
-        );
+        let worker1 = make_perf_metrics(100, 102400, 1_000_000_000, Some(lat1));
+        let worker2 = make_perf_metrics(200, 204800, 1_000_000_000, Some(lat2));
 
         let result =
-            MetricsCollector::aggregate_worker_metrics(
-                vec![worker1, worker2],
-                &[50.0, 99.0],
-            )
-            .expect("Multi-worker latency aggregation ok");
+            MetricsCollector::aggregate_worker_metrics(vec![worker1, worker2], &[50.0, 99.0])
+                .expect("Multi-worker latency aggregation ok");
 
         let lat = result.latency.expect("Latency should exist");
 
-        assert_eq!(
-            lat.min_ns, 30,
-            "Should use global min across workers"
-        );
-        assert_eq!(
-            lat.max_ns, 4000,
-            "Should use global max across workers"
-        );
-        assert_eq!(
-            lat.total_samples, 300,
-            "Should sum sample counts"
-        );
+        assert_eq!(lat.min_ns, 30, "Should use global min across workers");
+        assert_eq!(lat.max_ns, 4000, "Should use global max across workers");
+        assert_eq!(lat.total_samples, 300, "Should sum sample counts");
 
         // Weighted mean: (1500*100 + 2000*200) / 300 = 1833.33
-        let expected_mean =
-            (1500.0 * 100.0 + 2000.0 * 200.0) / 300.0;
+        let expected_mean = (1500.0 * 100.0 + 2000.0 * 200.0) / 300.0;
         assert!(
             (lat.mean_ns - expected_mean).abs() < 1.0,
             "Weighted mean should be ~{:.2}, got {:.2}",
@@ -1623,46 +1549,28 @@ mod tests {
     /// Test aggregate_latency_metrics with empty input returns error.
     #[test]
     fn test_aggregate_latency_metrics_empty() {
-        let result =
-            MetricsCollector::aggregate_latency_metrics(
-                vec![],
-                &[50.0],
-            );
-        assert!(
-            result.is_err(),
-            "Empty latency aggregation should fail"
-        );
+        let result = MetricsCollector::aggregate_latency_metrics(vec![], &[50.0]);
+        assert!(result.is_err(), "Empty latency aggregation should fail");
     }
 
     /// Test create_aggregating_collector and add_worker_metrics.
     #[test]
     fn test_aggregating_collector_add_workers() {
         let mut agg =
-            MetricsCollector::create_aggregating_collector(
-                Some(LatencyType::OneWay),
-                vec![50.0],
-            )
-            .unwrap();
+            MetricsCollector::create_aggregating_collector(Some(LatencyType::OneWay), vec![50.0])
+                .unwrap();
 
-        let worker = make_perf_metrics(
-            50, 51200, 500_000_000, None,
-        );
+        let worker = make_perf_metrics(50, 51200, 500_000_000, None);
         agg.add_worker_metrics(&worker).unwrap();
 
-        assert_eq!(
-            agg.throughput_calculator.message_count, 50
-        );
+        assert_eq!(agg.throughput_calculator.message_count, 50);
         assert_eq!(agg.throughput_calculator.byte_count, 51200);
 
         // Add another worker
-        let worker2 = make_perf_metrics(
-            30, 30720, 600_000_000, None,
-        );
+        let worker2 = make_perf_metrics(30, 30720, 600_000_000, None);
         agg.add_worker_metrics(&worker2).unwrap();
 
-        assert_eq!(
-            agg.throughput_calculator.message_count, 80
-        );
+        assert_eq!(agg.throughput_calculator.message_count, 80);
         assert_eq!(agg.throughput_calculator.byte_count, 81920);
     }
 
@@ -1674,15 +1582,9 @@ mod tests {
         // Exactly at microsecond boundary
         assert_eq!(utils::format_latency(1000), "1.00μs");
         // Exactly at millisecond boundary
-        assert_eq!(
-            utils::format_latency(1_000_000),
-            "1.00ms"
-        );
+        assert_eq!(utils::format_latency(1_000_000), "1.00ms");
         // Exactly at second boundary
-        assert_eq!(
-            utils::format_latency(1_000_000_000),
-            "1.00s"
-        );
+        assert_eq!(utils::format_latency(1_000_000_000), "1.00s");
         // Zero
         assert_eq!(utils::format_latency(0), "0ns");
     }
@@ -1690,21 +1592,9 @@ mod tests {
     /// Test formatting edge values for throughput boundaries.
     #[test]
     fn test_format_throughput_boundaries() {
-        assert_eq!(
-            utils::format_throughput(0.0),
-            "0.00 B/s"
-        );
-        assert_eq!(
-            utils::format_throughput(1024.0),
-            "1.00 KB/s"
-        );
-        assert_eq!(
-            utils::format_throughput(1048576.0),
-            "1.00 MB/s"
-        );
-        assert_eq!(
-            utils::format_throughput(1073741824.0),
-            "1.00 GB/s"
-        );
+        assert_eq!(utils::format_throughput(0.0), "0.00 B/s");
+        assert_eq!(utils::format_throughput(1024.0), "1.00 KB/s");
+        assert_eq!(utils::format_throughput(1048576.0), "1.00 MB/s");
+        assert_eq!(utils::format_throughput(1073741824.0), "1.00 GB/s");
     }
 }

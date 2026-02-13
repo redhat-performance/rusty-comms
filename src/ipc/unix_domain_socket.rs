@@ -713,8 +713,7 @@ mod tests {
     /// a Response with the same payload.
     #[tokio::test]
     async fn test_uds_round_trip() {
-        let socket_path =
-            get_temp_socket_path("test_uds_rt.sock");
+        let socket_path = get_temp_socket_path("test_uds_rt.sock");
         let config = TransportConfig {
             socket_path: socket_path.clone(),
             ..Default::default()
@@ -728,25 +727,15 @@ mod tests {
         let (tx, rx) = oneshot::channel();
         let server_config = config.clone();
         let server_handle = tokio::spawn(async move {
-            server
-                .start_server(&server_config)
-                .await
-                .unwrap();
+            server.start_server(&server_config).await.unwrap();
             tx.send(()).unwrap();
 
             for expected_id in 0u64..5 {
                 let msg = server.receive().await.unwrap();
                 assert_eq!(msg.id, expected_id);
-                assert_eq!(
-                    msg.message_type,
-                    MessageType::Request
-                );
+                assert_eq!(msg.message_type, MessageType::Request);
 
-                let resp = Message::new(
-                    msg.id,
-                    msg.payload.clone(),
-                    MessageType::Response,
-                );
+                let resp = Message::new(msg.id, msg.payload.clone(), MessageType::Response);
                 server.send(&resp).await.unwrap();
             }
 
@@ -758,20 +747,13 @@ mod tests {
 
         for id in 0u64..5 {
             let payload = vec![id as u8; 128];
-            let msg = Message::new(
-                id,
-                payload.clone(),
-                MessageType::Request,
-            );
+            let msg = Message::new(id, payload.clone(), MessageType::Request);
             client.send(&msg).await.unwrap();
 
             let resp = client.receive().await.unwrap();
             assert_eq!(resp.id, id);
             assert_eq!(resp.payload, payload);
-            assert_eq!(
-                resp.message_type,
-                MessageType::Response
-            );
+            assert_eq!(resp.message_type, MessageType::Response);
         }
 
         client.close().await.unwrap();
@@ -782,8 +764,7 @@ mod tests {
     /// length-prefix framing code path.
     #[tokio::test]
     async fn test_uds_various_message_sizes() {
-        let socket_path =
-            get_temp_socket_path("test_uds_sizes.sock");
+        let socket_path = get_temp_socket_path("test_uds_sizes.sock");
         let config = TransportConfig {
             socket_path: socket_path.clone(),
             ..Default::default()
@@ -791,8 +772,7 @@ mod tests {
 
         let _ = std::fs::remove_file(&socket_path);
 
-        let sizes: Vec<usize> =
-            vec![1, 32, 256, 1024, 4096];
+        let sizes: Vec<usize> = vec![1, 32, 256, 1024, 4096];
         let sizes_clone = sizes.clone();
 
         let mut server = UnixDomainSocketTransport::new();
@@ -801,15 +781,10 @@ mod tests {
         let (tx, rx) = oneshot::channel();
         let server_config = config.clone();
         let server_handle = tokio::spawn(async move {
-            server
-                .start_server(&server_config)
-                .await
-                .unwrap();
+            server.start_server(&server_config).await.unwrap();
             tx.send(()).unwrap();
 
-            for (i, &expected_size) in
-                sizes_clone.iter().enumerate()
-            {
+            for (i, &expected_size) in sizes_clone.iter().enumerate() {
                 let msg = server.receive().await.unwrap();
                 assert_eq!(msg.id, i as u64);
                 assert_eq!(
@@ -828,11 +803,7 @@ mod tests {
 
         for (i, &size) in sizes.iter().enumerate() {
             let payload = vec![0xCD_u8; size];
-            let msg = Message::new(
-                i as u64,
-                payload,
-                MessageType::OneWay,
-            );
+            let msg = Message::new(i as u64, payload, MessageType::OneWay);
             client.send(&msg).await.unwrap();
         }
 
@@ -843,8 +814,7 @@ mod tests {
     /// Test that closing a UDS transport twice does not panic.
     #[tokio::test]
     async fn test_uds_close_idempotent() {
-        let socket_path =
-            get_temp_socket_path("test_uds_closex2.sock");
+        let socket_path = get_temp_socket_path("test_uds_closex2.sock");
         let config = TransportConfig {
             socket_path: socket_path.clone(),
             ..Default::default()
@@ -859,10 +829,7 @@ mod tests {
         let (done_tx, done_rx) = oneshot::channel::<()>();
         let server_config = config.clone();
         let server_handle = tokio::spawn(async move {
-            server
-                .start_server(&server_config)
-                .await
-                .unwrap();
+            server.start_server(&server_config).await.unwrap();
             ready_tx.send(()).unwrap();
 
             // Wait for client to signal it's connected

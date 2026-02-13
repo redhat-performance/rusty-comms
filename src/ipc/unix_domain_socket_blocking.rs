@@ -1538,11 +1538,7 @@ mod tests {
     #[test]
     fn test_send_on_uninit_transport_fails() {
         let mut transport = BlockingUnixDomainSocket::new();
-        let msg = Message::new(
-            1,
-            vec![0u8; 10],
-            MessageType::OneWay,
-        );
+        let msg = Message::new(1, vec![0u8; 10], MessageType::OneWay);
 
         let result = transport.send_blocking(&msg);
         assert!(
@@ -1567,9 +1563,7 @@ mod tests {
     /// a non-existent socket path.
     #[test]
     fn test_client_connect_nonexistent_path_fails() {
-        let socket_path = get_temp_socket_path(
-            "test_uds_blocking_nonexistent.sock",
-        );
+        let socket_path = get_temp_socket_path("test_uds_blocking_nonexistent.sock");
         // Ensure the socket file does not exist.
         let _ = std::fs::remove_file(&socket_path);
 

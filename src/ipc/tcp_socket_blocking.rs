@@ -595,11 +595,7 @@ mod tests {
     #[test]
     fn test_send_on_uninit_transport_fails() {
         let mut transport = BlockingTcpSocket::new();
-        let msg = Message::new(
-            1,
-            vec![0u8; 10],
-            MessageType::OneWay,
-        );
+        let msg = Message::new(1, vec![0u8; 10], MessageType::OneWay);
 
         let result = transport.send_blocking(&msg);
         assert!(

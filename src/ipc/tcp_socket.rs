@@ -428,13 +428,10 @@ impl IpcTransport for TcpSocketTransport {
                             // Tokio. If the clone fails (e.g. fd limit)
                             // we skip socket tuning rather than panic.
                             if let Ok(cloned) = std_stream.try_clone() {
-                                let socket =
-                                    socket2::Socket::from(cloned);
+                                let socket = socket2::Socket::from(cloned);
                                 let _ = socket.set_nodelay(true);
-                                let _ = socket
-                                    .set_recv_buffer_size(buffer_size);
-                                let _ = socket
-                                    .set_send_buffer_size(buffer_size);
+                                let _ = socket.set_recv_buffer_size(buffer_size);
+                                let _ = socket.set_send_buffer_size(buffer_size);
                             } else {
                                 warn!(
                                     "Failed to clone TCP stream for \
@@ -698,25 +695,15 @@ mod tests {
 
         let server_config = config.clone();
         let server_handle = tokio::spawn(async move {
-            server
-                .start_server(&server_config)
-                .await
-                .unwrap();
+            server.start_server(&server_config).await.unwrap();
 
             // Receive 3 requests and send back responses
             for expected_id in 0u64..3 {
                 let msg = server.receive().await.unwrap();
                 assert_eq!(msg.id, expected_id);
-                assert_eq!(
-                    msg.message_type,
-                    MessageType::Request
-                );
+                assert_eq!(msg.message_type, MessageType::Request);
 
-                let resp = Message::new(
-                    msg.id,
-                    msg.payload.clone(),
-                    MessageType::Response,
-                );
+                let resp = Message::new(msg.id, msg.payload.clone(), MessageType::Response);
                 server.send(&resp).await.unwrap();
             }
 
@@ -730,20 +717,13 @@ mod tests {
 
         for id in 0u64..3 {
             let payload = vec![id as u8; 64];
-            let msg = Message::new(
-                id,
-                payload.clone(),
-                MessageType::Request,
-            );
+            let msg = Message::new(id, payload.clone(), MessageType::Request);
             client.send(&msg).await.unwrap();
 
             let resp = client.receive().await.unwrap();
             assert_eq!(resp.id, id);
             assert_eq!(resp.payload, payload);
-            assert_eq!(
-                resp.message_type,
-                MessageType::Response
-            );
+            assert_eq!(resp.message_type, MessageType::Response);
         }
 
         client.close().await.unwrap();
@@ -760,8 +740,7 @@ mod tests {
             ..Default::default()
         };
 
-        let sizes: Vec<usize> =
-            vec![1, 64, 256, 1024, 4096];
+        let sizes: Vec<usize> = vec![1, 64, 256, 1024, 4096];
         let sizes_clone = sizes.clone();
 
         let mut server = TcpSocketTransport::new();
@@ -769,14 +748,9 @@ mod tests {
 
         let server_config = config.clone();
         let server_handle = tokio::spawn(async move {
-            server
-                .start_server(&server_config)
-                .await
-                .unwrap();
+            server.start_server(&server_config).await.unwrap();
 
-            for (i, &expected_size) in
-                sizes_clone.iter().enumerate()
-            {
+            for (i, &expected_size) in sizes_clone.iter().enumerate() {
                 let msg = server.receive().await.unwrap();
                 assert_eq!(msg.id, i as u64);
                 assert_eq!(
@@ -797,11 +771,7 @@ mod tests {
 
         for (i, &size) in sizes.iter().enumerate() {
             let payload = vec![0xAB_u8; size];
-            let msg = Message::new(
-                i as u64,
-                payload,
-                MessageType::OneWay,
-            );
+            let msg = Message::new(i as u64, payload, MessageType::OneWay);
             client.send(&msg).await.unwrap();
         }
 
@@ -824,10 +794,7 @@ mod tests {
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
         let server_config = config.clone();
         let server_handle = tokio::spawn(async move {
-            server
-                .start_server(&server_config)
-                .await
-                .unwrap();
+            server.start_server(&server_config).await.unwrap();
             // Wait until client signals it's connected
             rx.await.unwrap();
             server.close().await.unwrap();

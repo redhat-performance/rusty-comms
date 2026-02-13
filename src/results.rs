@@ -2456,10 +2456,7 @@ mod tests {
             mgr.both_tests_enabled,
             "Combined mode should enable both_tests flag"
         );
-        assert!(
-            mgr.streaming_enabled,
-            "Streaming should be enabled"
-        );
+        assert!(mgr.streaming_enabled, "Streaming should be enabled");
         assert!(
             mgr.per_message_streaming,
             "Per-message streaming should be enabled"
@@ -2477,8 +2474,7 @@ mod tests {
         let mut mgr = ResultsManager::new(None, None).unwrap();
         mgr.enable_per_message_streaming(&path).unwrap();
 
-        let timestamp =
-            MessageLatencyRecord::current_timestamp_ns();
+        let timestamp = MessageLatencyRecord::current_timestamp_ns();
         let record = MessageLatencyRecord::new(
             1,
             IpcMechanism::TcpSocket,
@@ -2489,8 +2485,7 @@ mod tests {
         );
 
         let rt = Runtime::new().unwrap();
-        rt.block_on(mgr.stream_latency_record(&record))
-            .unwrap();
+        rt.block_on(mgr.stream_latency_record(&record)).unwrap();
 
         // Write a second record to exercise the comma logic
         let record2 = MessageLatencyRecord::new(
@@ -2501,25 +2496,16 @@ mod tests {
             Duration::from_micros(75),
             timestamp,
         );
-        rt.block_on(mgr.stream_latency_record(&record2))
-            .unwrap();
+        rt.block_on(mgr.stream_latency_record(&record2)).unwrap();
 
         rt.block_on(mgr.finalize()).unwrap();
 
         let content = fs::read_to_string(&path).unwrap();
         // Should be parseable as JSON
         let parsed: serde_json::Value =
-            serde_json::from_str(&content).expect(
-                "Streamed output should be valid JSON",
-            );
-        let data = parsed["data"]
-            .as_array()
-            .expect("data should be an array");
-        assert_eq!(
-            data.len(),
-            2,
-            "Should have 2 records in data array"
-        );
+            serde_json::from_str(&content).expect("Streamed output should be valid JSON");
+        let data = parsed["data"].as_array().expect("data should be an array");
+        assert_eq!(data.len(), 2, "Should have 2 records in data array");
     }
 
     /// Test that find_fastest_mechanism works when there are results.

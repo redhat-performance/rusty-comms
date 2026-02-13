@@ -906,9 +906,7 @@ fn parse_concurrency(s: &str) -> Result<usize, String> {
         .parse()
         .map_err(|_| format!("Invalid concurrency: {}", s))?;
     if value == 0 {
-        return Err(
-            "Concurrency must be at least 1".to_string()
-        );
+        return Err("Concurrency must be at least 1".to_string());
     }
     Ok(value)
 }
@@ -928,7 +926,10 @@ mod tests {
         assert_eq!(parse_duration("1.5s").unwrap(), Duration::from_millis(1500));
         assert_eq!(parse_duration("1.5m").unwrap(), Duration::from_secs(90));
         assert_eq!(parse_duration("1.5h").unwrap(), Duration::from_secs(5400));
-        assert_eq!(parse_duration("1.5ms").unwrap(), Duration::from_micros(1500));
+        assert_eq!(
+            parse_duration("1.5ms").unwrap(),
+            Duration::from_micros(1500)
+        );
 
         // Test default unit (seconds)
         assert_eq!(parse_duration("10").unwrap(), Duration::from_secs(10));
@@ -1001,15 +1002,9 @@ mod tests {
             Duration::from_millis(100)
         );
         // Test second unit
-        assert_eq!(
-            parse_duration_micros("2s").unwrap(),
-            Duration::from_secs(2)
-        );
+        assert_eq!(parse_duration_micros("2s").unwrap(), Duration::from_secs(2));
         // Test default unit (seconds)
-        assert_eq!(
-            parse_duration_micros("5").unwrap(),
-            Duration::from_secs(5)
-        );
+        assert_eq!(parse_duration_micros("5").unwrap(), Duration::from_secs(5));
 
         // Test fractional values are preserved (not truncated)
         let d = parse_duration_micros("1.5us").unwrap();
@@ -1311,11 +1306,7 @@ mod tests {
         // must be rejected at parse time.
         let result = parse_concurrency("0");
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .contains("at least 1")
-        );
+        assert!(result.unwrap_err().contains("at least 1"));
     }
 
     #[test]
@@ -1330,16 +1321,7 @@ mod tests {
     fn test_concurrency_zero_rejected_by_cli() {
         // End-to-end: passing --concurrency 0 should fail
         // at argument parsing time.
-        let result = Args::try_parse_from([
-            "ipc-benchmark",
-            "-m",
-            "tcp",
-            "--concurrency",
-            "0",
-        ]);
-        assert!(
-            result.is_err(),
-            "concurrency=0 should be rejected by clap"
-        );
+        let result = Args::try_parse_from(["ipc-benchmark", "-m", "tcp", "--concurrency", "0"]);
+        assert!(result.is_err(), "concurrency=0 should be rejected by clap");
     }
 }

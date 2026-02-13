@@ -278,11 +278,19 @@ impl SharedMemoryRingBuffer {
         unsafe {
             if data_start + data_len <= capacity {
                 // Data is contiguous - use fast memcpy
-                std::ptr::copy_nonoverlapping(data_ptr.add(data_start), data.as_mut_ptr(), data_len);
+                std::ptr::copy_nonoverlapping(
+                    data_ptr.add(data_start),
+                    data.as_mut_ptr(),
+                    data_len,
+                );
             } else {
                 // Data wraps around - copy in two parts
                 let first_part = capacity - data_start;
-                std::ptr::copy_nonoverlapping(data_ptr.add(data_start), data.as_mut_ptr(), first_part);
+                std::ptr::copy_nonoverlapping(
+                    data_ptr.add(data_start),
+                    data.as_mut_ptr(),
+                    first_part,
+                );
                 std::ptr::copy_nonoverlapping(
                     data_ptr,
                     data.as_mut_ptr().add(first_part),
@@ -506,9 +514,7 @@ impl SharedMemoryRingBuffer {
         // Without this, a blocking reader (read_data_blocking) paired
         // with a polling writer would never be woken, causing a
         // deadlock in mixed-mode operation.
-        libc::pthread_cond_signal(
-            &self.data_ready as *const _ as *mut _,
-        );
+        libc::pthread_cond_signal(&self.data_ready as *const _ as *mut _);
 
         Ok(())
     }
@@ -612,19 +618,11 @@ impl SharedMemoryRingBuffer {
         let data_start = (read_pos + 4) % capacity;
         if data_start + data_len <= capacity {
             // Data is contiguous - use fast memcpy
-            std::ptr::copy_nonoverlapping(
-                data_ptr.add(data_start),
-                data.as_mut_ptr(),
-                data_len,
-            );
+            std::ptr::copy_nonoverlapping(data_ptr.add(data_start), data.as_mut_ptr(), data_len);
         } else {
             // Data wraps around - copy in two parts
             let first_part = capacity - data_start;
-            std::ptr::copy_nonoverlapping(
-                data_ptr.add(data_start),
-                data.as_mut_ptr(),
-                first_part,
-            );
+            std::ptr::copy_nonoverlapping(data_ptr.add(data_start), data.as_mut_ptr(), first_part);
             std::ptr::copy_nonoverlapping(
                 data_ptr,
                 data.as_mut_ptr().add(first_part),
@@ -696,18 +694,10 @@ impl SharedMemoryRingBuffer {
         let mut data = vec![0u8; data_len];
         let data_start = (read_pos + 4) % capacity;
         if data_start + data_len <= capacity {
-            std::ptr::copy_nonoverlapping(
-                data_ptr.add(data_start),
-                data.as_mut_ptr(),
-                data_len,
-            );
+            std::ptr::copy_nonoverlapping(data_ptr.add(data_start), data.as_mut_ptr(), data_len);
         } else {
             let first_part = capacity - data_start;
-            std::ptr::copy_nonoverlapping(
-                data_ptr.add(data_start),
-                data.as_mut_ptr(),
-                first_part,
-            );
+            std::ptr::copy_nonoverlapping(data_ptr.add(data_start), data.as_mut_ptr(), first_part);
             std::ptr::copy_nonoverlapping(
                 data_ptr,
                 data.as_mut_ptr().add(first_part),
@@ -1007,9 +997,7 @@ impl BlockingTransport for BlockingSharedMemory {
             // Only available on Unix where pthread condvars exist.
             #[cfg(unix)]
             {
-                libc::pthread_cond_broadcast(
-                    &(*ptr).data_ready as *const _ as *mut _,
-                );
+                libc::pthread_cond_broadcast(&(*ptr).data_ready as *const _ as *mut _);
             }
         }
 
@@ -1043,8 +1031,7 @@ impl BlockingTransport for BlockingSharedMemory {
         // The timestamp in the serialized bytes will be overwritten right before
         // the actual memory write inside write_data_blocking, ensuring accurate
         // latency measurement.
-        let mut serialized =
-            bincode::serialize(message).context("Failed to serialize message")?;
+        let mut serialized = bincode::serialize(message).context("Failed to serialize message")?;
 
         // Timestamp will be captured inside write_data_blocking right before
         // the actual memory write, ensuring accurate latency even under backpressure
@@ -1511,11 +1498,7 @@ mod tests {
     #[test]
     fn test_send_on_uninit_transport_fails() {
         let mut transport = BlockingSharedMemory::new();
-        let msg = Message::new(
-            1,
-            vec![0u8; 10],
-            MessageType::OneWay,
-        );
+        let msg = Message::new(1, vec![0u8; 10], MessageType::OneWay);
 
         let result = transport.send_blocking(&msg);
         assert!(
@@ -1592,11 +1575,8 @@ mod tests {
                 assert_eq!(request.message_type, MessageType::Request);
 
                 // Send response back, embedding the measured one_way_latency_ns
-                let mut response = Message::new(
-                    request.id,
-                    vec![0u8; payload_size],
-                    MessageType::Response,
-                );
+                let mut response =
+                    Message::new(request.id, vec![0u8; payload_size], MessageType::Response);
                 response.one_way_latency_ns = request.one_way_latency_ns;
                 server.send_blocking(&response).unwrap();
             }
