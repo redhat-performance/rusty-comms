@@ -104,7 +104,9 @@ jobs:
         if [ ! -f "/usr/local/cargo/bin/cargo-audit" ]; then
           cargo install cargo-audit
         fi
-        cargo audit
+        # Temporary exception for MSRV policy (Rust 1.70): `time` must stay < 0.3.47.
+        # Remove this ignore once MSRV is raised and `time` can be upgraded.
+        cargo audit --ignore RUSTSEC-2026-0009
 
   msrv:
     name: Minimum Supported Rust Version
