@@ -3,6 +3,7 @@
 //! These tests verify that the high-performance direct-memory shared memory
 //! transport works correctly end-to-end in blocking mode with spawned server
 //! processes.
+#![cfg(unix)]
 
 use anyhow::Result;
 use ipc_benchmark::{cli::Args, BenchmarkConfig, BlockingBenchmarkRunner, IpcMechanism};
