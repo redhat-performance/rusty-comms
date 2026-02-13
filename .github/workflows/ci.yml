@@ -82,7 +82,7 @@ jobs:
       if: always()
       run: |
         set -o pipefail
-        cargo clippy --all-targets --all-features --message-format=json -- -D warnings | jq -r 'select(.reason == "compiler-message" and .message.spans[0].is_primary) | .message | "::warning file=\(.spans[0].file_name),line=\(.spans[0].line_start)::\(.message)"'
+        cargo clippy --all-targets --all-features -- -D warnings
 
   security_audit:
     name: Security Audit
