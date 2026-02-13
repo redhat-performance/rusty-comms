@@ -612,7 +612,9 @@ fn run_sender_mode_blocking(args: Args) -> Result<()> {
         }
     } else {
         // Message count mode
-        let msg_count = config.msg_count.unwrap_or(ipc_benchmark::defaults::MSG_COUNT);
+        let msg_count = config
+            .msg_count
+            .unwrap_or(ipc_benchmark::defaults::MSG_COUNT);
         for i in 0..msg_count {
             let send_timestamp_ns = MessageLatencyRecord::current_timestamp_ns();
 
@@ -1370,7 +1372,8 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
                 // Use new_lazy() to avoid a wasted get_monotonic_time_ns() call --
                 // send_blocking() will overwrite the timestamp before the IPC syscall.
                 if message.message_type == MessageType::Request {
-                    let mut response = Message::new_lazy(message.id, Vec::new(), MessageType::Response);
+                    let mut response =
+                        Message::new_lazy(message.id, Vec::new(), MessageType::Response);
                     response.one_way_latency_ns = latency_ns; // Include measured one-way latency
                     if let Err(e) = transport.send_blocking(&response) {
                         warn!(
@@ -1669,14 +1672,14 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
             path
         );
         use tokio::io::AsyncWriteExt;
-        
+
         // Build the entire output string in memory, then write once
         // This is MUCH faster than per-line async writes
         let output: String = latency_buffer
             .iter()
             .map(|ns| format!("{}\n", ns))
             .collect();
-        
+
         let mut file = tokio::fs::File::create(path)
             .await
             .with_context(|| format!("Failed to create latency file: {}", path))?;

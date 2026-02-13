@@ -1,0 +1,10 @@
+[advisories]
+# Temporary exception:
+# - RUSTSEC-2026-0009 affects `time` < 0.3.47
+# - This repository pins `time` to a Rust 1.70-compatible range for MSRV CI
+# - `time` >= 0.3.47 currently exceeds the project's MSRV policy
+#
+# Action: remove this ignore once MSRV is raised high enough to consume
+# a patched `time` release.
+ignore = ["RUSTSEC-2026-0009"]
+

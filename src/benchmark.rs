@@ -1682,8 +1682,7 @@ port={}",
                         if let Ok(response) = client_transport.receive().await {
                             let round_trip_latency = send_start.elapsed();
                             // Extract one-way latency from server's measurement in response
-                            let one_way_latency =
-                                Duration::from_nanos(response.one_way_latency_ns);
+                            let one_way_latency = Duration::from_nanos(response.one_way_latency_ns);
                             one_way_latencies.push(one_way_latency);
                             round_trip_latencies.push(round_trip_latency);
                             i += 1;
@@ -2576,16 +2575,9 @@ mod tests {
             ..Default::default()
         };
 
-        let config =
-            BenchmarkConfig::from_args(&args).unwrap();
-        assert!(
-            config.one_way,
-            "Default should enable one_way"
-        );
-        assert!(
-            config.round_trip,
-            "Default should enable round_trip"
-        );
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        assert!(config.one_way, "Default should enable one_way");
+        assert!(config.round_trip, "Default should enable round_trip");
     }
 
     /// Test that from_args respects explicit one_way=true selection.
@@ -2598,8 +2590,7 @@ mod tests {
             ..Default::default()
         };
 
-        let config =
-            BenchmarkConfig::from_args(&args).unwrap();
+        let config = BenchmarkConfig::from_args(&args).unwrap();
         assert!(config.one_way);
         assert!(
             !config.round_trip,
@@ -2617,8 +2608,7 @@ mod tests {
             ..Default::default()
         };
 
-        let config =
-            BenchmarkConfig::from_args(&args).unwrap();
+        let config = BenchmarkConfig::from_args(&args).unwrap();
         assert!(
             !config.one_way,
             "one_way should be false when only round_trip selected"
@@ -2637,16 +2627,12 @@ mod tests {
             ..Default::default()
         };
 
-        let config =
-            BenchmarkConfig::from_args(&args).unwrap();
+        let config = BenchmarkConfig::from_args(&args).unwrap();
         assert_eq!(
             config.msg_count, None,
             "msg_count should be None when duration is set"
         );
-        assert_eq!(
-            config.duration,
-            Some(std::time::Duration::from_secs(10))
-        );
+        assert_eq!(config.duration, Some(std::time::Duration::from_secs(10)));
     }
 
     /// Test that msg_count is preserved when no duration is set.
@@ -2659,8 +2645,7 @@ mod tests {
             ..Default::default()
         };
 
-        let config =
-            BenchmarkConfig::from_args(&args).unwrap();
+        let config = BenchmarkConfig::from_args(&args).unwrap();
         assert_eq!(config.msg_count, Some(42));
         assert_eq!(config.duration, None);
     }
@@ -2680,22 +2665,16 @@ mod tests {
             include_first_message: true,
             server_affinity: Some(0),
             client_affinity: Some(1),
-            send_delay: Some(
-                std::time::Duration::from_micros(100),
-            ),
+            send_delay: Some(std::time::Duration::from_micros(100)),
             ..Default::default()
         };
 
-        let config =
-            BenchmarkConfig::from_args(&args).unwrap();
+        let config = BenchmarkConfig::from_args(&args).unwrap();
         assert_eq!(config.buffer_size, Some(16384));
         assert_eq!(config.host, "192.168.1.1");
         assert_eq!(config.port, 9999);
         assert_eq!(config.warmup_iterations, 50);
-        assert_eq!(
-            config.percentiles,
-            vec![50.0, 90.0, 99.0]
-        );
+        assert_eq!(config.percentiles, vec![50.0, 90.0, 99.0]);
         assert_eq!(config.pmq_priority, 3);
         assert!(config.include_first_message);
         assert_eq!(config.server_affinity, Some(0));
@@ -2719,8 +2698,7 @@ mod tests {
 
         // from_args should succeed; zero-size messages are
         // technically valid even if unusual.
-        let config =
-            BenchmarkConfig::from_args(&args).unwrap();
+        let config = BenchmarkConfig::from_args(&args).unwrap();
         assert_eq!(config.message_size, 0);
     }
 
@@ -2736,8 +2714,7 @@ mod tests {
             ..Default::default()
         };
 
-        let config =
-            BenchmarkConfig::from_args(&args).unwrap();
+        let config = BenchmarkConfig::from_args(&args).unwrap();
         assert_eq!(config.msg_count, Some(0));
     }
 
@@ -2750,8 +2727,7 @@ mod tests {
             ..Default::default()
         };
 
-        let config =
-            BenchmarkConfig::from_args(&args).unwrap();
+        let config = BenchmarkConfig::from_args(&args).unwrap();
         assert!(config.percentiles.is_empty());
     }
 }

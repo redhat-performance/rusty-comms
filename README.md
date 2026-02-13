@@ -907,6 +907,8 @@ This project uses GitHub Actions for continuous integration. The CI pipeline is 
 - **Testing**: Runs the full test suite on stable, beta, and MSRV Rust across Linux, Windows, and macOS.
 - **Code Coverage**: Generates a code coverage report using `cargo-tarpaulin`.
 - **Security Audit**: Scans for vulnerabilities using `cargo audit`.
+  - Note: `audit.toml` contains a temporary, documented exception for
+    `RUSTSEC-2026-0009` while this project remains on Rust 1.70 MSRV.
 
 ### Pull Request Automation
 
