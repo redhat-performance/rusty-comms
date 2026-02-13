@@ -1189,6 +1189,7 @@ mod tests {
         // shm_direct auto-enables blocking
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn test_run_mode_client_with_pmq() {
         // Client mode with PMQ (receiver in QM/container)
@@ -1206,6 +1207,26 @@ mod tests {
         assert_eq!(
             args.message_queue_name,
             Some("/ipc_benchmark_mq".to_string())
+        );
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn test_run_mode_client_with_pmq_rejected_on_non_linux() {
+        // PMQ is Linux-only and must be rejected by CLI parsing elsewhere.
+        let result = Args::try_parse_from([
+            "ipc-benchmark",
+            "-m",
+            "pmq",
+            "--run-mode",
+            "client",
+            "--message-queue-name",
+            "/ipc_benchmark_mq",
+            "--blocking",
+        ]);
+        assert!(
+            result.is_err(),
+            "pmq should be rejected on non-Linux targets"
         );
     }
 

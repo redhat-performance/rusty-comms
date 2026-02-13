@@ -2379,6 +2379,7 @@ mod tests {
     #[test]
     fn test_transport_config_buffer_size_logic() {
         const DURATION_MODE_BUFFER_SIZE: usize = 1_073_741_824; // 1 GB
+        #[cfg(target_os = "linux")]
         const PMQ_SAFE_DEFAULT_BUFFER_SIZE: usize = 8192;
 
         // Helper to get only the mechanisms available on the current platform.
