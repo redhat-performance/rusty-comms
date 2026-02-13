@@ -1183,8 +1183,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                                 std::io::Error::last_os_error().raw_os_error().unwrap_or(-1);
                             debug!(
                                 "Failed to unlink shm segment: {} (errno: {})",
-                                self.shm_name,
-                                errno
+                                self.shm_name, errno
                             );
                         }
                     }
