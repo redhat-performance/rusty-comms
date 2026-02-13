@@ -753,7 +753,7 @@ impl BlockingBenchmarkRunner {
         // Combined test measures BOTH latencies on the SAME messages for accurate comparison
         let can_run_combined = self.config.one_way
             && self.config.round_trip
-            && !(self.mechanism == IpcMechanism::SharedMemory && !self.args.shm_direct);
+            && (self.mechanism != IpcMechanism::SharedMemory || self.args.shm_direct);
 
         if can_run_combined {
             // Run combined test that measures both one-way and round-trip on same messages
@@ -1077,12 +1077,16 @@ impl BlockingBenchmarkRunner {
                                     std::time::Duration::from_nanos(response.one_way_latency_ns);
 
                                 // Record one-way latency
-                                one_way_metrics
-                                    .record_message(self.config.message_size, Some(one_way_latency))?;
+                                one_way_metrics.record_message(
+                                    self.config.message_size,
+                                    Some(one_way_latency),
+                                )?;
 
                                 // Record round-trip latency
-                                round_trip_metrics
-                                    .record_message(self.config.message_size, Some(round_trip_latency))?;
+                                round_trip_metrics.record_message(
+                                    self.config.message_size,
+                                    Some(round_trip_latency),
+                                )?;
 
                                 // Stream latency records if enabled
                                 if let Some(ref mut manager) = results_manager {
@@ -1147,8 +1151,7 @@ impl BlockingBenchmarkRunner {
                 let response = client_transport.receive_blocking()?;
                 let round_trip_latency = send_time.elapsed();
                 // Extract one-way latency from server's measurement in response
-                let one_way_latency =
-                    std::time::Duration::from_nanos(response.one_way_latency_ns);
+                let one_way_latency = std::time::Duration::from_nanos(response.one_way_latency_ns);
 
                 // Record one-way latency
                 one_way_metrics.record_message(self.config.message_size, Some(one_way_latency))?;
@@ -1205,7 +1208,10 @@ impl BlockingBenchmarkRunner {
             .wait()
             .context("Server process exited with an error")?;
 
-        Ok((one_way_metrics.get_metrics(), round_trip_metrics.get_metrics()))
+        Ok((
+            one_way_metrics.get_metrics(),
+            round_trip_metrics.get_metrics(),
+        ))
     }
 
     /// Run single-threaded one-way test (blocking version)

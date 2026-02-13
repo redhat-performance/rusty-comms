@@ -439,7 +439,10 @@ impl IpcTransport for PosixMessageQueueTransport {
             };
 
             // Create response queue (server writes to this)
-            debug!("Server creating response queue '{}'...", response_queue_name);
+            debug!(
+                "Server creating response queue '{}'...",
+                response_queue_name
+            );
             let response_fd = match mq_open(
                 response_queue_name.as_str(),
                 MQ_OFlag::O_CREAT | MQ_OFlag::O_RDWR | MQ_OFlag::O_NONBLOCK,
@@ -748,7 +751,6 @@ impl IpcTransport for PosixMessageQueueTransport {
             // Call mq_send directly -- the queue is O_NONBLOCK so this never blocks.
             let fd = unsafe { MqdT::from_raw_fd(raw_fd) };
             let result = mq_send(&fd, &data, priority);
-            std::mem::forget(fd);
 
             match result {
                 Ok(()) => {
@@ -855,7 +857,6 @@ impl IpcTransport for PosixMessageQueueTransport {
             let fd = unsafe { MqdT::from_raw_fd(raw_fd) };
             let mut priority = 0u32;
             let result = mq_receive(&fd, &mut buffer, &mut priority);
-            std::mem::forget(fd);
 
             match result {
                 Ok(bytes_read) => {
@@ -988,13 +989,19 @@ impl IpcTransport for PosixMessageQueueTransport {
 
                 if let Err(e) = mq_unlink(request_queue_name.as_str()) {
                     if e != nix::Error::ENOENT {
-                        warn!("Failed to unlink request queue '{}': {}", request_queue_name, e);
+                        warn!(
+                            "Failed to unlink request queue '{}': {}",
+                            request_queue_name, e
+                        );
                     }
                 }
 
                 if let Err(e) = mq_unlink(response_queue_name.as_str()) {
                     if e != nix::Error::ENOENT {
-                        warn!("Failed to unlink response queue '{}': {}", response_queue_name, e);
+                        warn!(
+                            "Failed to unlink response queue '{}': {}",
+                            response_queue_name, e
+                        );
                     }
                 }
             }
@@ -1122,17 +1129,13 @@ impl IpcTransport for PosixMessageQueueTransport {
                 let result = tokio::task::spawn_blocking({
                     let raw_fd_copy = raw_fd;
                     move || {
-                        // IMPORTANT: We must forget the fd afterwards to prevent MqdT's
-                        // Drop impl from closing the underlying file descriptor.
                         let fd = unsafe { MqdT::from_raw_fd(raw_fd_copy) };
                         let mut buffer = vec![0u8; max_msg_size];
                         let mut priority = 0u32;
-                        let result = mq_receive(&fd, &mut buffer, &mut priority).map(|bytes_read| {
+                        mq_receive(&fd, &mut buffer, &mut priority).map(|bytes_read| {
                             buffer.truncate(bytes_read);
                             buffer
-                        });
-                        std::mem::forget(fd);
-                        result
+                        })
                     }
                 })
                 .await;
@@ -1424,10 +1427,7 @@ mod tests {
     /// back Response with the same payload.
     #[tokio::test]
     async fn test_pmq_round_trip() {
-        let queue_name = format!(
-            "test-pmq-rt-{}",
-            Uuid::new_v4().as_simple()
-        );
+        let queue_name = format!("test-pmq-rt-{}", Uuid::new_v4().as_simple());
         let config = TransportConfig {
             message_queue_name: queue_name,
             ..Default::default()
@@ -1439,25 +1439,15 @@ mod tests {
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
         let server_config = config.clone();
         let server_handle = tokio::spawn(async move {
-            server
-                .start_server(&server_config)
-                .await
-                .unwrap();
+            server.start_server(&server_config).await.unwrap();
             tx.send(()).unwrap();
 
             for expected_id in 0u64..3 {
                 let msg = server.receive().await.unwrap();
                 assert_eq!(msg.id, expected_id);
-                assert_eq!(
-                    msg.message_type,
-                    MessageType::Request
-                );
+                assert_eq!(msg.message_type, MessageType::Request);
 
-                let resp = Message::new(
-                    msg.id,
-                    msg.payload.clone(),
-                    MessageType::Response,
-                );
+                let resp = Message::new(msg.id, msg.payload.clone(), MessageType::Response);
                 server.send(&resp).await.unwrap();
             }
 
@@ -1469,11 +1459,7 @@ mod tests {
 
         for id in 0u64..3 {
             let payload = vec![id as u8; 64];
-            let msg = Message::new(
-                id,
-                payload.clone(),
-                MessageType::Request,
-            );
+            let msg = Message::new(id, payload.clone(), MessageType::Request);
             client.send(&msg).await.unwrap();
 
             // Justification: Allow server to process the message
@@ -1485,10 +1471,7 @@ mod tests {
             let resp = client.receive().await.unwrap();
             assert_eq!(resp.id, id);
             assert_eq!(resp.payload, payload);
-            assert_eq!(
-                resp.message_type,
-                MessageType::Response
-            );
+            assert_eq!(resp.message_type, MessageType::Response);
         }
 
         client.close().await.unwrap();
@@ -1501,10 +1484,7 @@ mod tests {
         let sizes: Vec<usize> = vec![1, 32, 128, 512];
         let sizes_clone = sizes.clone();
 
-        let queue_name = format!(
-            "test-pmq-sz-{}",
-            Uuid::new_v4().as_simple()
-        );
+        let queue_name = format!("test-pmq-sz-{}", Uuid::new_v4().as_simple());
         let config = TransportConfig {
             message_queue_name: queue_name,
             ..Default::default()
@@ -1516,15 +1496,10 @@ mod tests {
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
         let server_config = config.clone();
         let server_handle = tokio::spawn(async move {
-            server
-                .start_server(&server_config)
-                .await
-                .unwrap();
+            server.start_server(&server_config).await.unwrap();
             tx.send(()).unwrap();
 
-            for (i, &expected_size) in
-                sizes_clone.iter().enumerate()
-            {
+            for (i, &expected_size) in sizes_clone.iter().enumerate() {
                 let msg = server.receive().await.unwrap();
                 assert_eq!(msg.id, i as u64);
                 assert_eq!(
@@ -1543,11 +1518,7 @@ mod tests {
 
         for (i, &size) in sizes.iter().enumerate() {
             let payload = vec![0xCD_u8; size];
-            let msg = Message::new(
-                i as u64,
-                payload,
-                MessageType::OneWay,
-            );
+            let msg = Message::new(i as u64, payload, MessageType::OneWay);
             client.send(&msg).await.unwrap();
         }
 

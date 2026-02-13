@@ -103,12 +103,11 @@ pub mod benchmark_blocking;
 /// - Output file and streaming configuration
 pub mod cli;
 
-/// Execution mode configuration
-///
-/// Defines the execution model (async vs blocking) for IPC operations.
-/// The benchmark supports both Tokio-based async I/O and standard library
-/// blocking I/O, allowing for direct performance comparison between the two
-/// approaches. The mode is selected at runtime via CLI flags.
+// Execution mode configuration:
+// Defines the execution model (async vs blocking) for IPC operations.
+// The benchmark supports both Tokio-based async I/O and standard library
+// blocking I/O, allowing for direct performance comparison between the two
+// approaches. The mode is selected at runtime via CLI flags.
 // execution_mode module removed — main.rs uses args.blocking directly
 
 /// IPC transport implementations and abstractions
