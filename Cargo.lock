@@ -600,6 +600,7 @@ dependencies = [
  "shared_memory",
  "socket2 0.5.10",
  "statistics",
+ "syn",
  "tempfile",
  "thiserror 2.0.17",
  "time",

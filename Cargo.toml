@@ -49,7 +49,8 @@ half = "=2.2.1"
 rayon = "=1.7.0"
 rayon-core = "=1.12.1"
 syn = "=2.0.106" # syn 2.0.115+ requires Rust 1.71+
-thiserror = "2.0.16"
+# MSRV: thiserror 2.0.18+ pulls transitive crates that require Rust 1.71+
+thiserror = "=2.0.17"
 tokio-macros = "=2.5.0"  # tokio-macros 2.6.0+ requires Rust 1.71+
 mio = "=1.0.4"  # mio 1.1.0+ requires Rust 1.71+
 core_affinity = "0.8.3"
