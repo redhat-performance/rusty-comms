@@ -21,7 +21,10 @@ anyhow = "1.0.86"
 colored = "2.1.0"
 tokio = { version = "1.38.0", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+# MSRV: serde_json 1.0.149+ pulls zmij requiring Rust 1.71+
+serde_json = "=1.0.145"
+# MSRV: ryu 1.0.23+ requires Rust 1.71+
+ryu = "=1.0.20"
 clap = { version = ">=4.4.18, <4.5.0", features = ["derive"] }
 crossbeam = "0.8"
 shared_memory = "0.12"
@@ -49,8 +52,8 @@ half = "=2.2.1"
 rayon = "=1.7.0"
 rayon-core = "=1.12.1"
 syn = "=2.0.106" # syn 2.0.115+ requires Rust 1.71+
-# MSRV: thiserror 2.0.18+ pulls transitive crates that require Rust 1.71+
-thiserror = "=2.0.17"
+# MSRV: keep thiserror on 1.x to avoid transitive Rust 1.71+ crates
+thiserror = "=1.0.69"
 # MSRV: unicode-ident 1.0.23+ requires Rust 1.71+
 unicode-ident = "=1.0.19"
 tokio-macros = "=2.5.0"  # tokio-macros 2.6.0+ requires Rust 1.71+
