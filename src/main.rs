@@ -244,6 +244,11 @@ fn run_client_mode_blocking(args: Args) -> Result<()> {
         _ => {}
     }
 
+    // Auto-detect cross-container behavior for non-standalone run modes.
+    // This keeps blocking sender/client mode aligned with benchmark runner logic.
+    transport_config.cross_container =
+        args.cross_container || args.run_mode != crate::cli::RunMode::Standalone;
+
     // Create and start transport as server
     let mut transport = BlockingTransportFactory::create(&mechanism, args.shm_direct)?;
     transport
@@ -455,6 +460,11 @@ fn run_sender_mode_blocking(args: Args) -> Result<()> {
         #[allow(unreachable_patterns)]
         _ => {}
     }
+
+    // Auto-detect cross-container behavior for non-standalone run modes.
+    // This keeps blocking sender/client mode aligned with benchmark runner logic.
+    transport_config.cross_container =
+        args.cross_container || args.run_mode != crate::cli::RunMode::Standalone;
 
     info!(
         "Sender connecting to {} server at {:?}",

@@ -73,6 +73,19 @@ def parse_filename(filename: str) -> Dict[str, str]:
         result["mode"] = "h2qm"
         result["variant"] = "shm_direct"
         remaining = filename.replace("h2qm_shm_direct_", "").replace("_summary.json", "")
+    # Host-to-non-QM container tests
+    elif filename.startswith("h2nqm_async_"):
+        result["mode"] = "h2nqm"
+        result["variant"] = "async"
+        remaining = filename.replace("h2nqm_async_", "").replace("_summary.json", "")
+    elif filename.startswith("h2nqm_blocking_"):
+        result["mode"] = "h2nqm"
+        result["variant"] = "blocking"
+        remaining = filename.replace("h2nqm_blocking_", "").replace("_summary.json", "")
+    elif filename.startswith("h2nqm_shm_direct_"):
+        result["mode"] = "h2nqm"
+        result["variant"] = "shm_direct"
+        remaining = filename.replace("h2nqm_shm_direct_", "").replace("_summary.json", "")
     # Container-to-Container tests (new format)
     elif filename.startswith("c2c_async_"):
         result["mode"] = "c2c"
@@ -181,7 +194,9 @@ def main():
         print(f"ERROR: Output directory not found: {OUTPUT_DIR}")
         sys.exit(1)
     
+    # Include normal fullrun outputs and ad-hoc verification outputs.
     json_files = sorted(OUTPUT_DIR.glob("*_summary.json"))
+    json_files.extend(sorted(OUTPUT_DIR.glob("*_verify*.json")))
     
     if not json_files:
         print("No summary JSON files found!")
@@ -223,7 +238,14 @@ def main():
     # Sort by test_type (iter first), then mode, mechanism, variant, size
     def sort_key(row):
         test_order = 0 if row["test_type"] == "iter" else 1
-        mode_order = {"standalone": 0, "h2c": 1, "h2qm": 2, "c2c": 3}.get(row["mode"], 9)
+        mode_order = {
+            "standalone": 0,
+            "h2c": 1,
+            "h2qm": 2,
+            "h2nqm": 3,
+            "c2c": 4,
+            "qm_c2c": 5,
+        }.get(row["mode"], 9)
         variant_order = {"async": 0, "blocking": 1, "shm_direct": 2}.get(row["variant"], 9)
         mech_order = {"uds": 0, "tcp": 1, "shm": 2, "pmq": 3}.get(row["mechanism"], 9)
         try:

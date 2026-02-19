@@ -85,6 +85,10 @@ C2C_CONTAINER_BINARY = "/app/ipc-benchmark"
 # Use fedora:35 for glibc 2.34 compatibility with host-built binary
 C2C_BASE_IMAGE = "fedora:35"
 
+# Host-to-non-QM (regular container) configuration
+H2NQM_SERVER_CONTAINER = "h2nqm-server"
+H2NQM_SHARED_DIR = Path("/tmp/h2nqm_benchmark")
+
 # Test parameters
 ITERATIONS = 50000
 DURATION_SECS = 10
@@ -179,6 +183,7 @@ class Mode(Enum):
     # Note: H2QM, C2C, and QM_C2C only support blocking mode because
     # async client mode is not implemented in the Rust code
     H2QM_BLOCKING = "h2qm_blocking"      # Host-to-QM blocking mode
+    H2NQM_BLOCKING = "h2nqm_blocking"    # Host-to-regular-container blocking mode
     C2C_BLOCKING = "c2c_blocking"        # Container-to-Container (generic) blocking mode
     QM_C2C_BLOCKING = "qm_c2c_blocking"  # C2C inside QM partition (nested containers)
 
@@ -461,6 +466,142 @@ def cleanup_c2c_containers():
             ["podman", "rm", "-f", container],
             capture_output=True, timeout=30
         )
+
+
+def cleanup_h2nqm_container():
+    """Stop and remove Host-to-non-QM server container."""
+    subprocess.run(
+        ["podman", "rm", "-f", H2NQM_SERVER_CONTAINER],
+        capture_output=True, timeout=30
+    )
+
+
+def setup_h2nqm_shared_resources(mechanism: str, size: int) -> Dict[str, str]:
+    """Set up shared resources for Host-to-non-QM testing."""
+    H2NQM_SHARED_DIR.mkdir(parents=True, exist_ok=True)
+    H2NQM_SHARED_DIR.chmod(0o777)
+
+    config = {"server": [], "sender": []}
+
+    if mechanism == "tcp":
+        config["server"] = ["--host", "0.0.0.0"]
+        # Server runs with --network host, so sender can use localhost.
+        config["sender"] = ["--host", "127.0.0.1"]
+    elif mechanism == "uds":
+        socket_name = f"h2nqm_{size}.sock"
+        socket_path_container = f"/shared/{socket_name}"
+        host_socket = H2NQM_SHARED_DIR / socket_name
+        if host_socket.exists():
+            host_socket.unlink()
+        config["server"] = ["--socket-path", socket_path_container]
+        config["sender"] = ["--socket-path", str(host_socket)]
+    elif mechanism == "shm":
+        # SHM uses default name via --ipc=host sharing.
+        shm_path = Path("/dev/shm/ipc_benchmark_shm")
+        if shm_path.exists():
+            shm_path.unlink()
+    elif mechanism == "pmq":
+        mq_name = f"h2nqm_mq_{size}"
+        config["server"] = ["--message-queue-name", mq_name]
+        config["sender"] = ["--message-queue-name", mq_name]
+
+    return config
+
+
+def run_h2nqm_test(config: TestConfig, stream_file: Optional[Path] = None) -> bool:
+    """Run a Host-to-non-QM container test.
+
+    Server runs in a regular container, sender runs on host.
+    Note: Only blocking mode is supported (async client mode not implemented).
+    """
+    output_file = OUTPUT_DIR / config.output_name
+
+    cleanup_h2nqm_container()
+    time.sleep(0.5)
+
+    mech_config = setup_h2nqm_shared_resources(config.mechanism, config.size)
+
+    # Build common args for both server and sender.
+    common_args = [
+        "-m", config.mechanism,
+        "-s", str(config.size),
+        "-w", str(WARMUP),
+        "--blocking",
+    ]
+
+    # Use shm-direct for SHM mechanism (supports bidirectional via dual slots).
+    if config.mechanism == "shm":
+        common_args.append("--shm-direct")
+
+    if config.test_type == "iter":
+        common_args.extend(["-i", str(ITERATIONS)])
+    else:
+        common_args.extend(["-d", f"{DURATION_SECS}s"])
+
+    # Build runtime and volume args based on mechanism.
+    podman_args = ["--network", "host"]
+    volumes = [f"{RUSTY_COMMS_DIR}/target/release:/app:z"]
+
+    if config.mechanism == "uds":
+        volumes.append(f"{H2NQM_SHARED_DIR}:/shared:z")
+    elif config.mechanism in ["shm", "pmq"]:
+        podman_args.append("--ipc=host")
+
+    volume_args = []
+    for v in volumes:
+        volume_args.extend(["-v", v])
+
+    # Start server container.
+    server_cmd = [
+        "podman", "run", "-d", "--name", H2NQM_SERVER_CONTAINER,
+    ] + podman_args + volume_args + [
+        C2C_BASE_IMAGE,
+        C2C_CONTAINER_BINARY,
+    ] + common_args + [
+        "--run-mode", "client",
+        "--log-file", "stderr",
+    ] + mech_config.get("server", [])
+
+    print("  Starting non-QM server container...")
+    result = subprocess.run(server_cmd, capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        print(
+            "  FAILED to start non-QM server container: "
+            f"{result.stderr[:200] if result.stderr else 'No output'}"
+        )
+        cleanup_h2nqm_container()
+        return False
+
+    # Wait for server to be ready.
+    time.sleep(3)
+
+    sender_cmd = [
+        BINARY,
+    ] + common_args + [
+        "--run-mode", "sender",
+        "--one-way",
+        "-o", str(output_file),
+    ] + mech_config.get("sender", [])
+
+    if stream_file:
+        sender_cmd.extend(["--streaming-output-csv", str(stream_file)])
+
+    # SHM-direct supports round-trip via dual slots; keep behavior consistent.
+    sender_cmd.append("--round-trip")
+
+    print("  Running sender from host...")
+    result = run_command(sender_cmd, timeout=600, stream=STREAM_OUTPUT)
+
+    cleanup_h2nqm_container()
+
+    if result.returncode != 0:
+        print(f"  FAILED: {result.stderr[:200] if result.stderr else 'No error output'}")
+        return False
+
+    if stream_file and stream_file.exists():
+        print(f"  Streaming CSV: {stream_file.name}", flush=True)
+
+    return output_file.exists()
 
 
 def setup_c2c_shared_resources(mechanism: str, size: int) -> Dict[str, str]:
@@ -793,6 +934,8 @@ def run_test(config: TestConfig, stream_file: Optional[Path] = None) -> bool:
         return run_standalone_test(config, stream_file)
     elif config.mode == Mode.H2QM_BLOCKING:
         return run_h2qm_test(config, stream_file)
+    elif config.mode == Mode.H2NQM_BLOCKING:
+        return run_h2nqm_test(config, stream_file)
     elif config.mode == Mode.C2C_BLOCKING:
         return run_c2c_test(config, stream_file)
     elif config.mode == Mode.QM_C2C_BLOCKING:
@@ -820,7 +963,13 @@ def get_sizes_for_mechanism(mechanism: str, mode: Mode) -> List[int]:
     return GENERAL_SIZES
 
 
-def get_modes_for_mechanism(mechanism: str, include_h2qm: bool = True, include_c2c: bool = False, include_qm_c2c: bool = False) -> List[Mode]:
+def get_modes_for_mechanism(
+    mechanism: str,
+    include_h2qm: bool = True,
+    include_h2nqm: bool = False,
+    include_c2c: bool = False,
+    include_qm_c2c: bool = False
+) -> List[Mode]:
     """Get applicable modes for a mechanism."""
     modes = [
         Mode.STANDALONE_ASYNC,
@@ -838,6 +987,10 @@ def get_modes_for_mechanism(mechanism: str, include_h2qm: bool = True, include_c
     # - SHM: Uses bind-mounted /dev/shm
     if include_h2qm:
         modes.append(Mode.H2QM_BLOCKING)
+
+    # H2NQM mode for all mechanisms (blocking only).
+    if include_h2nqm:
+        modes.append(Mode.H2NQM_BLOCKING)
     
     # C2C mode for all mechanisms (blocking only - async client mode not implemented)
     if include_c2c:
@@ -966,9 +1119,13 @@ Examples:
     # Mode selection - controls which test categories to include
     mode_group = parser.add_argument_group("Mode Selection (which tests to run)")
     mode_group.add_argument("--standalone-only", action="store_true",
-                           help="Only run standalone tests (skip H2QM)")
+                           help="Only run standalone tests (skip H2QM/H2NQM/C2C/QM-C2C)")
     mode_group.add_argument("--h2qm-only", action="store_true",
                            help="Only run Host-to-QM tests")
+    mode_group.add_argument("--h2nqm-only", action="store_true",
+                           help="Only run Host-to-non-QM container tests")
+    mode_group.add_argument("--include-h2nqm", action="store_true",
+                           help="(deprecated) H2NQM tests are now included by default")
     mode_group.add_argument("--c2c-only", action="store_true",
                            help="Only run Container-to-Container tests (generic)")
     mode_group.add_argument("--include-c2c", action="store_true",
@@ -1010,10 +1167,26 @@ Examples:
             sys.exit(1)
     
     # Determine which test categories to include
-    include_standalone = not (args.h2qm_only or args.c2c_only or args.qm_c2c_only)
-    include_h2qm = not (args.standalone_only or args.c2c_only or args.qm_c2c_only)
+    include_standalone = not (
+        args.h2qm_only or args.h2nqm_only or args.c2c_only or args.qm_c2c_only
+    )
+    include_h2qm = not (
+        args.standalone_only or args.h2nqm_only or args.c2c_only or args.qm_c2c_only
+    )
+    # H2NQM is now included by default (unless running a specific mode only)
+    include_h2nqm = args.h2nqm_only or (
+        not args.standalone_only
+        and not args.h2qm_only
+        and not args.c2c_only
+        and not args.qm_c2c_only
+    )
     # C2C is now included by default (unless running a specific mode only)
-    include_c2c = args.c2c_only or (not args.standalone_only and not args.h2qm_only and not args.qm_c2c_only)
+    include_c2c = args.c2c_only or (
+        not args.standalone_only
+        and not args.h2qm_only
+        and not args.h2nqm_only
+        and not args.qm_c2c_only
+    )
     include_qm_c2c = args.qm_c2c_only or args.include_qm_c2c
     
     # Check host binary exists
@@ -1040,12 +1213,14 @@ Examples:
         print("Mode: Standalone only")
     elif args.h2qm_only:
         print("Mode: Host-to-QM only")
+    elif args.h2nqm_only:
+        print("Mode: Host-to-non-QM container only")
     elif args.c2c_only:
         print("Mode: Container-to-Container (generic) only")
     elif args.qm_c2c_only:
         print("Mode: C2C inside QM partition only")
     else:
-        modes_list = ["Standalone", "H2QM", "C2C"]  # C2C now included by default
+        modes_list = ["Standalone", "H2QM", "H2NQM", "C2C"]
         if args.include_qm_c2c:
             modes_list.append("QM-C2C")
         print(f"Mode: {' + '.join(modes_list)}")
@@ -1095,13 +1270,17 @@ Examples:
         print(f"{'='*70}")
         
         for mechanism in mechanisms:
-            modes = get_modes_for_mechanism(mechanism, include_h2qm, include_c2c, include_qm_c2c)
+            modes = get_modes_for_mechanism(
+                mechanism, include_h2qm, include_h2nqm, include_c2c, include_qm_c2c
+            )
             
             # Filter modes based on command line args
             if args.standalone_only:
                 modes = [m for m in modes if m.value.startswith("standalone")]
             elif args.h2qm_only:
                 modes = [m for m in modes if m.value.startswith("h2qm")]
+            elif args.h2nqm_only:
+                modes = [m for m in modes if m.value.startswith("h2nqm")]
             elif args.c2c_only:
                 modes = [m for m in modes if m.value.startswith("c2c_")]
             elif args.qm_c2c_only:
