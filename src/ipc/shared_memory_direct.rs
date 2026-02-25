@@ -483,10 +483,7 @@ impl BlockingSharedMemoryDirect {
     ///
     /// `ptr` must point to a valid, locked `RawSharedMessage` whose
     /// mutex was acquired by the current thread.
-    unsafe fn unlock_if_held(
-        &self,
-        ptr: *mut RawSharedMessage,
-    ) {
+    unsafe fn unlock_if_held(&self, ptr: *mut RawSharedMessage) {
         #[cfg(target_os = "linux")]
         {
             if !self.cross_container {

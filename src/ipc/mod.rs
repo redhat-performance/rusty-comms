@@ -1556,21 +1556,16 @@ mod tests {
     #[test]
     fn test_timestamp_offset_update_in_serialized_buffer() {
         // Create a message with timestamp 0
-        let mut msg =
-            Message::new(42, vec![1, 2, 3, 4], MessageType::OneWay);
+        let mut msg = Message::new(42, vec![1, 2, 3, 4], MessageType::OneWay);
         msg.timestamp = 0;
 
         // Serialize it
         let mut serialized = bincode::serialize(&msg).unwrap();
 
         // Verify timestamp is 0 in bytes 8-15
-        let extracted_ts =
-            u64::from_le_bytes(serialized[8..16].try_into().unwrap());
+        let extracted_ts = u64::from_le_bytes(serialized[8..16].try_into().unwrap());
         println!("Initial timestamp in buffer: {}", extracted_ts);
-        assert_eq!(
-            extracted_ts, 0,
-            "Timestamp should be 0 initially"
-        );
+        assert_eq!(extracted_ts, 0, "Timestamp should be 0 initially");
 
         // Now update the timestamp bytes
         let new_ts: u64 = 123456789;
@@ -1578,21 +1573,13 @@ mod tests {
         serialized[8..16].copy_from_slice(&ts_bytes);
 
         // Verify it was updated
-        let updated_ts =
-            u64::from_le_bytes(serialized[8..16].try_into().unwrap());
+        let updated_ts = u64::from_le_bytes(serialized[8..16].try_into().unwrap());
         println!("Updated timestamp in buffer: {}", updated_ts);
-        assert_eq!(
-            updated_ts, new_ts,
-            "Timestamp should be updated"
-        );
+        assert_eq!(updated_ts, new_ts, "Timestamp should be updated");
 
         // Deserialize and verify
-        let deserialized: Message =
-            bincode::deserialize(&serialized).unwrap();
-        println!(
-            "Deserialized timestamp: {}",
-            deserialized.timestamp
-        );
+        let deserialized: Message = bincode::deserialize(&serialized).unwrap();
+        println!("Deserialized timestamp: {}", deserialized.timestamp);
         assert_eq!(
             deserialized.timestamp, new_ts,
             "Deserialized timestamp should match"

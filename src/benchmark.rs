@@ -2039,6 +2039,7 @@ mod tests {
             message_queue_name: "/pmq-x".into(),
             pmq_priority: 0,
             cross_container: false,
+            shm_open_existing: false,
         };
         let display = format!(
             "{}",

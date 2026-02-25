@@ -131,11 +131,28 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y build-essential pkg-config
 
-    - name: Remove lockfile to allow old Cargo to resolve deps
-      run: rm Cargo.lock
+    - name: Regenerate lockfile under MSRV
+      run: |
+        rm Cargo.lock
+        cargo generate-lockfile
+
+    - name: Guard MSRV-incompatible lockfile drift
+      run: |
+        # getrandom 0.4.x uses edition 2024, which Cargo from Rust 1.70 cannot parse.
+        if awk '
+          /^name = "getrandom"$/ {
+            getline;
+            if ($0 ~ /^version = "0\\.4\\./) found=1;
+          }
+          END { exit(found ? 0 : 1) }
+        ' Cargo.lock; then
+          echo "ERROR: MSRV lockfile resolved getrandom 0.4.x"
+          echo "Pin dependencies to keep getrandom on an MSRV-compatible line."
+          exit 1
+        fi
 
     - name: Check if project builds with MSRV
-      run: cargo build --verbose
+      run: cargo build --locked --verbose
 
   build_and_test:
     name: Build and Test

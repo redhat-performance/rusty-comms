@@ -567,8 +567,7 @@ fn run_sender_mode_blocking(args: Args) -> Result<()> {
             break;
         }
 
-        let send_timestamp_ns =
-            MessageLatencyRecord::current_timestamp_ns();
+        let send_timestamp_ns = MessageLatencyRecord::current_timestamp_ns();
         let message = Message::new(i, payload.clone(), msg_type);
         let send_time = message.timestamp;
 
@@ -576,32 +575,25 @@ fn run_sender_mode_blocking(args: Args) -> Result<()> {
             .send_blocking(&message)
             .with_context(|| format!("Failed to send message {}", i))?;
 
-        let (one_way_latency_ns, round_trip_latency_ns) =
-            if config.round_trip {
-                let response = transport
-                    .receive_blocking()
-                    .with_context(|| {
-                        format!("Failed to receive response {}", i)
-                    })?;
-                let rt_latency = get_monotonic_time_ns() - send_time;
-                let ow_latency = response.one_way_latency_ns;
-                (ow_latency, rt_latency)
-            } else {
-                let send_latency =
-                    get_monotonic_time_ns() - send_time;
-                (send_latency, 0)
-            };
+        let (one_way_latency_ns, round_trip_latency_ns) = if config.round_trip {
+            let response = transport
+                .receive_blocking()
+                .with_context(|| format!("Failed to receive response {}", i))?;
+            let rt_latency = get_monotonic_time_ns() - send_time;
+            let ow_latency = response.one_way_latency_ns;
+            (ow_latency, rt_latency)
+        } else {
+            let send_latency = get_monotonic_time_ns() - send_time;
+            (send_latency, 0)
+        };
 
         if let Some(ref mut ow_metrics) = one_way_metrics {
             let latency = Duration::from_nanos(one_way_latency_ns);
-            ow_metrics
-                .record_message(config.message_size, Some(latency))?;
+            ow_metrics.record_message(config.message_size, Some(latency))?;
         }
         if let Some(ref mut rt_metrics) = round_trip_metrics {
-            let latency =
-                Duration::from_nanos(round_trip_latency_ns);
-            rt_metrics
-                .record_message(config.message_size, Some(latency))?;
+            let latency = Duration::from_nanos(round_trip_latency_ns);
+            rt_metrics.record_message(config.message_size, Some(latency))?;
         }
 
         if config.one_way {
@@ -1426,10 +1418,7 @@ fn close_nonstdio_fds_best_effort() {
     }
 
     if !fds.is_empty() {
-        debug!(
-            "Closing {} inherited FDs (> 2) in server child",
-            fds.len()
-        );
+        debug!("Closing {} inherited FDs (> 2) in server child", fds.len());
     }
 
     // Close highest FDs first (not strictly required, but a common pattern).
