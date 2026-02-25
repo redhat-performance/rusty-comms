@@ -8,12 +8,12 @@ a single CSV with all metrics including both one-way and round-trip latencies.
 
 import json
 import csv
+import argparse
 import sys
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
-OUTPUT_DIR = Path("/root/scripts/fullrun/out")
-CSV_OUTPUT = OUTPUT_DIR / "benchmark_results.csv"
+DEFAULT_OUTPUT_DIR = Path("/root/scripts/fullrun/out")
 
 
 def parse_filename(filename: str) -> Dict[str, str]:
@@ -55,6 +55,11 @@ def parse_filename(filename: str) -> Dict[str, str]:
         result["mode"] = "c2c"
         result["variant"] = "shm_direct"
         remaining = filename.replace("c2c_shm_direct_", "").replace("_summary.json", "")
+    # Container-to-Container tests (new format)
+    elif filename.startswith("c2c_async_"):
+        result["mode"] = "c2c"
+        result["variant"] = "async"
+        remaining = filename.replace("c2c_async_", "").replace("_summary.json", "")
     # Handle c2c_<mechanism>_<size>_<type> format (without blocking/shm_direct)
     elif filename.startswith("c2c_"):
         result["mode"] = "c2c"
@@ -86,11 +91,6 @@ def parse_filename(filename: str) -> Dict[str, str]:
         result["mode"] = "h2nqm"
         result["variant"] = "shm_direct"
         remaining = filename.replace("h2nqm_shm_direct_", "").replace("_summary.json", "")
-    # Container-to-Container tests (new format)
-    elif filename.startswith("c2c_async_"):
-        result["mode"] = "c2c"
-        result["variant"] = "async"
-        remaining = filename.replace("c2c_async_", "").replace("_summary.json", "")
     # QM C2C tests (both processes inside QM partition)
     elif filename.startswith("qm_c2c_blocking_"):
         result["mode"] = "qm_c2c"
@@ -188,15 +188,28 @@ def extract_metrics(data: Dict[str, Any]) -> Dict[str, Any]:
 
 def main():
     """Generate CSV from all summary JSON files."""
-    print(f"Scanning {OUTPUT_DIR} for summary files...")
+    parser = argparse.ArgumentParser(
+        description="Generate consolidated benchmark CSV from JSON files."
+    )
+    parser.add_argument(
+        "--dir",
+        default=str(DEFAULT_OUTPUT_DIR),
+        help="Directory containing benchmark JSON files.",
+    )
+    args = parser.parse_args()
+
+    output_dir = Path(args.dir).expanduser().resolve()
+    csv_output = output_dir / "benchmark_results.csv"
+
+    print(f"Scanning {output_dir} for summary files...")
     
-    if not OUTPUT_DIR.exists():
-        print(f"ERROR: Output directory not found: {OUTPUT_DIR}")
+    if not output_dir.exists():
+        print(f"ERROR: Output directory not found: {output_dir}")
         sys.exit(1)
     
     # Include normal fullrun outputs and ad-hoc verification outputs.
-    json_files = sorted(OUTPUT_DIR.glob("*_summary.json"))
-    json_files.extend(sorted(OUTPUT_DIR.glob("*_verify*.json")))
+    json_files = sorted(output_dir.glob("*_summary.json"))
+    json_files.extend(sorted(output_dir.glob("*_verify*.json")))
     
     if not json_files:
         print("No summary JSON files found!")
@@ -250,7 +263,7 @@ def main():
         mech_order = {"uds": 0, "tcp": 1, "shm": 2, "pmq": 3}.get(row["mechanism"], 9)
         try:
             size = int(row["message_size"])
-        except:
+        except (ValueError, TypeError):
             size = 0
         return (test_order, mode_order, mech_order, variant_order, size)
     
@@ -279,12 +292,12 @@ def main():
     ]
     
     # Write CSV
-    with open(CSV_OUTPUT, 'w', newline='') as f:
+    with open(csv_output, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=columns, extrasaction='ignore')
         writer.writeheader()
         writer.writerows(rows)
     
-    print(f"\nCSV written to: {CSV_OUTPUT}")
+    print(f"\nCSV written to: {csv_output}")
     print(f"Total rows: {len(rows)}")
     
     # Print preview

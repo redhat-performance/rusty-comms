@@ -863,7 +863,7 @@ impl BlockingTransport for BlockingSharedMemory {
 
         // Check if we should open existing segment instead of creating
         // (Used when host pre-creates the segment for container access)
-        let open_existing = std::env::var("IPC_SHM_OPEN_EXISTING").is_ok();
+        let open_existing = config.shm_open_existing;
 
         let shmem = if open_existing {
             // Open existing segment (created by host)

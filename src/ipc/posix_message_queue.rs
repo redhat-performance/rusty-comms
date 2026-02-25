@@ -145,14 +145,6 @@ pub struct PosixMessageQueueTransport {
     /// Base POSIX message queue name (with "/" prefix)
     queue_name: String,
 
-    /// Request queue file descriptor (Client → Server)
-    /// Client writes to this, Server reads from this
-    request_queue_fd: Option<MqdT>,
-
-    /// Response queue file descriptor (Server → Client)
-    /// Server writes to this, Client reads from this
-    response_queue_fd: Option<MqdT>,
-
     /// Maximum size of individual messages in bytes
     max_msg_size: usize,
 
@@ -176,13 +168,30 @@ pub struct PosixMessageQueueTransport {
     /// parameters like `pmq_priority` during its operation.
     config: Option<TransportConfig>,
 
-    /// AsyncFd wrapper for the send queue (request queue for client, response queue for server).
-    /// Allows epoll-based async waiting instead of polling with sleep.
+    /// AsyncFd wrapper for the send queue (request queue for
+    /// client, response queue for server). Allows epoll-based
+    /// async waiting instead of polling with sleep.
+    ///
+    /// SAFETY: These must be declared (and therefore dropped)
+    /// before the `*_queue_fd` fields below, because
+    /// `RawFdWrapper` borrows the raw FD without owning it.
+    /// Rust drops struct fields in declaration order, so this
+    /// placement ensures the `AsyncFd` is deregistered from
+    /// epoll before the underlying descriptor is closed.
     async_send_fd: Option<AsyncFd<RawFdWrapper>>,
 
-    /// AsyncFd wrapper for the receive queue (response queue for client, request queue for server).
-    /// Allows epoll-based async waiting instead of polling with sleep.
+    /// AsyncFd wrapper for the receive queue (response queue for
+    /// client, request queue for server).
+    /// See `async_send_fd` for drop-ordering rationale.
     async_recv_fd: Option<AsyncFd<RawFdWrapper>>,
+
+    /// Request queue file descriptor (Client -> Server).
+    /// Client writes to this, Server reads from this.
+    request_queue_fd: Option<MqdT>,
+
+    /// Response queue file descriptor (Server -> Client).
+    /// Server writes to this, Client reads from this.
+    response_queue_fd: Option<MqdT>,
 }
 
 impl Default for PosixMessageQueueTransport {
@@ -224,8 +233,6 @@ impl PosixMessageQueueTransport {
         Self {
             state: TransportState::Uninitialized,
             queue_name: String::new(),
-            request_queue_fd: None,
-            response_queue_fd: None,
             max_msg_size: 8192,
             max_msg_count: 10,
             is_server: false,
@@ -233,6 +240,8 @@ impl PosixMessageQueueTransport {
             config: None,
             async_send_fd: None,
             async_recv_fd: None,
+            request_queue_fd: None,
+            response_queue_fd: None,
         }
     }
 
@@ -734,6 +743,10 @@ impl IpcTransport for PosixMessageQueueTransport {
             .ok_or_else(|| anyhow!("Send queue not initialized"))?;
 
         let raw_fd = async_fd.get_ref().as_raw_fd();
+        // SAFETY: MqdT is a thin wrapper around RawFd and does
+        // not close the descriptor on drop, so this borrow-style
+        // reconstruction is safe (no double-close).
+        let fd = unsafe { MqdT::from_raw_fd(raw_fd) };
 
         let mut backpressure_detected = false;
         let start_time = std::time::Instant::now();
@@ -749,7 +762,6 @@ impl IpcTransport for PosixMessageQueueTransport {
             }
 
             // Call mq_send directly -- the queue is O_NONBLOCK so this never blocks.
-            let fd = unsafe { MqdT::from_raw_fd(raw_fd) };
             let result = mq_send(&fd, &data, priority);
 
             match result {
@@ -845,6 +857,10 @@ impl IpcTransport for PosixMessageQueueTransport {
             .ok_or_else(|| anyhow!("Receive queue not initialized"))?;
 
         let raw_fd = async_fd.get_ref().as_raw_fd();
+        // SAFETY: MqdT is a thin wrapper around RawFd and does
+        // not close the descriptor on drop, so this borrow-style
+        // reconstruction is safe (no double-close).
+        let fd = unsafe { MqdT::from_raw_fd(raw_fd) };
         let max_msg_size = self.max_msg_size;
 
         // Pre-allocate a receive buffer -- reused across retries
@@ -854,7 +870,6 @@ impl IpcTransport for PosixMessageQueueTransport {
 
         loop {
             // Call mq_receive directly -- the queue is O_NONBLOCK so this never blocks.
-            let fd = unsafe { MqdT::from_raw_fd(raw_fd) };
             let mut priority = 0u32;
             let result = mq_receive(&fd, &mut buffer, &mut priority);
 
@@ -1129,6 +1144,7 @@ impl IpcTransport for PosixMessageQueueTransport {
                 let result = tokio::task::spawn_blocking({
                     let raw_fd_copy = raw_fd;
                     move || {
+                        // SAFETY: MqdT does not close the fd on drop.
                         let fd = unsafe { MqdT::from_raw_fd(raw_fd_copy) };
                         let mut buffer = vec![0u8; max_msg_size];
                         let mut priority = 0u32;

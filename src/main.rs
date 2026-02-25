@@ -123,7 +123,12 @@ fn main() -> Result<()> {
             if args.blocking {
                 run_sender_mode_blocking(args)
             } else {
-                run_sender_mode_async(args)
+                Err(anyhow::anyhow!(
+                    "Sender mode async is not yet implemented.\n\
+                     Use --blocking flag for sender mode:\n\
+                     ipc-benchmark -m tcp --run-mode sender \
+                     --blocking"
+                ))
             }
         }
     }
@@ -175,11 +180,13 @@ async fn run_client_mode_async(_args: Args) -> Result<()> {
 fn run_client_mode_blocking(args: Args) -> Result<()> {
     use ipc_benchmark::ipc::BlockingTransportFactory;
 
-    // Minimal logging setup for client mode - log to stderr only
-    tracing_subscriber::fmt()
+    // Minimal logging setup for client mode - log to stderr only.
+    // Use try_init() to avoid panicking if a subscriber is already
+    // set (e.g. when called from tests).
+    let _ = tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_max_level(tracing::Level::DEBUG)
-        .init();
+        .try_init();
 
     info!("Starting IPC Benchmark (Client Mode, Blocking)");
 
@@ -445,8 +452,7 @@ fn run_sender_mode_blocking(args: Args) -> Result<()> {
             if let Some(ref n) = args.shared_memory_name {
                 transport_config.shared_memory_name = n.clone();
             }
-            // For SHM, set env var to open existing segment
-            std::env::set_var("IPC_SHM_OPEN_EXISTING", "1");
+            transport_config.shm_open_existing = true;
         }
         #[cfg(target_os = "linux")]
         IpcMechanism::PosixMessageQueue => {
@@ -536,172 +542,93 @@ fn run_sender_mode_blocking(args: Args) -> Result<()> {
         }
     }
 
-    // Run the benchmark
+    // Run the benchmark.
+    // Both duration-based and message-count modes share the same
+    // send/receive/record loop body; only the termination condition
+    // differs.
     let start_time = Instant::now();
-
-    if let Some(duration) = config.duration {
-        // Duration-based mode
-        let mut i: u64 = 0;
-        while start_time.elapsed() < duration {
-            let send_timestamp_ns = MessageLatencyRecord::current_timestamp_ns();
-
-            // Send Request only if round-trip is enabled (to get responses)
-            // For one-way only, send OneWay messages (no response expected)
-            // Note: For unidirectional transports like SHM ring buffer, round-trip isn't supported
-            let msg_type = if config.round_trip {
-                MessageType::Request
-            } else {
-                MessageType::OneWay
-            };
-            let message = Message::new(i, payload.clone(), msg_type);
-            // Capture send_time *after* message creation so it doesn't include
-            // payload clone and Message::new overhead in the latency measurement
-            let send_time = message.timestamp;
-
-            transport
-                .send_blocking(&message)
-                .with_context(|| format!("Failed to send message {}", i))?;
-
-            // Get response and extract latencies
-            let (one_way_latency_ns, round_trip_latency_ns) = if config.round_trip {
-                let response = transport
-                    .receive_blocking()
-                    .with_context(|| format!("Failed to receive response {}", i))?;
-                let rt_latency = get_monotonic_time_ns() - send_time;
-                // One-way latency comes from receiver's measurement in the response
-                let ow_latency = response.one_way_latency_ns;
-                (ow_latency, rt_latency)
-            } else {
-                // For one-way only (no round-trip), measure send time as approximation
-                // This is not true one-way latency but the best we can do without responses
-                let send_latency = get_monotonic_time_ns() - send_time;
-                (send_latency, 0)
-            };
-
-            // Record one-way latency if enabled
-            if let Some(ref mut ow_metrics) = one_way_metrics {
-                let latency = Duration::from_nanos(one_way_latency_ns);
-                ow_metrics.record_message(config.message_size, Some(latency))?;
-            }
-
-            // Record round-trip latency if enabled
-            if let Some(ref mut rt_metrics) = round_trip_metrics {
-                let latency = Duration::from_nanos(round_trip_latency_ns);
-                rt_metrics.record_message(config.message_size, Some(latency))?;
-            }
-
-            // Emit streaming records for each enabled latency type.
-            // When both OW and RT are enabled, emit both records (matching
-            // standalone benchmark_blocking.rs behavior) so the streaming
-            // file contains the full picture.
-            if config.one_way {
-                streaming_records.push(MessageLatencyRecord::new(
-                    i,
-                    mechanism,
-                    config.message_size,
-                    LatencyType::OneWay,
-                    Duration::from_nanos(one_way_latency_ns),
-                    send_timestamp_ns,
-                ));
-            }
-            if config.round_trip {
-                streaming_records.push(MessageLatencyRecord::new(
-                    i,
-                    mechanism,
-                    config.message_size,
-                    LatencyType::RoundTrip,
-                    Duration::from_nanos(round_trip_latency_ns),
-                    send_timestamp_ns,
-                ));
-            }
-
-            if let Some(delay) = config.send_delay {
-                std::thread::sleep(delay);
-            }
-            i += 1;
-        }
+    let msg_count = config
+        .msg_count
+        .unwrap_or(ipc_benchmark::defaults::MSG_COUNT);
+    let msg_type = if config.round_trip {
+        MessageType::Request
     } else {
-        // Message count mode
-        let msg_count = config
-            .msg_count
-            .unwrap_or(ipc_benchmark::defaults::MSG_COUNT);
-        for i in 0..msg_count {
-            let send_timestamp_ns = MessageLatencyRecord::current_timestamp_ns();
+        MessageType::OneWay
+    };
 
-            // Send Request only if round-trip is enabled (to get responses)
-            // For one-way only, send OneWay messages (no response expected)
-            // Note: For unidirectional transports like SHM ring buffer, round-trip isn't supported
-            let msg_type = if config.round_trip {
-                MessageType::Request
-            } else {
-                MessageType::OneWay
-            };
-            let message = Message::new(i as u64, payload.clone(), msg_type);
-            // Capture send_time *after* message creation so it doesn't include
-            // payload clone and Message::new overhead in the latency measurement
-            let send_time = message.timestamp;
+    let mut i: u64 = 0;
+    loop {
+        // Unified termination: duration takes precedence
+        if let Some(duration) = config.duration {
+            if start_time.elapsed() >= duration {
+                break;
+            }
+        } else if i >= msg_count as u64 {
+            break;
+        }
 
-            transport
-                .send_blocking(&message)
-                .with_context(|| format!("Failed to send message {}", i))?;
+        let send_timestamp_ns =
+            MessageLatencyRecord::current_timestamp_ns();
+        let message = Message::new(i, payload.clone(), msg_type);
+        let send_time = message.timestamp;
 
-            // Get response and extract latencies
-            let (one_way_latency_ns, round_trip_latency_ns) = if config.round_trip {
+        transport
+            .send_blocking(&message)
+            .with_context(|| format!("Failed to send message {}", i))?;
+
+        let (one_way_latency_ns, round_trip_latency_ns) =
+            if config.round_trip {
                 let response = transport
                     .receive_blocking()
-                    .with_context(|| format!("Failed to receive response {}", i))?;
+                    .with_context(|| {
+                        format!("Failed to receive response {}", i)
+                    })?;
                 let rt_latency = get_monotonic_time_ns() - send_time;
-                // One-way latency comes from receiver's measurement in the response
                 let ow_latency = response.one_way_latency_ns;
                 (ow_latency, rt_latency)
             } else {
-                // For one-way only (no round-trip), measure send time as approximation
-                // This is not true one-way latency but the best we can do without responses
-                let send_latency = get_monotonic_time_ns() - send_time;
+                let send_latency =
+                    get_monotonic_time_ns() - send_time;
                 (send_latency, 0)
             };
 
-            // Record one-way latency if enabled
-            if let Some(ref mut ow_metrics) = one_way_metrics {
-                let latency = Duration::from_nanos(one_way_latency_ns);
-                ow_metrics.record_message(config.message_size, Some(latency))?;
-            }
-
-            // Record round-trip latency if enabled
-            if let Some(ref mut rt_metrics) = round_trip_metrics {
-                let latency = Duration::from_nanos(round_trip_latency_ns);
-                rt_metrics.record_message(config.message_size, Some(latency))?;
-            }
-
-            // Emit streaming records for each enabled latency type.
-            // When both OW and RT are enabled, emit both records (matching
-            // standalone benchmark_blocking.rs behavior) so the streaming
-            // file contains the full picture.
-            if config.one_way {
-                streaming_records.push(MessageLatencyRecord::new(
-                    i as u64,
-                    mechanism,
-                    config.message_size,
-                    LatencyType::OneWay,
-                    Duration::from_nanos(one_way_latency_ns),
-                    send_timestamp_ns,
-                ));
-            }
-            if config.round_trip {
-                streaming_records.push(MessageLatencyRecord::new(
-                    i as u64,
-                    mechanism,
-                    config.message_size,
-                    LatencyType::RoundTrip,
-                    Duration::from_nanos(round_trip_latency_ns),
-                    send_timestamp_ns,
-                ));
-            }
-
-            if let Some(delay) = config.send_delay {
-                std::thread::sleep(delay);
-            }
+        if let Some(ref mut ow_metrics) = one_way_metrics {
+            let latency = Duration::from_nanos(one_way_latency_ns);
+            ow_metrics
+                .record_message(config.message_size, Some(latency))?;
         }
+        if let Some(ref mut rt_metrics) = round_trip_metrics {
+            let latency =
+                Duration::from_nanos(round_trip_latency_ns);
+            rt_metrics
+                .record_message(config.message_size, Some(latency))?;
+        }
+
+        if config.one_way {
+            streaming_records.push(MessageLatencyRecord::new(
+                i,
+                mechanism,
+                config.message_size,
+                LatencyType::OneWay,
+                Duration::from_nanos(one_way_latency_ns),
+                send_timestamp_ns,
+            ));
+        }
+        if config.round_trip {
+            streaming_records.push(MessageLatencyRecord::new(
+                i,
+                mechanism,
+                config.message_size,
+                LatencyType::RoundTrip,
+                Duration::from_nanos(round_trip_latency_ns),
+                send_timestamp_ns,
+            ));
+        }
+
+        if let Some(delay) = config.send_delay {
+            std::thread::sleep(delay);
+        }
+        i += 1;
     }
 
     // Capture final metrics from both collectors
@@ -747,17 +674,6 @@ fn run_sender_mode_blocking(args: Args) -> Result<()> {
 
     info!("Sender mode benchmark completed successfully");
     Ok(())
-}
-
-/// Run the benchmark in sender mode (async).
-///
-/// Async version of sender mode for non-blocking I/O.
-#[tokio::main]
-async fn run_sender_mode_async(args: Args) -> Result<()> {
-    // For now, just redirect to blocking mode with a warning
-    // Full async implementation can be added later if needed
-    warn!("Async sender mode not yet implemented, falling back to blocking");
-    run_sender_mode_blocking(args)
 }
 
 /// Run the benchmark in async mode using Tokio runtime.
@@ -1479,6 +1395,15 @@ fn set_affinity(core_id: usize) -> Result<()> {
 ///
 /// In server-only mode the child does not need most inherited descriptors, so we
 /// proactively close everything except stdin/stdout/stderr (FDs 0, 1, 2).
+///
+/// # Safety Invariant
+///
+/// This function must be called **before** any file-based resources
+/// (log file appenders, transport sockets, etc.) are opened in the
+/// child process. The caller (`run_server_mode_blocking`) sets up
+/// logging to stderr only (FD 2), which is preserved. Moving this
+/// call later in the initialization sequence could close FDs
+/// belonging to log appenders or transport connections.
 #[cfg(target_os = "linux")]
 fn close_nonstdio_fds_best_effort() {
     let entries = match std::fs::read_dir("/proc/self/fd") {
@@ -1498,6 +1423,13 @@ fn close_nonstdio_fds_best_effort() {
         if fd > 2 {
             fds.push(fd);
         }
+    }
+
+    if !fds.is_empty() {
+        debug!(
+            "Closing {} inherited FDs (> 2) in server child",
+            fds.len()
+        );
     }
 
     // Close highest FDs first (not strictly required, but a common pattern).

@@ -679,6 +679,7 @@ impl BlockingBenchmarkRunner {
             // Auto-detect cross-container mode based on run_mode, or use explicit flag
             cross_container: args.cross_container
                 || args.run_mode != crate::cli::RunMode::Standalone,
+            shm_open_existing: false,
         })
     }
 

@@ -29,7 +29,6 @@ import sys
 import os
 import json
 import time
-import signal
 from pathlib import Path
 from typing import List, Dict, Optional
 from dataclasses import dataclass
@@ -82,8 +81,9 @@ C2C_SERVER_CONTAINER = "c2c-server"
 C2C_SENDER_CONTAINER = "c2c-sender"
 C2C_SHARED_DIR = Path("/tmp/c2c_benchmark")
 C2C_CONTAINER_BINARY = "/app/ipc-benchmark"
-# Use fedora:35 for glibc 2.34 compatibility with host-built binary
-C2C_BASE_IMAGE = "fedora:35"
+# UBI 9 minimal provides glibc 2.34 (matching RHEL 9.6 host) and
+# receives ongoing security updates, unlike the EOL Fedora 35.
+C2C_BASE_IMAGE = "registry.access.redhat.com/ubi9-minimal"
 
 # Host-to-non-QM (regular container) configuration
 H2NQM_SERVER_CONTAINER = "h2nqm-server"
@@ -732,9 +732,6 @@ def run_c2c_test(config: TestConfig, stream_file: Optional[Path] = None) -> bool
             server_ip = "127.0.0.1"
         sender_extra = ["--host", server_ip]
     
-    # All mechanisms now support round-trip (SHM uses shm-direct with dual slots)
-    skip_roundtrip = False
-    
     # Build sender command - runs sender container and waits for it
     sender_cmd = [
         "podman", "run", "--rm", "--name", C2C_SENDER_CONTAINER,
@@ -752,8 +749,7 @@ def run_c2c_test(config: TestConfig, stream_file: Optional[Path] = None) -> bool
     if stream_file:
         sender_cmd.extend(["--streaming-output-csv", f"/output/{config.streaming_name}"])
     
-    if not skip_roundtrip:
-        sender_cmd.append("--round-trip")
+    sender_cmd.append("--round-trip")
     
     print(f"  Running sender container...")
     result = run_command(sender_cmd, timeout=600, stream=STREAM_OUTPUT)
@@ -1096,8 +1092,9 @@ def should_stream_test(config: TestConfig, stream_sizes: Optional[List[int]],
 
 def main():
     """Run all benchmarks."""
-    global STREAM_OUTPUT
-    
+    global STREAM_OUTPUT, BINARY, OUTPUT_DIR, RUSTY_COMMS_DIR
+    global QM_BINARY, QM_CONTAINER
+
     import argparse
     parser = argparse.ArgumentParser(
         description="IPC Benchmark Suite Runner - Always runs ALL tests",
@@ -1154,9 +1151,47 @@ Examples:
     output_group = parser.add_argument_group("Output Format")
     output_group.add_argument("--output", choices=["json", "csv", "both"], default="json",
                              help="Output format: json (default), csv, or both")
+
+    # Path overrides
+    path_group = parser.add_argument_group(
+        "Path Overrides",
+        "Override default hardcoded paths for binaries and directories",
+    )
+    path_group.add_argument(
+        "--binary", type=str, default=None,
+        help=f"Host binary path (default: {BINARY})",
+    )
+    path_group.add_argument(
+        "--output-dir", type=str, default=None,
+        help=f"Results output directory (default: {OUTPUT_DIR})",
+    )
+    path_group.add_argument(
+        "--project-dir", type=str, default=None,
+        help=f"Rusty-comms project directory (default: {RUSTY_COMMS_DIR})",
+    )
+    path_group.add_argument(
+        "--qm-binary", type=str, default=None,
+        help=f"Binary path inside QM container (default: {QM_BINARY})",
+    )
+    path_group.add_argument(
+        "--qm-container", type=str, default=None,
+        help=f"QM container name (default: {QM_CONTAINER})",
+    )
     
     args = parser.parse_args()
-    
+
+    # Apply path overrides to module-level globals
+    if args.binary:
+        BINARY = args.binary
+    if args.output_dir:
+        OUTPUT_DIR = Path(args.output_dir)
+    if args.project_dir:
+        RUSTY_COMMS_DIR = Path(args.project_dir)
+    if args.qm_binary:
+        QM_BINARY = args.qm_binary
+    if args.qm_container:
+        QM_CONTAINER = args.qm_container
+
     # Parse stream size filter
     stream_sizes = None
     if args.sizes:
@@ -1166,6 +1201,18 @@ Examples:
             print(f"ERROR: Invalid size format: {args.sizes}")
             sys.exit(1)
     
+    # Warn on deprecated flags
+    if args.include_h2nqm:
+        print(
+            "WARNING: --include-h2nqm is deprecated and has no "
+            "effect. H2NQM tests are now included by default."
+        )
+    if args.include_c2c:
+        print(
+            "WARNING: --include-c2c is deprecated and has no "
+            "effect. C2C tests are now included by default."
+        )
+
     # Determine which test categories to include
     include_standalone = not (
         args.h2qm_only or args.h2nqm_only or args.c2c_only or args.qm_c2c_only
@@ -1242,12 +1289,7 @@ Examples:
     
     # Ensure output directory exists
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    
-    # Verify binary exists
-    if not os.path.exists(BINARY):
-        print(f"ERROR: Binary not found: {BINARY}")
-        sys.exit(1)
-    
+
     # Check QM readiness if running H2QM tests
     if include_h2qm:
         if not check_qm_ready():
