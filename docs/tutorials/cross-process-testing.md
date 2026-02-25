@@ -218,6 +218,11 @@ sleep 2
 
 **Important:** Use `--ipc=host` to share the IPC namespace.
 
+> **Note:** The `sleep 2` above is a simplification for this tutorial. In
+> production scripts, poll for server readiness instead of relying on a
+> fixed delay -- for example, by checking for the shared memory segment
+> with `ls /dev/shm/` or retrying the sender with a short back-off loop.
+
 ## Troubleshooting
 
 ### Connection Refused

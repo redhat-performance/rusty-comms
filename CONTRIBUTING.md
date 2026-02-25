@@ -54,11 +54,11 @@ We pledge to make participation in our project a harassment-free experience for 
 
 ```bash
 # Fork the repository on GitHub, then clone your fork
-git clone https://github.com/YOUR_USERNAME/ipc-benchmark.git
-cd ipc-benchmark
+git clone https://github.com/YOUR_USERNAME/rusty-comms.git
+cd rusty-comms
 
 # Add upstream remote
-git remote add upstream https://github.com/your-org/ipc-benchmark.git
+git remote add upstream https://github.com/redhat-performance/rusty-comms.git
 ```
 
 ### 2. Set Up Development Environment

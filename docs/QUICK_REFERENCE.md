@@ -466,4 +466,4 @@ ipcs -m | grep ipc_benchmark
 
 ---
 
-*For detailed explanations, see the [User Guide](USER_GUIDE.md).*
+*For detailed explanations, see the [User Guide](user-guide/README.md).*

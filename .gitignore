@@ -47,9 +47,3 @@ pip-delete-this-directory.txt
 .coverage
 .pytest_cache/
 
-# Documentation build artifacts
-docs-myst/_build/
-docs-site/build/
-docs-site/node_modules/
-docs-site/.docusaurus/
-docs-asciidoc/output/

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0]
+
 ### Added
 - Cross-process testing support with `--run-mode client` and `--run-mode sender`
 - Container-safe synchronization with `--cross-container` flag
@@ -49,5 +51,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Date | Highlights |
 |---------|------|------------|
-| Unreleased | - | Cross-process testing, documentation improvements |
+| 0.2.0 | - | Cross-process testing, breaking: removed container automation |
 | 0.1.0 | Initial | Full IPC benchmark suite |

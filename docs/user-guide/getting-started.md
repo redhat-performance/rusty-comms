@@ -40,7 +40,33 @@ git clone https://github.com/redhat-performance/rusty-comms.git
 cd rusty-comms
 ```
 
-### Step 2: Build the Project
+### Step 2: Install Rust
+
+If Rust is not already installed, use [rustup](https://rustup.rs/) -- the
+official Rust toolchain installer:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+Follow the on-screen prompts (the defaults are fine for most users). Once
+the installer finishes, load the environment into your current shell:
+
+```bash
+source "$HOME/.cargo/env"
+```
+
+Verify the installation and confirm the version meets the MSRV (1.70+):
+
+```bash
+rustc --version
+cargo --version
+```
+
+> **Tip:** If you already have Rust installed but need to update, run
+> `rustup update stable`.
+
+### Step 3: Build the Project
 
 ```bash
 # Release build (recommended for benchmarking)
@@ -50,7 +76,7 @@ cargo build --release
 # target/release/ipc-benchmark
 ```
 
-### Step 3: Verify the Installation
+### Step 4: Verify the Installation
 
 ```bash
 ./target/release/ipc-benchmark --version
@@ -104,6 +130,12 @@ Mechanism: Unix Domain Socket
   Throughput:
       Average: 155.30 MB/s, Peak: 156.40 MB/s
 -----------------------------------------------------------------
+
+Benchmark Results:
+-----------------------------------------------------------------
+  Output Files Written:
+    Log File:             ipc_benchmark.log.2026-02-16
+
 ```
 
 ### Save Results to a File

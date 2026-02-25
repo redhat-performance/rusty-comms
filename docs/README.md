@@ -61,23 +61,11 @@ Background information and architectural decisions:
 ## Quick Links
 
 - [Quick Reference](QUICK_REFERENCE.md) - Command examples at a glance
-- [User Guide (Single File)](USER_GUIDE.md) - Complete guide in one document
 - [Main README](../README.md) - Project overview
 - [Changelog](CHANGELOG.md) - Version history
 - [Contributing Guide](../CONTRIBUTING.md) - How to contribute
 - [Dashboard](../utils/dashboard/README.md) - Performance dashboard
 
-## Multi-Format Documentation
-
-This documentation is available in multiple formats:
-
-| Format | Location | Build Command |
-|--------|----------|---------------|
-| Markdown | `docs/` | (source) |
-| AsciiDoc | `docs-asciidoc/` | `asciidoctor *.adoc` |
-| Sphinx/MyST | `docs-myst/` | `make html` |
-| Docusaurus | `docs-site/` | `npm run build` |
-
 ## Version
 
-This documentation is for rusty-comms on the `container-to-container-ipc` branch.
+This documentation is for rusty-comms v0.2.0. See [CHANGELOG.md](CHANGELOG.md) for version history.

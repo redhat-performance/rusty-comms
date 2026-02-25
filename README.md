@@ -343,8 +343,8 @@ done
 ### Building from Source
 
 ```bash
-git clone https://github.com/your-org/ipc-benchmark.git
-cd ipc-benchmark
+git clone https://github.com/redhat-performance/rusty-comms.git
+cd rusty-comms
 cargo build --release
 ```
 
@@ -498,6 +498,8 @@ If you need to analyze the raw performance data, including the first-message spi
 ```bash
 # Include the first message in the final results
 ipc-benchmark --include-first-message
+```
+
 ### Understanding Test Types: Throughput vs. Latency
 
 This benchmark suite can be used to measure two primary aspects of IPC performance: **throughput** and **latency**. The configuration you choose will determine which of these you are primarily testing.
