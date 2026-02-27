@@ -21,7 +21,7 @@ def parse_filename(filename: str) -> Dict[str, str]:
     result = {
         "filename": filename,
         "mode": "unknown",
-        "variant": "unknown", 
+        "communication_method": "unknown",
         "mechanism": "unknown",
         "size": "0",
         "test_type": "unknown",
@@ -29,72 +29,72 @@ def parse_filename(filename: str) -> Dict[str, str]:
     
     if filename.startswith("standalone_async_"):
         result["mode"] = "standalone"
-        result["variant"] = "async"
+        result["communication_method"] = "async"
         remaining = filename.replace("standalone_async_", "").replace("_summary.json", "")
     elif filename.startswith("standalone_blocking_"):
         result["mode"] = "standalone"
-        result["variant"] = "blocking"
+        result["communication_method"] = "blocking"
         remaining = filename.replace("standalone_blocking_", "").replace("_summary.json", "")
     elif filename.startswith("standalone_shm_direct_"):
         result["mode"] = "standalone"
-        result["variant"] = "shm_direct"
+        result["communication_method"] = "shm_direct"
         remaining = filename.replace("standalone_shm_direct_", "").replace("_summary.json", "")
     elif filename.startswith("h2c_blocking_"):
-        result["mode"] = "h2c"
-        result["variant"] = "blocking"
+        result["mode"] = "host to cntr"
+        result["communication_method"] = "blocking"
         remaining = filename.replace("h2c_blocking_", "").replace("_summary.json", "")
     elif filename.startswith("h2c_shm_direct_"):
-        result["mode"] = "h2c"
-        result["variant"] = "shm_direct"
+        result["mode"] = "host to cntr"
+        result["communication_method"] = "shm_direct"
         remaining = filename.replace("h2c_shm_direct_", "").replace("_summary.json", "")
     elif filename.startswith("c2c_blocking_"):
-        result["mode"] = "c2c"
-        result["variant"] = "blocking"
+        result["mode"] = "cntr to cntr"
+        result["communication_method"] = "blocking"
         remaining = filename.replace("c2c_blocking_", "").replace("_summary.json", "")
     elif filename.startswith("c2c_shm_direct_"):
-        result["mode"] = "c2c"
-        result["variant"] = "shm_direct"
+        result["mode"] = "cntr to cntr"
+        result["communication_method"] = "shm_direct"
         remaining = filename.replace("c2c_shm_direct_", "").replace("_summary.json", "")
     # Container-to-Container tests (new format)
     elif filename.startswith("c2c_async_"):
-        result["mode"] = "c2c"
-        result["variant"] = "async"
+        result["mode"] = "cntr to cntr"
+        result["communication_method"] = "async"
         remaining = filename.replace("c2c_async_", "").replace("_summary.json", "")
     # Handle c2c_<mechanism>_<size>_<type> format (without blocking/shm_direct)
     elif filename.startswith("c2c_"):
-        result["mode"] = "c2c"
-        result["variant"] = "blocking"  # Default to blocking for c2c
+        result["mode"] = "cntr to cntr"
+        result["communication_method"] = "blocking"  # Default to blocking for c2c
         remaining = filename.replace("c2c_", "").replace("_summary.json", "")
     # Host-to-QM container tests
     elif filename.startswith("h2qm_async_"):
-        result["mode"] = "h2qm"
-        result["variant"] = "async"
+        result["mode"] = "host to QM cntr"
+        result["communication_method"] = "async"
         remaining = filename.replace("h2qm_async_", "").replace("_summary.json", "")
     elif filename.startswith("h2qm_blocking_"):
-        result["mode"] = "h2qm"
-        result["variant"] = "blocking"
+        result["mode"] = "host to QM cntr"
+        result["communication_method"] = "blocking"
         remaining = filename.replace("h2qm_blocking_", "").replace("_summary.json", "")
     elif filename.startswith("h2qm_shm_direct_"):
-        result["mode"] = "h2qm"
-        result["variant"] = "shm_direct"
+        result["mode"] = "host to QM cntr"
+        result["communication_method"] = "shm_direct"
         remaining = filename.replace("h2qm_shm_direct_", "").replace("_summary.json", "")
     # Host-to-non-QM container tests
     elif filename.startswith("h2nqm_async_"):
-        result["mode"] = "h2nqm"
-        result["variant"] = "async"
+        result["mode"] = "host to non QM cntr"
+        result["communication_method"] = "async"
         remaining = filename.replace("h2nqm_async_", "").replace("_summary.json", "")
     elif filename.startswith("h2nqm_blocking_"):
-        result["mode"] = "h2nqm"
-        result["variant"] = "blocking"
+        result["mode"] = "host to non QM cntr"
+        result["communication_method"] = "blocking"
         remaining = filename.replace("h2nqm_blocking_", "").replace("_summary.json", "")
     elif filename.startswith("h2nqm_shm_direct_"):
-        result["mode"] = "h2nqm"
-        result["variant"] = "shm_direct"
+        result["mode"] = "host to non QM cntr"
+        result["communication_method"] = "shm_direct"
         remaining = filename.replace("h2nqm_shm_direct_", "").replace("_summary.json", "")
     # QM C2C tests (both processes inside QM partition)
     elif filename.startswith("qm_c2c_blocking_"):
-        result["mode"] = "qm_c2c"
-        result["variant"] = "blocking"
+        result["mode"] = "QM cntr to cntr"
+        result["communication_method"] = "blocking"
         remaining = filename.replace("qm_c2c_blocking_", "").replace("_summary.json", "")
     else:
         return result
@@ -230,7 +230,7 @@ def main():
             row = {
                 "test_type": config["test_type"],
                 "mode": config["mode"],
-                "variant": config["variant"],
+                "communication_method": config["communication_method"],
                 "mechanism": config["mechanism"],
                 "message_size": config["size"],
                 **metrics,
@@ -253,13 +253,15 @@ def main():
         test_order = 0 if row["test_type"] == "iter" else 1
         mode_order = {
             "standalone": 0,
-            "h2c": 1,
-            "h2qm": 2,
-            "h2nqm": 3,
-            "c2c": 4,
-            "qm_c2c": 5,
+            "host to cntr": 1,
+            "host to QM cntr": 2,
+            "host to non QM cntr": 3,
+            "cntr to cntr": 4,
+            "QM cntr to cntr": 5,
         }.get(row["mode"], 9)
-        variant_order = {"async": 0, "blocking": 1, "shm_direct": 2}.get(row["variant"], 9)
+        variant_order = {
+            "async": 0, "blocking": 1, "shm_direct": 2,
+        }.get(row["communication_method"], 9)
         mech_order = {"uds": 0, "tcp": 1, "shm": 2, "pmq": 3}.get(row["mechanism"], 9)
         try:
             size = int(row["message_size"])
@@ -273,7 +275,7 @@ def main():
     columns = [
         "test_type",
         "mode",
-        "variant", 
+        "communication_method",
         "mechanism",
         "message_size",
         "total_messages_sent",
@@ -303,7 +305,7 @@ def main():
     # Print preview
     print("\nPreview (first 10 rows):")
     print("-" * 140)
-    header = f"{'type':<5} {'mode':<10} {'var':<10} {'mech':<4} {'size':<6} {'msgs':<8} {'MB/s':<10} {'ow_mean':<12} {'rt_mean':<12}"
+    header = f"{'type':<5} {'mode':<20} {'comm_method':<12} {'mech':<4} {'size':<6} {'msgs':<8} {'MB/s':<10} {'ow_mean':<12} {'rt_mean':<12}"
     print(header)
     print("-" * 140)
     
@@ -313,7 +315,7 @@ def main():
         ow_str = f"{float(ow_mean):.0f}" if ow_mean else "-"
         rt_str = f"{float(rt_mean):.0f}" if rt_mean else "-"
         
-        line = f"{row.get('test_type', ''):<5} {row.get('mode', ''):<10} {row.get('variant', ''):<10} "
+        line = f"{row.get('test_type', ''):<5} {row.get('mode', ''):<20} {row.get('communication_method', ''):<12} "
         line += f"{row.get('mechanism', ''):<4} {row.get('message_size', ''):<6} "
         line += f"{str(row.get('total_messages_sent', '')):<8} "
         line += f"{str(row.get('average_throughput_mb_s', ''))[:8]:<10} "
