@@ -10,7 +10,7 @@
 //! This implementation prioritizes raw performance:
 //! - **No serialization**: Direct struct copy (memcpy)
 //! - **Simple synchronization**: One mutex + one condition variable
-//! - **Fixed-size layout**: `#[repr(C, packed)]` for predictable memory
+//! - **Fixed-size layout**: `#[repr(C)]` for predictable memory
 //! - **Minimal overhead**: ~1-2µs per send/receive vs 15-30µs with bincode
 //!
 //! # Performance Characteristics
@@ -166,6 +166,25 @@ impl MessageSlot {
         self.payload_len = 0;
     }
 }
+
+// Compile-time layout guards for MessageSlot.
+//
+// MessageSlot is shared across processes and used by futex/condvar-based
+// synchronization paths, so preserving stable layout assumptions is important.
+// The expected size is:
+// - 48 bytes metadata/header (including alignment padding)
+// - MAX_PAYLOAD_SIZE bytes payload
+const _: () = {
+    const EXPECTED_MESSAGE_SLOT_SIZE: usize = 48 + MAX_PAYLOAD_SIZE;
+    assert!(
+        std::mem::size_of::<MessageSlot>() == EXPECTED_MESSAGE_SLOT_SIZE,
+        "MessageSlot size changed; update shared-memory ABI assumptions"
+    );
+    assert!(
+        std::mem::align_of::<MessageSlot>() == 8,
+        "MessageSlot alignment changed; this may break shared-memory ABI assumptions"
+    );
+};
 
 /// Dual-slot shared memory structure for bidirectional communication.
 ///

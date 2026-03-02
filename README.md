@@ -20,6 +20,11 @@ This benchmark suite provides a systematic way to evaluate the performance of va
 3. **TCP Sockets** (`tcp`) - Network-capable, standardized communication
 4. **POSIX Message Queues** (`pmq`) - Kernel-managed, priority-based messaging
 
+> **Serialization note:** Serialization strategy is transport-dependent. Most
+> transports (including UDS, TCP, PMQ, and SHM ring buffer) use `bincode`
+> message serialization, while `--shm-direct` uses a fixed shared-memory layout
+> with direct `memcpy` (no `bincode` on the hot path).
+
 ### Measurement Capabilities
 
 - **Latency Metrics**: One-way and round-trip latency measurements

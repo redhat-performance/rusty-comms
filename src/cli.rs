@@ -443,6 +443,8 @@ pub struct Args {
     /// - `client`: Runs as IPC server (receiver/responder) - use inside containers
     /// - `sender`: Connects to server and runs benchmark as sender
     ///
+    /// Note: `--run-mode client|sender` currently requires `--blocking`.
+    ///
     /// For cross-process testing (e.g., host to container):
     /// 1. Copy binary to container: `podman cp ipc-benchmark <container>:/tmp/`
     /// 2. Start server in container: `podman exec <container> /tmp/ipc-benchmark -m tcp --run-mode client --host 0.0.0.0 --blocking`
