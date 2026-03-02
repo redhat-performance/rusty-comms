@@ -3633,7 +3633,7 @@ class DashboardApp:
             round_digits=1,
         )
 
-        # Create pivot tables for bytes/sec (convert to MB/s for
+        # Create pivot tables for bytes/sec (convert to MiB/s for
         # readability)
         oneway_throughput_mb = oneway_throughput_data.copy()
         roundtrip_throughput_mb = roundtrip_throughput_data.copy()
@@ -3806,7 +3806,7 @@ class DashboardApp:
             bytes_tables_row = html.Div(
                 [
                     html.H4(
-                        "Data Throughput (MB/sec)",
+                        "Data Throughput (MiB/sec)",
                         style={
                             "color": "#58a6ff",
                             "margin-bottom": "15px",
@@ -4770,7 +4770,7 @@ class DashboardApp:
                 round_digits=1,
             )
 
-            # Create pivot tables for bytes/sec (convert to MB/s for
+            # Create pivot tables for bytes/sec (convert to MiB/s for
         # readability)
             oneway_throughput_mb = oneway_throughput_data.copy()
             roundtrip_throughput_mb = roundtrip_throughput_data.copy()
@@ -4943,7 +4943,7 @@ class DashboardApp:
                 bytes_tables_row = html.Div(
                     [
                         html.H4(
-                            "Data Throughput (MB/sec)",
+                            "Data Throughput (MiB/sec)",
                             style={
                                 "color": "#58a6ff",
                                 "margin-bottom": "15px",

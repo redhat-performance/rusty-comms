@@ -40,25 +40,26 @@ let timestamp = get_monotonic_time_ns();
 ```
 Sender                              Receiver
   │                                    │
-  ├─ [T1] Capture timestamp            │
-  ├─ Serialize message                 │
+  ├─ Serialize message (if needed)     │
+  ├─ [T1] Capture/update timestamp     │
   ├─ Send to transport                 │
   │     ════════════════════>          │
   │                          Receive   ┤
-  │                          Deserialize
   │                    [T2] Capture timestamp
+  │                          Deserialize
   │                                    │
   
   Latency = T2 - T1
 ```
 
 **What's included:**
-- ✅ Serialization time
 - ✅ Transport time (syscalls, kernel)
-- ✅ Deserialization time
+- ✅ Queue/buffer transit and wakeup/scheduling effects between send and receive
 
 **What's excluded:**
 - ❌ Message construction before T1
+- ❌ Serialization work before T1
+- ❌ Deserialization work after T2
 - ❌ Processing after T2
 
 ### Round-Trip Latency
@@ -102,21 +103,25 @@ pub struct Message {
 
 ### Capture Point
 
-Timestamp is captured **immediately before serialization**:
+Timestamp is captured/updated **immediately before the IPC send operation**.
+In hot paths that pre-serialize once, the timestamp bytes are patched in-place
+right before the send syscall:
 
 ```rust
-// Create message
-let mut message = message.clone();
-message.set_timestamp_now();  // Capture here
+// Pre-serialize once
+let mut serialized = bincode::serialize(&message)?;
 
-// Serialize and send
-let serialized = bincode::serialize(&message)?;
+// Capture timestamp right before send and patch bytes in-place
+let ts_now = get_monotonic_time_ns();
+serialized[Message::timestamp_offset()].copy_from_slice(&ts_now.to_le_bytes());
+
+// Send
 stream.write_all(&serialized)?;
 ```
 
 ### Latency Calculation
 
-On the receive side:
+On the receive side (timestamp captured immediately after receive, before deserialize):
 
 ```rust
 let receive_time_ns = get_monotonic_time_ns();

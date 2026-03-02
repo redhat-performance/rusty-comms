@@ -29,6 +29,7 @@ import sys
 import os
 import json
 import time
+import socket
 from pathlib import Path
 from typing import List, Dict, Optional
 from dataclasses import dataclass
@@ -55,18 +56,33 @@ def set_selinux_permissive() -> bool:
         return False
 
 
-def check_selinux_for_tests() -> None:
-    """Check SELinux status and warn/set if needed for H2QM/C2C tests."""
+def check_selinux_for_tests(allow_selinux_permissive: bool = False) -> None:
+    """Check SELinux status and optionally set permissive mode.
+
+    Args:
+        allow_selinux_permissive: If True, the runner may call `setenforce 0`
+            when SELinux is Enforcing. If False, the runner only prints warnings.
+    """
     mode = get_selinux_mode()
     print(f"SELinux mode: {mode}")
     
     if mode == "Enforcing":
-        print("  WARNING: SELinux is Enforcing. H2QM PMQ tests may fail.")
-        print("  Attempting to set Permissive mode...")
-        if set_selinux_permissive():
-            print("  SELinux set to Permissive successfully.")
+        print("  WARNING: SELinux is Enforcing. H2QM/C2C PMQ tests may fail.")
+        print("  NOTE: This runner will not change SELinux unless explicitly allowed.")
+        if allow_selinux_permissive:
+            print("  --allow-selinux-permissive set; attempting: setenforce 0")
+            if set_selinux_permissive():
+                print("  SELinux set to Permissive successfully.")
+            else:
+                print(
+                    "  Failed to set Permissive mode. Run as root or use: "
+                    "sudo setenforce 0"
+                )
         else:
-            print("  Failed to set Permissive mode. Run as root or use: sudo setenforce 0")
+            print(
+                "  To allow this script to run setenforce 0 automatically, "
+                "re-run with: --allow-selinux-permissive"
+            )
 
 
 # Configuration
@@ -255,6 +271,30 @@ def run_command(cmd: List[str], timeout: int = 300, cwd: Optional[Path] = None,
         return subprocess.CompletedProcess(cmd, 124, "", "Timeout")
 
 
+def wait_for_path(path: Path, timeout: float, label: str) -> bool:
+    """Wait until a filesystem path exists."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if path.exists():
+            return True
+        time.sleep(0.1)
+    print(f"  FAILED: Timed out waiting for {label}: {path}")
+    return False
+
+
+def wait_for_tcp_listener(host: str, port: int, timeout: float, label: str) -> bool:
+    """Wait until a TCP listener is accepting connections."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=0.5):
+                return True
+        except OSError:
+            time.sleep(0.1)
+    print(f"  FAILED: Timed out waiting for {label} at {host}:{port}")
+    return False
+
+
 def run_standalone_test(config: TestConfig, stream_file: Optional[Path] = None) -> bool:
     """Run a standalone test (async, blocking, or shm-direct)."""
     output_file = OUTPUT_DIR / config.output_name
@@ -357,6 +397,7 @@ def run_h2qm_test(config: TestConfig, stream_file: Optional[Path] = None) -> boo
     # Mechanism-specific configuration
     server_extra = []
     sender_extra = []
+    readiness_check = None
     
     if config.mechanism == "tcp":
         qm_ip = get_qm_ip()
@@ -365,6 +406,7 @@ def run_h2qm_test(config: TestConfig, stream_file: Optional[Path] = None) -> boo
             return False
         server_extra = ["--host", "0.0.0.0"]
         sender_extra = ["--host", qm_ip]
+        readiness_check = lambda: wait_for_tcp_listener(qm_ip, 8080, 15, "QM TCP server")
     elif config.mechanism == "uds":
         # /var/qm on host maps to /var inside QM
         # Server (QM) sees: /var/tmp/ipc_test/benchmark.sock
@@ -379,6 +421,7 @@ def run_h2qm_test(config: TestConfig, stream_file: Optional[Path] = None) -> boo
             socket_path_host.unlink()
         server_extra = ["--socket-path", f"/var/tmp/ipc_test/{socket_name}"]
         sender_extra = ["--socket-path", str(socket_path_host)]
+        readiness_check = lambda: wait_for_path(socket_path_host, 15, "QM UDS socket")
     elif config.mechanism == "shm":
         # Uses bind-mounted /dev/shm
         # Use default shared memory name (ipc_benchmark_shm) - works reliably
@@ -388,11 +431,15 @@ def run_h2qm_test(config: TestConfig, stream_file: Optional[Path] = None) -> boo
             shm_path.unlink()
         server_extra = []  # Use default name
         sender_extra = []  # Use default name
+        readiness_check = lambda: wait_for_path(shm_path, 20, "QM SHM segment")
     elif config.mechanism == "pmq":
         # Uses --ipc=host in QM container
         mq_name = f"ipc_h2qm_mq_{config.size}"
         server_extra = ["--message-queue-name", mq_name]
         sender_extra = ["--message-queue-name", mq_name]
+        readiness_check = lambda: wait_for_path(
+            Path(f"/dev/mqueue/{mq_name}"), 20, "QM PMQ queue"
+        )
     
     # Build server command (runs inside QM)
     server_cmd = [
@@ -410,16 +457,14 @@ def run_h2qm_test(config: TestConfig, stream_file: Optional[Path] = None) -> boo
         print(f"  FAILED to start server: {result.stderr[:200] if result.stderr else 'No output'}")
         return False
     
-    # Wait for server to be ready
-    # SHM needs time for shared memory setup
-    # PMQ needs time for message queue creation across container boundary
-    if config.mechanism == "shm":
-        wait_time = 3
-    elif config.mechanism == "pmq":
-        wait_time = 4  # PMQ queue creation is slower across QM boundary
-    else:
-        wait_time = 2
-    time.sleep(wait_time)
+    if readiness_check is None or not readiness_check():
+        # If readiness failed and mechanism branch didn't set it, fail safely.
+        print("  FAILED: server readiness check did not pass")
+        subprocess.run(
+            ["podman", "exec", QM_CONTAINER, "pkill", "-f", "ipc-benchmark"],
+            capture_output=True, timeout=10
+        )
+        return False
     
     # Build sender command (runs on host)
     sender_cmd = [
@@ -572,8 +617,23 @@ def run_h2nqm_test(config: TestConfig, stream_file: Optional[Path] = None) -> bo
         cleanup_h2nqm_container()
         return False
 
-    # Wait for server to be ready.
-    time.sleep(3)
+    # Wait for server readiness via mechanism-specific artifacts/endpoints.
+    if config.mechanism == "tcp":
+        if not wait_for_tcp_listener("127.0.0.1", 8080, 15, "H2NQM TCP server"):
+            cleanup_h2nqm_container()
+            return False
+    elif config.mechanism == "uds":
+        if not wait_for_path(H2NQM_SHARED_DIR / f"h2nqm_{config.size}.sock", 15, "H2NQM UDS socket"):
+            cleanup_h2nqm_container()
+            return False
+    elif config.mechanism == "shm":
+        if not wait_for_path(Path("/dev/shm/ipc_benchmark_shm"), 20, "H2NQM SHM segment"):
+            cleanup_h2nqm_container()
+            return False
+    elif config.mechanism == "pmq":
+        if not wait_for_path(Path(f"/dev/mqueue/h2nqm_mq_{config.size}"), 20, "H2NQM PMQ queue"):
+            cleanup_h2nqm_container()
+            return False
 
     sender_cmd = [
         BINARY,
@@ -720,8 +780,23 @@ def run_c2c_test(config: TestConfig, stream_file: Optional[Path] = None) -> bool
         cleanup_c2c_containers()
         return False
     
-    # Wait for server to be ready
-    time.sleep(3)
+    # Wait for server readiness via mechanism-specific artifacts/endpoints.
+    if config.mechanism == "tcp":
+        if not wait_for_tcp_listener("127.0.0.1", 8080, 15, "C2C TCP server"):
+            cleanup_c2c_containers()
+            return False
+    elif config.mechanism == "uds":
+        if not wait_for_path(C2C_SHARED_DIR / f"c2c_{config.size}.sock", 15, "C2C UDS socket"):
+            cleanup_c2c_containers()
+            return False
+    elif config.mechanism == "shm":
+        if not wait_for_path(Path("/dev/shm/ipc_benchmark_shm"), 20, "C2C SHM segment"):
+            cleanup_c2c_containers()
+            return False
+    elif config.mechanism == "pmq":
+        if not wait_for_path(Path(f"/dev/mqueue/c2c_mq_{config.size}"), 20, "C2C PMQ queue"):
+            cleanup_c2c_containers()
+            return False
     
     # Get server IP if needed (for TCP)
     sender_extra = mech_config.get("sender", [])
@@ -1135,6 +1210,14 @@ Examples:
                            help="Only run blocking mode tests")
     mode_group.add_argument("--async-only", action="store_true",
                            help="Only run async mode tests")
+    mode_group.add_argument(
+        "--allow-selinux-permissive",
+        action="store_true",
+        help=(
+            "Allow script to run 'setenforce 0' when SELinux is Enforcing. "
+            "This changes system-wide security policy."
+        ),
+    )
     
     # Streaming options - control which tests get verbose output
     stream_group = parser.add_argument_group("Streaming Options (which tests show real-time output)")
@@ -1243,7 +1326,7 @@ Examples:
         sys.exit(1)
     
     # Check SELinux status (important for H2QM PMQ and C2C tests)
-    check_selinux_for_tests()
+    check_selinux_for_tests(args.allow_selinux_permissive)
     
     # Check and update QM binary if H2QM or QM_C2C tests are included
     if include_h2qm or include_qm_c2c:
