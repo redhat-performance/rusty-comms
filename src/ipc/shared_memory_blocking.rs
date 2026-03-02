@@ -1218,6 +1218,7 @@ impl Default for BlockingSharedMemory {
 mod tests {
     use super::*;
     use crate::ipc::MessageType;
+    use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
 
@@ -1460,6 +1461,7 @@ mod tests {
     fn test_large_message() {
         let segment_name = "test_shm_blocking_large_msg";
         let large_size = 10000; // 10KB message
+        let (received_tx, received_rx) = mpsc::channel();
 
         let server_handle = thread::spawn(move || {
             let mut server = BlockingSharedMemory::new();
@@ -1473,6 +1475,9 @@ mod tests {
             let msg = server.receive_blocking().unwrap();
             assert_eq!(msg.id, 1);
             assert_eq!(msg.payload.len(), large_size);
+            // Signal client that the message has been consumed so the client
+            // does not close the transport first and trigger a shutdown race.
+            received_tx.send(()).unwrap();
 
             server.close_blocking().unwrap();
         });
@@ -1490,6 +1495,8 @@ mod tests {
         let msg = Message::new(1, vec![0xAB; large_size], MessageType::OneWay);
         client.send_blocking(&msg).unwrap();
 
+        // Wait until server confirms receipt before closing client transport.
+        received_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         client.close_blocking().unwrap();
         server_handle.join().unwrap();
     }
