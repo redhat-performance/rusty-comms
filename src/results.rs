@@ -2590,6 +2590,478 @@ mod tests {
         assert_eq!(lowest.unwrap(), "Shared Memory");
     }
 
+    /// Test set_combined_mode toggles the flag.
+    #[test]
+    fn test_set_combined_mode() {
+        let mut mgr = ResultsManager::new(None, None).unwrap();
+        assert!(!mgr.both_tests_enabled);
+
+        mgr.set_combined_mode(true);
+        assert!(mgr.both_tests_enabled);
+
+        mgr.set_combined_mode(false);
+        assert!(!mgr.both_tests_enabled);
+    }
+
+    /// Test is_combined_streaming_enabled under various flag combos.
+    #[test]
+    fn test_is_combined_streaming_enabled() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        drop(tmp);
+
+        // All three flags must be true
+        let mut mgr = ResultsManager::new(None, None).unwrap();
+        mgr.enable_combined_streaming(&path, true).unwrap();
+        assert!(mgr.is_combined_streaming_enabled());
+
+        // Disable one flag at a time
+        mgr.both_tests_enabled = false;
+        assert!(!mgr.is_combined_streaming_enabled());
+        mgr.both_tests_enabled = true;
+
+        mgr.per_message_streaming = false;
+        assert!(!mgr.is_combined_streaming_enabled());
+    }
+
+    /// Test BenchmarkResults::set_failure marks status.
+    #[test]
+    fn test_benchmark_results_set_failure() {
+        let mut results = BenchmarkResults::new(
+            IpcMechanism::TcpSocket,
+            128,
+            8192,
+            1,
+            Some(10),
+            None,
+            0,
+            true,
+            false,
+        );
+
+        assert!(
+            matches!(results.status, BenchmarkStatus::Success),
+            "Default status should be Success"
+        );
+
+        results.set_failure("connection refused".to_string());
+        match &results.status {
+            BenchmarkStatus::Failure(msg) => {
+                assert_eq!(msg, "connection refused");
+            }
+            _ => panic!("Status should be Failure"),
+        }
+    }
+
+    /// Test format_latency for all three branches (ns, us, ms).
+    #[test]
+    fn test_format_latency_branches() {
+        // Nanoseconds (< 1000)
+        let ns_str = format_latency(500);
+        assert_eq!(ns_str, "500 ns");
+
+        // Microseconds (>= 1000, < 1_000_000)
+        let us_str = format_latency(5_000);
+        assert_eq!(us_str, "5.00 us");
+
+        // Milliseconds (>= 1_000_000)
+        let ms_str = format_latency(1_500_000);
+        assert_eq!(ms_str, "1.50 ms");
+
+        // Boundary cases
+        assert_eq!(format_latency(999), "999 ns");
+        assert_eq!(format_latency(1_000), "1.00 us");
+        assert_eq!(format_latency(999_999), "1000.00 us");
+        assert_eq!(format_latency(1_000_000), "1.00 ms");
+    }
+
+    /// Test finalize with output_file writes valid final JSON.
+    #[test]
+    fn test_finalize_with_output_file() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        drop(tmp);
+
+        let mut mgr = ResultsManager::new(Some(&path), None).unwrap();
+
+        let mut results = BenchmarkResults::new(
+            IpcMechanism::TcpSocket,
+            256,
+            8192,
+            1,
+            Some(100),
+            None,
+            0,
+            true,
+            true,
+        );
+        results.summary.average_throughput_mb_s = 150.0;
+        results.summary.average_latency_ns = Some(3000.0);
+        results.summary.total_messages_sent = 100;
+        results.summary.total_bytes_transferred = 25600;
+
+        let rt = Runtime::new().unwrap();
+        rt.block_on(mgr.add_results(results)).unwrap();
+        rt.block_on(mgr.finalize()).unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&content).expect("Final results should be valid JSON");
+
+        assert!(
+            parsed.get("metadata").is_some(),
+            "Should have metadata section"
+        );
+        assert!(
+            parsed.get("results").is_some(),
+            "Should have results section"
+        );
+        let results_arr = parsed["results"]
+            .as_array()
+            .expect("results should be an array");
+        assert_eq!(results_arr.len(), 1);
+    }
+
+    /// Test print_summary with a failed result does not panic.
+    #[test]
+    fn test_print_summary_with_failure() {
+        let mut mgr = ResultsManager::new(None, None).unwrap();
+
+        let mut results = BenchmarkResults::new(
+            IpcMechanism::TcpSocket,
+            128,
+            8192,
+            1,
+            Some(10),
+            None,
+            0,
+            true,
+            false,
+        );
+        results.set_failure("test error".to_string());
+
+        let rt = Runtime::new().unwrap();
+        rt.block_on(mgr.add_results(results)).unwrap();
+
+        // Should not panic even with a failure result
+        mgr.print_summary().unwrap();
+    }
+
+    /// Test update_summary with both results set.
+    #[test]
+    fn test_update_summary_with_both_results() {
+        let mut results = BenchmarkResults::new(
+            IpcMechanism::TcpSocket,
+            128,
+            8192,
+            1,
+            Some(100),
+            None,
+            0,
+            true,
+            true,
+        );
+
+        use crate::metrics::{LatencyType, ThroughputMetrics};
+
+        let ow_metrics = PerformanceMetrics {
+            latency: Some(LatencyMetrics {
+                latency_type: LatencyType::OneWay,
+                min_ns: 500,
+                max_ns: 5000,
+                mean_ns: 2000.0,
+                median_ns: 1800.0,
+                std_dev_ns: 800.0,
+                percentiles: vec![],
+                total_samples: 100,
+                histogram_data: vec![],
+            }),
+            throughput: ThroughputMetrics {
+                messages_per_second: 1_000.0,
+                bytes_per_second: 128_000.0,
+                total_messages: 100,
+                total_bytes: 12800,
+                duration_ns: 100_000_000,
+            },
+            timestamp: chrono::Utc::now(),
+        };
+
+        let rt_metrics = PerformanceMetrics {
+            latency: Some(LatencyMetrics {
+                latency_type: LatencyType::RoundTrip,
+                min_ns: 1000,
+                max_ns: 10000,
+                mean_ns: 4000.0,
+                median_ns: 3600.0,
+                std_dev_ns: 1600.0,
+                percentiles: vec![],
+                total_samples: 100,
+                histogram_data: vec![],
+            }),
+            throughput: ThroughputMetrics {
+                messages_per_second: 500.0,
+                bytes_per_second: 64_000.0,
+                total_messages: 100,
+                total_bytes: 12800,
+                duration_ns: 200_000_000,
+            },
+            timestamp: chrono::Utc::now(),
+        };
+
+        results.add_one_way_results(ow_metrics);
+        results.add_round_trip_results(rt_metrics);
+
+        assert!(
+            results.summary.total_messages_sent > 0,
+            "total_messages_sent should be positive"
+        );
+        assert!(results.summary.average_throughput_mb_s > 0.0);
+        assert!(results.summary.average_latency_ns.is_some());
+    }
+
+    /// Test MessageLatencyRecord::new with OneWay latency type.
+    #[test]
+    fn test_message_latency_record_new_one_way() {
+        let record = MessageLatencyRecord::new(
+            42,
+            IpcMechanism::TcpSocket,
+            256,
+            LatencyType::OneWay,
+            Duration::from_micros(150),
+            1_000_000_000,
+        );
+        assert_eq!(record.message_id, 42);
+        assert_eq!(record.mechanism, IpcMechanism::TcpSocket);
+        assert_eq!(record.message_size, 256);
+        assert_eq!(record.timestamp_ns, 1_000_000_000);
+        assert_eq!(record.one_way_latency_ns, Some(150_000));
+        assert_eq!(record.round_trip_latency_ns, None);
+    }
+
+    /// Test MessageLatencyRecord::new with RoundTrip latency type.
+    #[test]
+    fn test_message_latency_record_new_round_trip() {
+        let record = MessageLatencyRecord::new(
+            7,
+            IpcMechanism::TcpSocket,
+            512,
+            LatencyType::RoundTrip,
+            Duration::from_micros(300),
+            2_000_000_000,
+        );
+        assert_eq!(record.one_way_latency_ns, None);
+        assert_eq!(record.round_trip_latency_ns, Some(300_000));
+        assert_eq!(record.timestamp_ns, 2_000_000_000);
+    }
+
+    /// Test to_csv_record when both latency fields are None.
+    #[test]
+    fn test_message_latency_record_csv_both_none() {
+        let record = MessageLatencyRecord {
+            timestamp_ns: 1_000,
+            message_id: 1,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 128,
+            one_way_latency_ns: None,
+            round_trip_latency_ns: None,
+        };
+        let csv = record.to_csv_record();
+        // Should end with two empty fields (two commas with no values)
+        assert!(
+            csv.ends_with(",,"),
+            "CSV with both None should end with ',,':\n{}",
+            csv
+        );
+        // Should have 5 commas total (6 fields)
+        let comma_count = csv.chars().filter(|c| *c == ',').count();
+        assert_eq!(comma_count, 5, "CSV should have 5 commas for 6 fields");
+    }
+
+    /// Test format_latency with zero input.
+    #[test]
+    fn test_format_latency_zero() {
+        assert_eq!(format_latency(0), "0 ns");
+    }
+
+    /// Verify BenchmarkSummary::default returns zeroed fields.
+    #[test]
+    fn test_benchmark_summary_default() {
+        let summary = BenchmarkSummary::default();
+        assert_eq!(summary.total_messages_sent, 0);
+        assert_eq!(summary.total_bytes_transferred, 0);
+        assert_eq!(summary.average_throughput_mb_s, 0.0);
+        assert!(summary.average_latency_ns.is_none());
+    }
+
+    /// Verify BenchmarkStatus equality and inequality.
+    #[test]
+    fn test_benchmark_status_equality() {
+        assert_eq!(BenchmarkStatus::Success, BenchmarkStatus::Success);
+        assert_eq!(
+            BenchmarkStatus::Failure("a".into()),
+            BenchmarkStatus::Failure("a".into())
+        );
+        assert_ne!(
+            BenchmarkStatus::Success,
+            BenchmarkStatus::Failure("x".into())
+        );
+    }
+
+    /// Verify BenchmarkStatus serialization round-trips correctly.
+    #[test]
+    fn test_benchmark_status_serialization() {
+        let success = BenchmarkStatus::Success;
+        let json = serde_json::to_string(&success).unwrap();
+        let deser: BenchmarkStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(deser, success);
+
+        let failure = BenchmarkStatus::Failure("test error".into());
+        let json = serde_json::to_string(&failure).unwrap();
+        let deser: BenchmarkStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(deser, failure);
+    }
+
+    /// Test find_lowest_latency_mechanism with NaN latency values
+    /// to ensure it doesn't panic.
+    #[test]
+    fn test_find_lowest_latency_mechanism_with_nan() {
+        let mut mgr = ResultsManager::new(None, None).unwrap();
+
+        let mut r1 = BenchmarkResults::new(
+            IpcMechanism::TcpSocket,
+            128,
+            8192,
+            1,
+            Some(10),
+            None,
+            0,
+            true,
+            false,
+        );
+        r1.summary.average_latency_ns = Some(f64::NAN);
+
+        let rt = Runtime::new().unwrap();
+        rt.block_on(mgr.add_results(r1)).unwrap();
+
+        // Must not panic even with NaN values
+        let result = mgr.find_lowest_latency_mechanism();
+        let _ = result;
+    }
+
+    /// Test find_lowest_latency_mechanism selects the mechanism
+    /// with the smallest average latency.
+    #[test]
+    fn test_find_lowest_latency_selects_minimum() {
+        let mut mgr = ResultsManager::new(None, None).unwrap();
+
+        let mut r1 = BenchmarkResults::new(
+            IpcMechanism::TcpSocket,
+            128,
+            8192,
+            1,
+            Some(10),
+            None,
+            0,
+            true,
+            false,
+        );
+        r1.summary.average_latency_ns = Some(5000.0);
+
+        let mut r2 = BenchmarkResults::new(
+            IpcMechanism::SharedMemory,
+            128,
+            8192,
+            1,
+            Some(10),
+            None,
+            0,
+            true,
+            false,
+        );
+        r2.summary.average_latency_ns = Some(2000.0);
+
+        let rt = Runtime::new().unwrap();
+        rt.block_on(mgr.add_results(r1)).unwrap();
+        rt.block_on(mgr.add_results(r2)).unwrap();
+
+        let lowest = mgr.find_lowest_latency_mechanism();
+        assert!(lowest.is_some());
+        assert!(
+            lowest.unwrap().contains("Shared Memory"),
+            "SHM should have lowest latency"
+        );
+    }
+
+    /// Verify print_summary handles a success result without panicking
+    /// and covers the success formatting path.
+    #[test]
+    fn test_print_summary_with_success() {
+        use crate::metrics::ThroughputMetrics;
+
+        let mut mgr = ResultsManager::new(None, None).unwrap();
+
+        let mut results = BenchmarkResults::new(
+            IpcMechanism::TcpSocket,
+            256,
+            8192,
+            1,
+            Some(100),
+            None,
+            0,
+            true,
+            false,
+        );
+
+        let metrics = PerformanceMetrics {
+            latency: Some(LatencyMetrics {
+                latency_type: LatencyType::OneWay,
+                min_ns: 500,
+                max_ns: 5000,
+                mean_ns: 2000.0,
+                median_ns: 1800.0,
+                std_dev_ns: 800.0,
+                percentiles: vec![],
+                total_samples: 100,
+                histogram_data: vec![],
+            }),
+            throughput: ThroughputMetrics {
+                messages_per_second: 10_000.0,
+                bytes_per_second: 2_560_000.0,
+                total_messages: 100,
+                total_bytes: 25600,
+                duration_ns: 10_000_000,
+            },
+            timestamp: chrono::Utc::now(),
+        };
+        results.add_one_way_results(metrics);
+
+        let rt = Runtime::new().unwrap();
+        rt.block_on(mgr.add_results(results)).unwrap();
+
+        // Should not panic with a successful result
+        mgr.print_summary().unwrap();
+    }
+
+    /// Test set_combined_mode and is_combined_streaming_enabled.
+    #[test]
+    fn test_combined_mode_and_streaming_check() {
+        let mut mgr = ResultsManager::new(None, None).unwrap();
+
+        // Initially combined mode is off
+        assert!(
+            !mgr.is_combined_streaming_enabled(),
+            "Combined streaming disabled by default"
+        );
+
+        mgr.set_combined_mode(true);
+
+        // Still false because streaming itself is not enabled
+        assert!(
+            !mgr.is_combined_streaming_enabled(),
+            "Needs streaming to be enabled too"
+        );
+    }
+
     /// Test that find_fastest_mechanism handles NaN throughput
     /// values without panicking.
     #[test]

@@ -1494,6 +1494,40 @@ mod tests {
         server_handle.await.unwrap();
     }
 
+    /// Test Default impl and trait accessors for PMQ transport.
+    #[test]
+    fn test_pmq_default_and_trait_accessors() {
+        let transport = PosixMessageQueueTransport::default();
+        assert_eq!(transport.name(), "POSIX Message Queue");
+        assert!(transport.supports_bidirectional());
+        assert!(!transport.supports_multiple_connections());
+        assert!(transport.max_message_size() > 0);
+        assert_eq!(transport.get_active_connections(), vec![1]);
+    }
+
+    /// Test that send fails when the transport is not connected.
+    #[tokio::test]
+    async fn test_pmq_send_when_not_connected() {
+        let mut transport = PosixMessageQueueTransport::new();
+        let msg = Message::new(1, vec![0u8; 10], MessageType::OneWay);
+        let result = transport.send(&msg).await;
+        assert!(
+            result.is_err(),
+            "send on unconnected PMQ transport should fail"
+        );
+    }
+
+    /// Test that receive fails when the transport is not connected.
+    #[tokio::test]
+    async fn test_pmq_receive_when_not_connected() {
+        let mut transport = PosixMessageQueueTransport::new();
+        let result = transport.receive().await;
+        assert!(
+            result.is_err(),
+            "receive on unconnected PMQ transport should fail"
+        );
+    }
+
     /// Test PMQ with various message sizes.
     #[tokio::test]
     async fn test_pmq_various_message_sizes() {

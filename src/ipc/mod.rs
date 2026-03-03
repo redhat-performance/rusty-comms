@@ -1553,6 +1553,50 @@ mod tests {
         );
     }
 
+    /// Verify the async TransportFactory rejects `IpcMechanism::All`
+    /// with a descriptive error, mirroring the blocking factory behavior.
+    #[test]
+    fn test_async_factory_rejects_all_mechanism() {
+        let result = TransportFactory::create(&crate::cli::IpcMechanism::All);
+        assert!(result.is_err());
+        if let Err(e) = result {
+            let err_msg = e.to_string();
+            assert!(
+                err_msg.contains("All") || err_msg.contains("expand"),
+                "Error should mention 'All': {}",
+                err_msg
+            );
+        }
+    }
+
+    /// Verify the async factory creates transports for each concrete
+    /// mechanism without error.
+    #[test]
+    fn test_async_factory_creates_tcp_transport() {
+        let result = TransportFactory::create(&crate::cli::IpcMechanism::TcpSocket);
+        assert!(result.is_ok(), "Async factory should create TCP transport");
+    }
+
+    #[test]
+    fn test_async_factory_creates_shm_transport() {
+        let result = TransportFactory::create(&crate::cli::IpcMechanism::SharedMemory);
+        assert!(result.is_ok(), "Async factory should create SHM transport");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_async_factory_creates_uds_transport() {
+        let result = TransportFactory::create(&crate::cli::IpcMechanism::UnixDomainSocket);
+        assert!(result.is_ok(), "Async factory should create UDS transport");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_async_factory_creates_pmq_transport() {
+        let result = TransportFactory::create(&crate::cli::IpcMechanism::PosixMessageQueue);
+        assert!(result.is_ok(), "Async factory should create PMQ transport");
+    }
+
     #[test]
     fn test_timestamp_offset_update_in_serialized_buffer() {
         // Create a message with timestamp 0

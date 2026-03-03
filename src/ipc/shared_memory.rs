@@ -1178,4 +1178,144 @@ mod tests {
         client.close().await.unwrap();
         server_handle.await.unwrap();
     }
+
+    /// Verify default trait accessor methods for SharedMemoryTransport.
+    #[tokio::test]
+    async fn test_shm_default_and_trait_accessors() {
+        let transport = SharedMemoryTransport::default();
+        assert_eq!(transport.name(), "Shared Memory");
+        assert!(transport.supports_bidirectional());
+        assert!(transport.supports_multiple_connections());
+        // max_message_size depends on buffer_size; default is 0,
+        // so saturating_sub(1024) returns 0
+        let _max = transport.max_message_size();
+    }
+
+    /// Sending on an unconnected transport should fail with a clear error.
+    #[tokio::test]
+    async fn test_shm_send_when_not_connected() {
+        let mut transport = SharedMemoryTransport::new();
+        let msg = Message::new(1, vec![0u8; 64], MessageType::OneWay);
+        let result = transport.send(&msg).await;
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("not connected"),
+            "Error should mention 'not connected'"
+        );
+    }
+
+    /// Receiving on an unconnected transport should fail.
+    #[tokio::test]
+    async fn test_shm_receive_when_not_connected() {
+        let mut transport = SharedMemoryTransport::new();
+        let result = transport.receive().await;
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("not connected"),
+            "Error should mention 'not connected'"
+        );
+    }
+
+    /// Test ring buffer wrap-around by using a small buffer and sending
+    /// enough messages to force the write position past the buffer
+    /// boundary, exercising the two-part copy paths.
+    #[tokio::test]
+    async fn test_shared_memory_wrap_around() {
+        let shared_memory_name = format!("t-wr-{}", &Uuid::new_v4().as_simple().to_string()[..18]);
+        let config = TransportConfig {
+            shared_memory_name: shared_memory_name.clone(),
+            buffer_size: 512,
+            ..Default::default()
+        };
+
+        let mut server = SharedMemoryTransport::new();
+        let mut client = SharedMemoryTransport::new();
+
+        let server_config = config.clone();
+        let server_handle = tokio::spawn(async move {
+            server.start_server(&server_config).await.unwrap();
+
+            for expected_id in 0u64..10 {
+                let msg = server.receive().await.unwrap();
+                assert_eq!(msg.id, expected_id);
+            }
+            server.close().await.unwrap();
+        });
+
+        sleep(Duration::from_millis(500)).await;
+
+        client.start_client(&config).await.unwrap();
+
+        for id in 0u64..10 {
+            let payload = vec![id as u8; 32];
+            let msg = Message::new(id, payload, MessageType::OneWay);
+            client.send(&msg).await.unwrap();
+            // Allow the server to drain between sends so the small
+            // buffer doesn't fill up.
+            sleep(Duration::from_millis(30)).await;
+        }
+
+        sleep(Duration::from_millis(200)).await;
+        client.close().await.unwrap();
+        server_handle.await.unwrap();
+    }
+
+    /// Test that close_connection returns an error for a non-existent
+    /// connection ID, and that get_active_connections returns an empty
+    /// vec when no multi-server connections exist.
+    #[tokio::test]
+    async fn test_shm_close_nonexistent_connection() {
+        let mut transport = SharedMemoryTransport::new();
+        let result = transport.close_connection(999).await;
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("not found"),
+            "Error should mention 'not found'"
+        );
+    }
+
+    /// Verify get_active_connections returns an empty vec for a
+    /// freshly-created transport with no active connections.
+    #[test]
+    fn test_shm_get_active_connections_empty() {
+        let transport = SharedMemoryTransport::new();
+        let conns = transport.get_active_connections();
+        assert!(
+            conns.is_empty(),
+            "Fresh transport should have no connections"
+        );
+    }
+
+    /// Verify send_to_connection errors when the specified connection
+    /// ID does not exist in the connections map.
+    #[tokio::test]
+    async fn test_shm_send_to_nonexistent_connection() {
+        let mut transport = SharedMemoryTransport::new();
+        let msg = Message::new(1, vec![0u8; 16], MessageType::OneWay);
+        let result = transport.send_to_connection(42, &msg).await;
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("not found"),
+            "Error should mention 'not found'"
+        );
+    }
+
+    /// Double-close should succeed without panicking; the second close
+    /// is a no-op since state is already Disconnected.
+    #[tokio::test]
+    async fn test_shm_close_idempotent() {
+        let shared_memory_name = format!("t-ci-{}", &Uuid::new_v4().as_simple().to_string()[..18]);
+        let config = TransportConfig {
+            shared_memory_name: shared_memory_name.clone(),
+            buffer_size: 4096,
+            ..Default::default()
+        };
+
+        let mut transport = SharedMemoryTransport::new();
+        transport.start_server(&config).await.unwrap();
+
+        transport.close().await.unwrap();
+        // Second close should not panic or error
+        transport.close().await.unwrap();
+    }
 }

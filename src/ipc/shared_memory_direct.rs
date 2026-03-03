@@ -1701,6 +1701,200 @@ mod tests {
         server_handle.join().unwrap();
     }
 
+    /// Test that send_blocking fails when payload exceeds MAX_PAYLOAD_SIZE.
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn test_send_payload_exceeds_max_size() {
+        use std::thread;
+        use std::time::Duration;
+        use uuid::Uuid;
+
+        let shm_name = format!("test_shm_big_{}", Uuid::new_v4());
+        let shm_name_clone = shm_name.clone();
+
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingSharedMemoryDirect::new();
+            let config = TransportConfig {
+                shared_memory_name: shm_name_clone,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+            // Keep alive long enough for client test
+            thread::sleep(Duration::from_secs(2));
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        let mut client = BlockingSharedMemoryDirect::new();
+        let config = TransportConfig {
+            shared_memory_name: shm_name,
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        // Payload 1 byte over the limit
+        let msg = Message::new(1, vec![0u8; MAX_PAYLOAD_SIZE + 1], MessageType::OneWay);
+        let result = client.send_blocking(&msg);
+        assert!(result.is_err(), "Oversized payload should be rejected");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("exceeds MAX_PAYLOAD_SIZE"),
+            "Error should mention MAX_PAYLOAD_SIZE, got: {}",
+            err_msg
+        );
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
+
+    /// Test that send_blocking and receive_blocking fail when
+    /// the transport is not initialized.
+    #[test]
+    fn test_send_receive_uninit_fails() {
+        let mut transport = BlockingSharedMemoryDirect::new();
+
+        let msg = Message::new(1, vec![0u8; 10], MessageType::OneWay);
+        let send_result = transport.send_blocking(&msg);
+        assert!(
+            send_result.is_err(),
+            "send on uninitialized transport should fail"
+        );
+
+        let recv_result = transport.receive_blocking();
+        assert!(
+            recv_result.is_err(),
+            "receive on uninitialized transport should fail"
+        );
+    }
+
+    /// Test that close_blocking is idempotent.
+    #[test]
+    fn test_close_idempotent() {
+        let mut transport = BlockingSharedMemoryDirect::new();
+        transport.close_blocking().unwrap();
+        transport.close_blocking().unwrap();
+    }
+
+    /// Test cross-container mode send/receive on Linux.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_cross_container_send_receive() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+        use std::time::Duration;
+        use uuid::Uuid;
+
+        let shm_name = format!("test_cc_{}", Uuid::new_v4());
+        let shm_name_clone = shm_name.clone();
+        let barrier = Arc::new(Barrier::new(2));
+        let server_barrier = barrier.clone();
+
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingSharedMemoryDirect::new();
+            let config = TransportConfig {
+                shared_memory_name: shm_name_clone,
+                cross_container: true,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+            server_barrier.wait();
+
+            let msg = server.receive_blocking().unwrap();
+            assert_eq!(msg.id, 42);
+            assert_eq!(msg.payload.len(), 64);
+
+            let resp = Message::new_lazy(42, msg.payload, MessageType::Response);
+            server.send_blocking(&resp).unwrap();
+            server.close_blocking().unwrap();
+        });
+
+        barrier.wait();
+        thread::sleep(Duration::from_millis(10));
+
+        let mut client = BlockingSharedMemoryDirect::new();
+        let config = TransportConfig {
+            shared_memory_name: shm_name,
+            cross_container: true,
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        let msg = Message::new(42, vec![0xABu8; 64], MessageType::Request);
+        client.send_blocking(&msg).unwrap();
+        let resp = client.receive_blocking().unwrap();
+        assert_eq!(resp.id, 42);
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
+
+    /// Sending a message whose payload exceeds MAX_PAYLOAD_SIZE should
+    /// still be handled (either succeeds with truncation or returns an
+    /// error); the transport must not panic.
+    #[test]
+    fn test_send_huge_payload_no_panic() {
+        let shm_name = format!(
+            "test_shm_hp_{}",
+            uuid::Uuid::new_v4().as_u128() & 0xffff_ffff
+        );
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let server_name = shm_name.clone();
+        let server_barrier = barrier.clone();
+
+        let server_handle = std::thread::spawn(move || {
+            let mut server = BlockingSharedMemoryDirect::new();
+            let config = TransportConfig {
+                shared_memory_name: server_name,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+            server_barrier.wait();
+
+            // Just wait briefly; client may or may not successfully
+            // send the oversized message.
+            std::thread::sleep(Duration::from_millis(300));
+            server.close_blocking().unwrap();
+        });
+
+        barrier.wait();
+        std::thread::sleep(Duration::from_millis(10));
+
+        let mut client = BlockingSharedMemoryDirect::new();
+        let config = TransportConfig {
+            shared_memory_name: shm_name,
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        // Build a payload that exceeds MAX_PAYLOAD_SIZE (4MB)
+        let big = vec![0xFFu8; 5 * 1024 * 1024];
+        let msg = Message::new(1, big, MessageType::OneWay);
+        let result = client.send_blocking(&msg);
+
+        // Should fail with a clear error, not panic
+        assert!(result.is_err(), "Oversized payload should be rejected");
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
+
+    /// Starting client without a server should fail (or time out).
+    #[test]
+    fn test_shm_direct_client_no_server_fails() {
+        let shm_name = format!(
+            "test_shm_ns_{}",
+            uuid::Uuid::new_v4().as_u128() & 0xffff_ffff
+        );
+        let mut client = BlockingSharedMemoryDirect::new();
+        let config = TransportConfig {
+            shared_memory_name: shm_name,
+            ..Default::default()
+        };
+        let result = client.start_client_blocking(&config);
+        assert!(result.is_err(), "Client connect without server should fail");
+    }
+
     /// Test that the round-trip / one-way latency ratio is reasonable.
     ///
     /// A healthy ratio is approximately 2× (one OW leg in each direction).

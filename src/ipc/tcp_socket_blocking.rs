@@ -626,4 +626,54 @@ mod tests {
         assert!(transport.listener.is_none());
         assert!(transport.stream.is_none());
     }
+
+    /// Test that the server rejects a raw invalid message length prefix.
+    /// We connect a raw TCP stream and send a 4-byte zero length prefix
+    /// to exercise the "Invalid message length" branch in receive.
+    #[test]
+    fn test_receive_invalid_message_length_zero() {
+        use std::io::Write;
+
+        let port = 18090;
+        let mut server = BlockingTcpSocket::new();
+        let config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+        server.start_server_blocking(&config).unwrap();
+
+        // Raw TCP connection sending a zero length prefix
+        let sender_handle = thread::spawn(move || {
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let len_bytes: [u8; 4] = 0u32.to_le_bytes();
+            stream.write_all(&len_bytes).unwrap();
+            stream.flush().unwrap();
+        });
+
+        let result = server.receive_blocking();
+        assert!(result.is_err(), "Receive with zero length should fail");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Invalid message length"),
+            "Error should mention invalid length: {}",
+            err_msg
+        );
+
+        sender_handle.join().unwrap();
+        server.close_blocking().unwrap();
+    }
+
+    /// Test that server bind fails with an invalid address.
+    #[test]
+    fn test_server_bind_invalid_address() {
+        let mut server = BlockingTcpSocket::new();
+        let config = TransportConfig {
+            host: "not-a-real-host".to_string(),
+            port: 19999,
+            ..Default::default()
+        };
+        let result = server.start_server_blocking(&config);
+        assert!(result.is_err(), "Binding to invalid address should fail");
+    }
 }

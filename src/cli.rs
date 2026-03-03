@@ -1380,6 +1380,65 @@ mod tests {
         assert!(parse_concurrency("").is_err());
     }
 
+    /// Test duration parsing with minute and hour units, which
+    /// were previously uncovered by the test suite.
+    #[test]
+    fn test_parse_duration_minutes_and_hours() {
+        // Minutes
+        assert_eq!(
+            parse_duration_micros("5m").unwrap(),
+            Duration::from_secs(300)
+        );
+        assert_eq!(
+            parse_duration_micros("1m").unwrap(),
+            Duration::from_secs(60)
+        );
+        // Fractional minutes
+        let d = parse_duration_micros("1.5m").unwrap();
+        assert_eq!(d, Duration::from_secs(90));
+
+        // Hours
+        assert_eq!(
+            parse_duration_micros("1h").unwrap(),
+            Duration::from_secs(3600)
+        );
+        assert_eq!(
+            parse_duration_micros("2h").unwrap(),
+            Duration::from_secs(7200)
+        );
+        // Fractional hours
+        let d = parse_duration_micros("0.5h").unwrap();
+        assert_eq!(d, Duration::from_secs(1800));
+    }
+
+    /// Test that explicit --one-way and --round-trip flags are
+    /// respected instead of defaulting to (true, true).
+    #[test]
+    fn test_benchmark_configuration_explicit_one_way() {
+        let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "--one-way"]);
+        let cfg: BenchmarkConfiguration = (&args).into();
+        assert!(cfg.one_way);
+        assert!(!cfg.round_trip);
+    }
+
+    /// When only --round-trip is specified, one_way should be false.
+    #[test]
+    fn test_benchmark_configuration_explicit_round_trip() {
+        let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "--round-trip"]);
+        let cfg: BenchmarkConfiguration = (&args).into();
+        assert!(!cfg.one_way);
+        assert!(cfg.round_trip);
+    }
+
+    /// Both --one-way and --round-trip specified explicitly.
+    #[test]
+    fn test_benchmark_configuration_both_explicit() {
+        let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "--one-way", "--round-trip"]);
+        let cfg: BenchmarkConfiguration = (&args).into();
+        assert!(cfg.one_way);
+        assert!(cfg.round_trip);
+    }
+
     #[test]
     fn test_concurrency_zero_rejected_by_cli() {
         // End-to-end: passing --concurrency 0 should fail

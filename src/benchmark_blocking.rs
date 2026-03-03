@@ -2369,6 +2369,101 @@ mod tests {
         assert!(output.contains("Message Count:"));
     }
 
+    /// Test create_transport_config_internal for PMQ mechanism
+    /// uses the safe default buffer size of 8192 bytes.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_create_transport_config_pmq_buffer_size() {
+        let mut args = Args {
+            mechanisms: vec![IpcMechanism::PosixMessageQueue],
+            message_size: 512,
+            msg_count: 100,
+            blocking: true,
+            ..Default::default()
+        };
+        args.port = 8080;
+
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let runner =
+            BlockingBenchmarkRunner::new(config, IpcMechanism::PosixMessageQueue, args.clone());
+
+        let tc = runner.create_transport_config_internal(&args).unwrap();
+        assert_eq!(
+            tc.buffer_size, 8192,
+            "PMQ should default to 8192 byte buffer"
+        );
+    }
+
+    /// Test create_transport_config_internal for SharedMemory uses
+    /// the SHM default buffer size (at least 64KB).
+    #[test]
+    fn test_create_transport_config_shm_buffer_size() {
+        let mut args = Args {
+            mechanisms: vec![IpcMechanism::SharedMemory],
+            message_size: 256,
+            msg_count: 50,
+            blocking: true,
+            ..Default::default()
+        };
+        args.port = 8080;
+
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::SharedMemory, args.clone());
+
+        let tc = runner.create_transport_config_internal(&args).unwrap();
+        assert!(
+            tc.buffer_size >= 65536,
+            "SHM should use at least 64KB buffer, got {}",
+            tc.buffer_size
+        );
+    }
+
+    /// Test create_transport_config_internal uses the large
+    /// duration-mode buffer for non-PMQ, non-SHM mechanisms.
+    #[test]
+    fn test_create_transport_config_duration_mode_buffer() {
+        let mut args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            message_size: 128,
+            duration: Some(std::time::Duration::from_secs(5)),
+            blocking: true,
+            ..Default::default()
+        };
+        args.port = 8080;
+
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args.clone());
+
+        let tc = runner.create_transport_config_internal(&args).unwrap();
+        assert_eq!(
+            tc.buffer_size, 1_073_741_824,
+            "Duration mode for TCP should use 1GB buffer"
+        );
+    }
+
+    /// Test that TCP port=0 causes a validation error.
+    #[test]
+    fn test_create_transport_config_tcp_port_zero_fails() {
+        let args = Args {
+            mechanisms: vec![IpcMechanism::TcpSocket],
+            message_size: 128,
+            msg_count: 10,
+            blocking: true,
+            // Default port is 0 since we use Default::default()
+            ..Default::default()
+        };
+
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::TcpSocket, args.clone());
+
+        let result = runner.create_transport_config_internal(&args);
+        assert!(result.is_err(), "TCP with port=0 should fail validation");
+        assert!(
+            result.unwrap_err().to_string().contains("Invalid port"),
+            "Error should mention invalid port"
+        );
+    }
+
     #[test]
     fn test_runner_config_fields() {
         let args = Args {

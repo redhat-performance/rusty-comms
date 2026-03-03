@@ -2867,4 +2867,100 @@ mod tests {
         let result = super::format_latency(0);
         assert!(result.contains("0 ns"));
     }
+
+    /// Test that set_combined_mode toggles both_tests_enabled.
+    #[test]
+    fn test_set_combined_mode_toggle() {
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        assert!(
+            !manager.both_tests_enabled,
+            "combined mode should default to false"
+        );
+        manager.set_combined_mode(true);
+        assert!(
+            manager.both_tests_enabled,
+            "combined mode should be true after set"
+        );
+        manager.set_combined_mode(false);
+        assert!(
+            !manager.both_tests_enabled,
+            "combined mode should be false after reset"
+        );
+    }
+
+    /// Test flush_pending_records when there are pending combined
+    /// records that haven't been written yet.
+    #[test]
+    fn test_flush_pending_records_with_data() {
+        let tmp = TempDir::new().unwrap();
+        let streaming_path = tmp.path().join("flush_test.json");
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        manager
+            .enable_combined_streaming(&streaming_path, true)
+            .unwrap();
+
+        // Manually insert a pending record
+        let record = MessageLatencyRecord {
+            timestamp_ns: 1000,
+            message_id: 1,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 128,
+            one_way_latency_ns: Some(5000),
+            round_trip_latency_ns: Some(10000),
+        };
+        manager.pending_records.insert(1, record);
+
+        manager.flush_pending_records().unwrap();
+
+        assert!(
+            manager.pending_records.is_empty(),
+            "Pending records should be drained after flush"
+        );
+    }
+
+    /// Test per-message streaming with combined mode: stream two
+    /// partial records for the same message_id and verify they are
+    /// merged in pending_records.
+    #[test]
+    fn test_stream_latency_record_combined_merge() {
+        let tmp = TempDir::new().unwrap();
+        let streaming_path = tmp.path().join("merge_test.json");
+        let mut manager = BlockingResultsManager::new(None, None).unwrap();
+        manager
+            .enable_combined_streaming(&streaming_path, true)
+            .unwrap();
+
+        let ow_record = MessageLatencyRecord {
+            timestamp_ns: 1000,
+            message_id: 42,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 128,
+            one_way_latency_ns: Some(3000),
+            round_trip_latency_ns: None,
+        };
+        manager.stream_latency_record(&ow_record).unwrap();
+
+        // Should be pending since it's partial
+        assert!(
+            manager.pending_records.contains_key(&42),
+            "Partial record should be pending"
+        );
+
+        let rt_record = MessageLatencyRecord {
+            timestamp_ns: 2000,
+            message_id: 42,
+            mechanism: IpcMechanism::TcpSocket,
+            message_size: 128,
+            one_way_latency_ns: None,
+            round_trip_latency_ns: Some(6000),
+        };
+        manager.stream_latency_record(&rt_record).unwrap();
+
+        // After the second record, the merged record should have
+        // been written and removed from pending
+        assert!(
+            !manager.pending_records.contains_key(&42),
+            "Complete merged record should be written and removed"
+        );
+    }
 }

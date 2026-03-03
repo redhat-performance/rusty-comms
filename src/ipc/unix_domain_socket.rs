@@ -813,6 +813,105 @@ mod tests {
         server_handle.await.unwrap();
     }
 
+    /// Test Default impl and trait accessors for UDS transport.
+    #[test]
+    fn test_uds_default_and_trait_accessors() {
+        let transport = UnixDomainSocketTransport::default();
+        assert_eq!(transport.name(), "Unix Domain Socket");
+        assert!(transport.supports_bidirectional());
+        assert_eq!(transport.max_message_size(), 16 * 1024 * 1024);
+        assert!(transport.supports_multiple_connections());
+    }
+
+    /// Test that send fails when the transport is not connected.
+    #[tokio::test]
+    async fn test_uds_send_when_not_connected() {
+        let mut transport = UnixDomainSocketTransport::new();
+        let msg = Message::new(1, vec![0u8; 10], MessageType::OneWay);
+        let result = transport.send(&msg).await;
+        assert!(
+            result.is_err(),
+            "send on unconnected UDS transport should fail"
+        );
+    }
+
+    /// Test that receive fails when the transport is not connected.
+    #[tokio::test]
+    async fn test_uds_receive_when_not_connected() {
+        let mut transport = UnixDomainSocketTransport::new();
+        let result = transport.receive().await;
+        assert!(
+            result.is_err(),
+            "receive on unconnected UDS transport should fail"
+        );
+    }
+
+    /// Test send_to_connection and close_connection on a multi-server.
+    #[tokio::test]
+    async fn test_uds_send_to_and_close_connection() {
+        let socket_path = get_temp_socket_path("test_uds_conn.sock");
+        let config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+
+        let _ = std::fs::remove_file(&socket_path);
+
+        let mut server = UnixDomainSocketTransport::new();
+        let mut receiver = server.start_multi_server(&config).await.unwrap();
+
+        // Wait for socket file
+        for _ in 0..10 {
+            if std::path::Path::new(&socket_path).exists() {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+
+        let mut client = UnixDomainSocketTransport::new();
+        client.start_client(&config).await.unwrap();
+
+        // Client sends a message
+        let msg = Message::new(1, vec![0xAA; 16], MessageType::OneWay);
+        client.send(&msg).await.unwrap();
+
+        // Wait for server to receive
+        let (conn_id, received) = tokio::time::timeout(Duration::from_secs(2), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(received.id, 1);
+
+        // Verify get_active_connections returns the connection
+        let active = server.get_active_connections();
+        assert!(
+            active.contains(&conn_id),
+            "Active connections should contain {conn_id}"
+        );
+
+        // Send a response via send_to_connection
+        let resp = Message::new(2, vec![0xBB; 8], MessageType::Response);
+        server.send_to_connection(conn_id, &resp).await.unwrap();
+
+        // Client receives the response
+        let response = client.receive().await.unwrap();
+        assert_eq!(response.id, 2);
+
+        // Close the specific connection
+        server.close_connection(conn_id).await.unwrap();
+
+        // Closing non-existent connection should fail
+        let result = server.close_connection(99999).await;
+        assert!(result.is_err());
+
+        // send_to_connection on closed connection should fail
+        let result = server.send_to_connection(conn_id, &resp).await;
+        assert!(result.is_err());
+
+        client.close().await.unwrap();
+        server.close().await.unwrap();
+    }
+
     /// Test that closing a UDS transport twice does not panic.
     #[tokio::test]
     async fn test_uds_close_idempotent() {

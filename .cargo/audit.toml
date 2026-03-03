@@ -1,0 +1,8 @@
+# Audit configuration for cargo-audit
+#
+# RUSTSEC-2026-0009: time crate DoS via stack exhaustion
+# The fix requires time >= 0.3.47, but we pin time to < 0.3.36
+# to maintain MSRV 1.70 compatibility. This vulnerability is
+# a DoS risk only (not RCE) and acceptable for a benchmark tool.
+[advisories]
+ignore = ["RUSTSEC-2026-0009"]

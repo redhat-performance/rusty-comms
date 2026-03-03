@@ -1589,6 +1589,74 @@ mod tests {
         assert_eq!(utils::format_latency(0), "0ns");
     }
 
+    /// Test that aggregate_throughput_metrics returns zero rates when
+    /// all workers report zero duration (hitting the else branch).
+    #[test]
+    fn test_aggregate_throughput_zero_duration() {
+        let t = ThroughputMetrics {
+            messages_per_second: 0.0,
+            bytes_per_second: 0.0,
+            total_messages: 50,
+            total_bytes: 5120,
+            duration_ns: 0,
+        };
+        let agg = MetricsCollector::aggregate_throughput_metrics(vec![&t]);
+        assert_eq!(agg.total_messages, 50);
+        assert_eq!(agg.total_bytes, 5120);
+        assert_eq!(
+            agg.messages_per_second, 0.0,
+            "Zero duration should yield 0 msgs/sec"
+        );
+        assert_eq!(
+            agg.bytes_per_second, 0.0,
+            "Zero duration should yield 0 bytes/sec"
+        );
+    }
+
+    /// Test aggregate_latency_metrics when all workers have zero
+    /// samples, exercising the `total_samples == 0` branches.
+    #[test]
+    fn test_aggregate_latency_zero_samples() {
+        let lat = LatencyMetrics {
+            latency_type: LatencyType::OneWay,
+            min_ns: 0,
+            max_ns: 0,
+            mean_ns: 0.0,
+            median_ns: 0.0,
+            std_dev_ns: 0.0,
+            percentiles: vec![],
+            total_samples: 0,
+            histogram_data: vec![],
+        };
+        let result = MetricsCollector::aggregate_latency_metrics(vec![&lat], &[50.0]).unwrap();
+
+        assert_eq!(result.total_samples, 0);
+        assert_eq!(result.mean_ns, 0.0, "Mean should be 0 with 0 samples");
+        assert_eq!(result.std_dev_ns, 0.0, "Std dev should be 0 with 0 samples");
+    }
+
+    /// Test aggregate_worker_metrics with zero-duration throughput
+    /// to ensure the full path exercises the else branches.
+    #[test]
+    fn test_aggregate_worker_metrics_zero_duration() {
+        let worker = PerformanceMetrics {
+            latency: None,
+            throughput: ThroughputMetrics {
+                messages_per_second: 0.0,
+                bytes_per_second: 0.0,
+                total_messages: 100,
+                total_bytes: 10240,
+                duration_ns: 0,
+            },
+            timestamp: chrono::Utc::now(),
+        };
+        let result = MetricsCollector::aggregate_worker_metrics(vec![worker], &[50.0]).unwrap();
+
+        assert_eq!(result.throughput.total_messages, 100);
+        assert_eq!(result.throughput.messages_per_second, 0.0);
+        assert!(result.latency.is_none());
+    }
+
     /// Test formatting edge values for throughput boundaries.
     #[test]
     fn test_format_throughput_boundaries() {

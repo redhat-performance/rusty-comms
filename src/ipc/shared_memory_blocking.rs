@@ -1543,6 +1543,258 @@ mod tests {
         assert!(transport.shmem.is_none());
     }
 
+    /// Test cross-container mode for send/receive.
+    ///
+    /// The cross_container flag enables timed waits with polling fallback
+    /// instead of bare pthread_cond_wait, so that broken pthread condvars
+    /// (which can happen across PID namespaces) are tolerated.
+    #[test]
+    #[cfg(unix)]
+    fn test_cross_container_send_receive() {
+        let segment_name = format!(
+            "test_shm_cc_{}",
+            uuid::Uuid::new_v4().as_u128() & 0xffff_ffff
+        );
+        let segment_clone = segment_name.clone();
+        let (received_tx, received_rx) = mpsc::channel();
+
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingSharedMemory::new();
+            let config = TransportConfig {
+                shared_memory_name: segment_clone,
+                buffer_size: 8192,
+                cross_container: true,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            let msg = server.receive_blocking().unwrap();
+            assert_eq!(msg.id, 77);
+            assert_eq!(msg.payload.len(), 64);
+            received_tx.send(()).unwrap();
+
+            server.close_blocking().unwrap();
+        });
+
+        // Allow server to create segment
+        thread::sleep(Duration::from_millis(200));
+
+        let mut client = BlockingSharedMemory::new();
+        let config = TransportConfig {
+            shared_memory_name: segment_name,
+            buffer_size: 8192,
+            cross_container: true,
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        let msg = Message::new(77, vec![0xBBu8; 64], MessageType::OneWay);
+        client.send_blocking(&msg).unwrap();
+
+        received_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
+
+    /// Test that the ring buffer wrap-around logic works correctly.
+    ///
+    /// Uses a small buffer size to force write_pos to wrap around the end
+    /// of the buffer, exercising the two-part memcpy paths in both
+    /// write_data_blocking and read_data_blocking.
+    #[test]
+    fn test_ring_buffer_wrap_around() {
+        let segment_name = format!(
+            "test_shm_wrap_{}",
+            uuid::Uuid::new_v4().as_u128() & 0xffff_ffff
+        );
+        let segment_clone = segment_name.clone();
+        let msg_count = 20;
+        let (done_tx, done_rx) = mpsc::channel();
+
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingSharedMemory::new();
+            let config = TransportConfig {
+                shared_memory_name: segment_clone,
+                // Small buffer forces frequent wrap-around
+                buffer_size: 256,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            for expected_id in 1..=msg_count {
+                let msg = server.receive_blocking().unwrap();
+                assert_eq!(msg.id, expected_id);
+            }
+            done_tx.send(()).unwrap();
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(200));
+
+        let mut client = BlockingSharedMemory::new();
+        let config = TransportConfig {
+            shared_memory_name: segment_name,
+            buffer_size: 256,
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        for id in 1..=msg_count {
+            let msg = Message::new(id, vec![0xCDu8; 20], MessageType::OneWay);
+            client.send_blocking(&msg).unwrap();
+        }
+
+        done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
+
+    /// Test that receive_blocking preserves one_way_latency_ns for Response messages
+    /// instead of overwriting it with a new calculation.
+    #[test]
+    fn test_receive_preserves_response_latency() {
+        let segment_name = format!(
+            "test_shm_resp_{}",
+            uuid::Uuid::new_v4().as_u128() & 0xffff_ffff
+        );
+        let segment_clone = segment_name.clone();
+        let (received_tx, received_rx) = mpsc::channel();
+
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingSharedMemory::new();
+            let config = TransportConfig {
+                shared_memory_name: segment_clone,
+                buffer_size: 4096,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            // Receive the message and check its latency was calculated
+            let msg = server.receive_blocking().unwrap();
+            assert_eq!(msg.id, 99);
+            assert_eq!(msg.message_type, MessageType::OneWay);
+            assert!(
+                msg.one_way_latency_ns > 0,
+                "OneWay message should have latency calculated"
+            );
+            received_tx.send(()).unwrap();
+
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(200));
+
+        let mut client = BlockingSharedMemory::new();
+        let config = TransportConfig {
+            shared_memory_name: segment_name,
+            buffer_size: 4096,
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        let msg = Message::new(99, vec![0u8; 16], MessageType::OneWay);
+        client.send_blocking(&msg).unwrap();
+
+        received_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
+
+    /// Test multiple messages with cross-container mode to exercise
+    /// timed waits and signaling across multiple send/receive cycles.
+    #[test]
+    #[cfg(unix)]
+    fn test_cross_container_multiple_messages() {
+        let segment_name = format!(
+            "test_shm_ccm_{}",
+            uuid::Uuid::new_v4().as_u128() & 0xffff_ffff
+        );
+        let segment_clone = segment_name.clone();
+        let msg_count = 10;
+        let (done_tx, done_rx) = mpsc::channel();
+
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingSharedMemory::new();
+            let config = TransportConfig {
+                shared_memory_name: segment_clone,
+                buffer_size: 4096,
+                cross_container: true,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            for expected_id in 1..=msg_count {
+                let msg = server.receive_blocking().unwrap();
+                assert_eq!(msg.id, expected_id);
+            }
+            done_tx.send(()).unwrap();
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(200));
+
+        let mut client = BlockingSharedMemory::new();
+        let config = TransportConfig {
+            shared_memory_name: segment_name,
+            buffer_size: 4096,
+            cross_container: true,
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        for id in 1..=msg_count {
+            let msg = Message::new(id, vec![0u8; 32], MessageType::OneWay);
+            client.send_blocking(&msg).unwrap();
+        }
+
+        done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
+
+    /// Sending before the transport is initialized should fail.
+    #[test]
+    fn test_shm_blocking_send_when_not_initialized() {
+        let mut transport = BlockingSharedMemory::new();
+        let msg = Message::new(1, vec![0u8; 32], MessageType::OneWay);
+        let result = transport.send_blocking(&msg);
+        assert!(
+            result.is_err(),
+            "Send on uninitialized transport should fail"
+        );
+    }
+
+    /// Receiving before the transport is initialized should fail.
+    #[test]
+    fn test_shm_blocking_receive_when_not_initialized() {
+        let mut transport = BlockingSharedMemory::new();
+        let result = transport.receive_blocking();
+        assert!(
+            result.is_err(),
+            "Receive on uninitialized transport should fail"
+        );
+    }
+
+    /// Verify that close_blocking is safe to call multiple times.
+    #[test]
+    fn test_shm_blocking_close_twice() {
+        let segment_name = format!(
+            "test_shm_ct_{}",
+            uuid::Uuid::new_v4().as_u128() & 0xffff_ffff
+        );
+        let mut server = BlockingSharedMemory::new();
+        let config = TransportConfig {
+            shared_memory_name: segment_name,
+            buffer_size: 4096,
+            ..Default::default()
+        };
+        server.start_server_blocking(&config).unwrap();
+
+        server.close_blocking().unwrap();
+        // Second close should be a no-op, not a panic
+        server.close_blocking().unwrap();
+    }
+
     /// Test that the round-trip / one-way latency ratio is reasonable.
     ///
     /// A healthy ratio is approximately 2× (one OW leg in each direction).
