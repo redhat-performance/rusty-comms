@@ -284,26 +284,70 @@ impl SharedMemoryRingBuffer {
     /// # Safety
     /// Only available on Unix platforms with pthread support.
     #[cfg(unix)]
-    unsafe fn write_data_blocking(&self, data: &[u8]) -> Result<()> {
+    unsafe fn write_data_blocking(
+        &self,
+        data: &mut [u8],
+        timestamp_offset: Option<std::ops::Range<usize>>,
+    ) -> Result<()> {
         let data_len = data.len();
         let required_space = data_len + 4; // 4 bytes for length prefix
 
         // Lock mutex
-        libc::pthread_mutex_lock(&self.mutex as *const _ as *mut _);
+        let lock_result = libc::pthread_mutex_lock(&self.mutex as *const _ as *mut _);
+        if lock_result != 0 {
+            return self.write_data_polling(data, timestamp_offset.clone());
+        }
 
         // Wait for space to become available
+        let mut wait_count = 0;
+        let loop_start = std::time::Instant::now();
         while self.available_write_space() < required_space {
-            // Check for shutdown while waiting
             if self.shutdown.load(Ordering::Acquire) {
                 libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
                 return Err(anyhow!("Connection closed"));
             }
 
-            // Wait on condition variable (releases mutex, reacquires on wake)
-            libc::pthread_cond_wait(
+            // Detect broken pthread primitives (returning too fast)
+            if wait_count >= 100 && loop_start.elapsed() < Duration::from_millis(10) {
+                libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
+                trace!(
+                    "Detected broken pthread condvar, \
+                     falling back to polling"
+                );
+                return self.write_data_polling(data, timestamp_offset.clone());
+            }
+
+            // Use timed wait (500us) for cross-process robustness
+            let mut ts = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts);
+            ts.tv_nsec += 500_000;
+            if ts.tv_nsec >= 1_000_000_000 {
+                ts.tv_sec += 1;
+                ts.tv_nsec -= 1_000_000_000;
+            }
+
+            libc::pthread_cond_timedwait(
                 &self.space_ready as *const _ as *mut _,
                 &self.mutex as *const _ as *mut _,
+                &ts,
             );
+
+            wait_count += 1;
+            if wait_count > 60000 {
+                libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
+                return Err(anyhow!("Timeout waiting for buffer space"));
+            }
+        }
+
+        // CRITICAL: Update timestamp RIGHT BEFORE writing to shared memory
+        // This ensures accurate latency measurement even under backpressure
+        if let Some(ref ts_range) = timestamp_offset {
+            let ts_now = crate::ipc::get_monotonic_time_ns();
+            let ts_bytes = ts_now.to_le_bytes();
+            data[ts_range.clone()].copy_from_slice(&ts_bytes);
         }
 
         // Space is available, write the data
@@ -331,6 +375,65 @@ impl SharedMemoryRingBuffer {
 
         // Unlock mutex
         libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
+
+        Ok(())
+    }
+
+    /// Fallback polling-based write when pthread primitives
+    /// don't work (e.g., cross-container glibc ABI mismatch).
+    ///
+    /// # Safety
+    /// Only available on Unix platforms.
+    #[cfg(unix)]
+    #[allow(dead_code)]
+    unsafe fn write_data_polling(
+        &self,
+        data: &mut [u8],
+        timestamp_offset: Option<std::ops::Range<usize>>,
+    ) -> Result<()> {
+        let data_len = data.len();
+        let required_space = data_len + 4;
+
+        let start = std::time::Instant::now();
+        let timeout = Duration::from_secs(30);
+
+        while self.available_write_space() < required_space {
+            if self.shutdown.load(Ordering::Acquire) {
+                return Err(anyhow!("Connection closed"));
+            }
+            if start.elapsed() > timeout {
+                return Err(anyhow!(
+                    "Timeout waiting for buffer space \
+                     (polling fallback)"
+                ));
+            }
+            thread::sleep(Duration::from_micros(100));
+        }
+
+        // Update timestamp right before write for accurate
+        // latency measurement under backpressure
+        if let Some(ref ts_range) = timestamp_offset {
+            let ts_now = crate::ipc::get_monotonic_time_ns();
+            let ts_bytes = ts_now.to_le_bytes();
+            data[ts_range.clone()].copy_from_slice(&ts_bytes);
+        }
+
+        let capacity = self.capacity.load(Ordering::Acquire);
+        let write_pos = self.write_pos.load(Ordering::Acquire);
+        let data_ptr = self.data_ptr();
+
+        let len_bytes = (data_len as u32).to_le_bytes();
+        for (i, &byte) in len_bytes.iter().enumerate() {
+            *data_ptr.add((write_pos + i) % capacity) = byte;
+        }
+
+        for (i, &byte) in data.iter().enumerate() {
+            *data_ptr.add((write_pos + 4 + i) % capacity) = byte;
+        }
+
+        self.write_pos
+            .store((write_pos + required_space) % capacity, Ordering::Release);
+        self.message_count.fetch_add(1, Ordering::Release);
 
         Ok(())
     }
@@ -651,18 +754,16 @@ impl BlockingTransport for BlockingSharedMemory {
         let mut serialized =
             bincode::serialize(&message_with_timestamp).context("Failed to serialize message")?;
 
-        // Capture timestamp immediately before send and update bytes in buffer
-        message_with_timestamp.set_timestamp_now();
-        let timestamp_bytes = message_with_timestamp.timestamp.to_le_bytes();
-        let ts_offset = Message::timestamp_offset();
-        serialized[ts_offset].copy_from_slice(&timestamp_bytes);
+        // Timestamp will be captured inside write_data_blocking right before
+        // the actual memory write, ensuring accurate latency even under backpressure
 
-        // Send immediately - no intervening work
+        // Send message - timestamp is updated atomically right before memory write
         // Use condition variable-based blocking write
         #[cfg(unix)]
         {
             unsafe {
-                (*ring_buffer).write_data_blocking(&serialized)?;
+                (*ring_buffer)
+                    .write_data_blocking(&mut serialized, Some(Message::timestamp_offset()))?;
             }
             trace!("Message ID {} sent successfully", message.id);
             Ok(())
