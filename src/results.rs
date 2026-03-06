@@ -153,21 +153,18 @@ impl MessageLatencyRecord {
     /// - `message_size`: Size of the message payload
     /// - `latency_type`: Type of latency measurement
     /// - `latency`: Measured latency duration
+    /// - `send_timestamp_ns`: Unix timestamp (nanoseconds) when the message was sent
     ///
     /// ## Returns
-    /// New record with current system timestamp
+    /// New record with the provided send timestamp
     pub fn new(
         message_id: u64,
         mechanism: IpcMechanism,
         message_size: usize,
         latency_type: LatencyType,
         latency: Duration,
+        send_timestamp_ns: u64,
     ) -> Self {
-        let timestamp_ns = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64;
-
         let latency_ns = latency.as_nanos() as u64;
         let (one_way_latency_ns, round_trip_latency_ns) = match latency_type {
             LatencyType::OneWay => (Some(latency_ns), None),
@@ -175,7 +172,7 @@ impl MessageLatencyRecord {
         };
 
         Self {
-            timestamp_ns,
+            timestamp_ns: send_timestamp_ns,
             message_id,
             mechanism,
             message_size,
@@ -192,23 +189,20 @@ impl MessageLatencyRecord {
     /// - `message_size`: Size of the message payload
     /// - `one_way_latency`: One-way latency measurement
     /// - `round_trip_latency`: Round-trip latency measurement
+    /// - `send_timestamp_ns`: Unix timestamp (nanoseconds) when the message was sent
     ///
     /// ## Returns
-    /// New record with both latency measurements and current timestamp
+    /// New record with both latency measurements and the provided send timestamp
     pub fn new_combined(
         message_id: u64,
         mechanism: IpcMechanism,
         message_size: usize,
         one_way_latency: Duration,
         round_trip_latency: Duration,
+        send_timestamp_ns: u64,
     ) -> Self {
-        let timestamp_ns = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64;
-
         Self {
-            timestamp_ns,
+            timestamp_ns: send_timestamp_ns,
             message_id,
             mechanism,
             message_size,
@@ -239,6 +233,21 @@ impl MessageLatencyRecord {
     /// Check if the record contains combined latency data (both one-way and round-trip)
     pub fn is_combined(&self) -> bool {
         self.one_way_latency_ns.is_some() && self.round_trip_latency_ns.is_some()
+    }
+
+    /// Get current Unix timestamp in nanoseconds
+    ///
+    /// Helper function to capture the current time as a Unix timestamp
+    /// for use with `new()` and `new_combined()` methods.
+    ///
+    /// ## Returns
+    /// Unix timestamp in nanoseconds since epoch
+    #[inline]
+    pub fn current_timestamp_ns() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64
     }
 }
 
@@ -1942,6 +1951,7 @@ mod tests {
         let mut mgr = ResultsManager::new(None, None).unwrap();
         mgr.enable_per_message_streaming(&path).unwrap();
 
+        let timestamp = MessageLatencyRecord::current_timestamp_ns();
         #[cfg(unix)]
         let r1 = MessageLatencyRecord::new(
             1,
@@ -1949,6 +1959,7 @@ mod tests {
             128,
             LatencyType::OneWay,
             Duration::from_micros(10),
+            timestamp,
         );
         #[cfg(not(unix))]
         let r1 = MessageLatencyRecord::new(
@@ -1957,6 +1968,7 @@ mod tests {
             128,
             LatencyType::OneWay,
             Duration::from_micros(10),
+            timestamp,
         );
         #[cfg(unix)]
         let r2 = MessageLatencyRecord::new(
@@ -1965,6 +1977,7 @@ mod tests {
             128,
             LatencyType::RoundTrip,
             Duration::from_micros(20),
+            timestamp,
         );
         #[cfg(not(unix))]
         let r2 = MessageLatencyRecord::new(
@@ -1973,6 +1986,7 @@ mod tests {
             128,
             LatencyType::RoundTrip,
             Duration::from_micros(20),
+            timestamp,
         );
 
         let rt = Runtime::new().unwrap();
@@ -2002,6 +2016,7 @@ mod tests {
         mgr.both_tests_enabled = true;
 
         // Insert pending records out-of-order.
+        let timestamp = MessageLatencyRecord::current_timestamp_ns();
         #[cfg(unix)]
         let r_high = MessageLatencyRecord::new(
             5,
@@ -2009,6 +2024,7 @@ mod tests {
             128,
             LatencyType::OneWay,
             Duration::from_micros(50),
+            timestamp,
         );
         #[cfg(not(unix))]
         let r_high = MessageLatencyRecord::new(
@@ -2017,6 +2033,7 @@ mod tests {
             128,
             LatencyType::OneWay,
             Duration::from_micros(50),
+            timestamp,
         );
         #[cfg(unix)]
         let r_low = MessageLatencyRecord::new(
@@ -2025,6 +2042,7 @@ mod tests {
             128,
             LatencyType::OneWay,
             Duration::from_micros(20),
+            timestamp,
         );
         #[cfg(not(unix))]
         let r_low = MessageLatencyRecord::new(
@@ -2033,6 +2051,7 @@ mod tests {
             128,
             LatencyType::OneWay,
             Duration::from_micros(20),
+            timestamp,
         );
 
         mgr.pending_records.insert(r_high.message_id, r_high);
@@ -2071,6 +2090,7 @@ mod tests {
         let mut mgr = ResultsManager::new(None, None).unwrap();
         mgr.enable_csv_streaming(&path).unwrap();
 
+        let timestamp = MessageLatencyRecord::current_timestamp_ns();
         #[cfg(unix)]
         let r1 = MessageLatencyRecord::new(
             1,
@@ -2078,6 +2098,7 @@ mod tests {
             64,
             LatencyType::OneWay,
             Duration::from_micros(5),
+            timestamp,
         );
         #[cfg(not(unix))]
         let r1 = MessageLatencyRecord::new(
@@ -2086,6 +2107,7 @@ mod tests {
             64,
             LatencyType::OneWay,
             Duration::from_micros(5),
+            timestamp,
         );
 
         let rt = Runtime::new().unwrap();
@@ -2272,12 +2294,14 @@ mod tests {
 
     #[test]
     fn test_message_latency_record_new_combined() {
+        let timestamp = MessageLatencyRecord::current_timestamp_ns();
         let record = MessageLatencyRecord::new_combined(
             42,
             IpcMechanism::TcpSocket,
             256,
             Duration::from_micros(100),
             Duration::from_micros(200),
+            timestamp,
         );
 
         assert_eq!(record.message_id, 42);
@@ -2286,7 +2310,7 @@ mod tests {
         assert_eq!(record.one_way_latency_ns, Some(100_000)); // 100 micros = 100,000 ns
         assert_eq!(record.round_trip_latency_ns, Some(200_000));
         assert!(record.is_combined());
-        assert!(record.timestamp_ns > 0);
+        assert_eq!(record.timestamp_ns, timestamp);
     }
 
     #[test]

@@ -1132,12 +1132,16 @@ impl BlockingBenchmarkRunner {
 
             // Stream latency if enabled
             if let Some(ref mut manager) = results_manager {
+                // Use current timestamp since this is server-measured latency read from file
+                let send_timestamp_ns =
+                    crate::results::MessageLatencyRecord::current_timestamp_ns();
                 let record = crate::results::MessageLatencyRecord::new(
                     i as u64,
                     self.mechanism,
                     self.config.message_size,
                     crate::metrics::LatencyType::OneWay,
                     latency,
+                    send_timestamp_ns,
                 );
                 let _ = manager.stream_latency_record(&record);
             }
@@ -1226,6 +1230,9 @@ impl BlockingBenchmarkRunner {
             }
 
             while start_time.elapsed() < duration {
+                // Capture send timestamp for streaming record (wall clock)
+                let send_timestamp_ns =
+                    crate::results::MessageLatencyRecord::current_timestamp_ns();
                 let send_time = Instant::now();
                 let message = Message::new(i, payload.clone(), MessageType::Request);
 
@@ -1245,6 +1252,7 @@ impl BlockingBenchmarkRunner {
                                     self.config.message_size,
                                     crate::metrics::LatencyType::RoundTrip,
                                     latency,
+                                    send_timestamp_ns,
                                 );
                                 let _ = manager.stream_latency_record(&record);
                             }
@@ -1271,6 +1279,9 @@ impl BlockingBenchmarkRunner {
             }
 
             for i in 0..msg_count {
+                // Capture send timestamp for streaming record (wall clock)
+                let send_timestamp_ns =
+                    crate::results::MessageLatencyRecord::current_timestamp_ns();
                 let send_time = Instant::now();
                 let message = Message::new(i as u64, payload.clone(), MessageType::Request);
                 client_transport.send_blocking(&message)?;
@@ -1293,6 +1304,7 @@ impl BlockingBenchmarkRunner {
                             self.config.message_size,
                             crate::metrics::LatencyType::RoundTrip,
                             latency,
+                            send_timestamp_ns,
                         );
                         let _ = manager.stream_latency_record(&record);
                     }
