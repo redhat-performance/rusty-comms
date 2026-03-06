@@ -494,6 +494,8 @@ impl BenchmarkRunner {
             self.config.msg_count,
             self.config.duration,
             self.config.warmup_iterations,
+            self.config.one_way,
+            self.config.round_trip,
         );
 
         // Run warmup if configured
