@@ -48,7 +48,7 @@
 //! ```
 
 use crate::ipc::{BlockingTransport, Message, TransportConfig};
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use socket2::{Domain, Socket, Type};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -83,6 +83,9 @@ pub struct BlockingTcpSocket {
 }
 
 impl BlockingTcpSocket {
+    /// Maximum accepted frame size (matches async transport guard).
+    const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
+
     /// Create a new TCP socket transport.
     ///
     /// Creates an uninitialized transport. Call `start_server_blocking()` or
@@ -266,6 +269,13 @@ impl BlockingTransport for BlockingTcpSocket {
                  Connection may be closed or peer disconnected.",
         )?;
         let len = u32::from_le_bytes(len_bytes) as usize;
+        if len == 0 || len > Self::MAX_MESSAGE_SIZE {
+            return Err(anyhow!(
+                "Invalid message length: {} bytes (allowed: 1..={})",
+                len,
+                Self::MAX_MESSAGE_SIZE
+            ));
+        }
 
         trace!("Receiving message of {} bytes", len);
 

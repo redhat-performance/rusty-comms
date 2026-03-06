@@ -224,6 +224,13 @@ impl SharedMemoryRingBuffer {
             .store((write_pos + required_space) % capacity, Ordering::Release);
         self.message_count.fetch_add(1, Ordering::Release);
 
+        // Wake readers that may be blocked on the condvar path.
+        // Prevents stalls in mixed-mode operation (polling writer +
+        // blocking reader).
+        unsafe {
+            libc::pthread_cond_signal(&self.data_ready as *const _ as *mut _);
+        }
+
         Ok(())
     }
 
@@ -398,6 +405,79 @@ impl SharedMemoryRingBuffer {
 
         Ok(data)
     }
+
+    /// Fallback polling-based read when pthread primitives don't work.
+    ///
+    /// This is used when pthread_cond_timedwait fails, which can happen
+    /// in containerized environments where process-shared mutexes/condvars
+    /// may not work correctly across the container boundary.
+    ///
+    /// # Safety
+    /// Only available on Unix platforms.
+    #[cfg(unix)]
+    #[allow(dead_code)]
+    unsafe fn read_data_polling(&self) -> Result<Vec<u8>> {
+        let start = std::time::Instant::now();
+        let timeout = Duration::from_secs(10);
+
+        // Poll for data availability
+        while self.available_read_data() < 4 {
+            if self.shutdown.load(Ordering::Acquire) {
+                return Err(anyhow!("Connection closed"));
+            }
+
+            if start.elapsed() > timeout {
+                return Err(anyhow!("Timeout waiting for data (polling fallback)"));
+            }
+
+            thread::sleep(Duration::from_micros(100));
+        }
+
+        // Data is available, read it
+        let capacity = self.capacity.load(Ordering::Acquire);
+        let read_pos = self.read_pos.load(Ordering::Acquire);
+        let data_ptr = self.data_ptr();
+
+        // Read length prefix
+        let mut len_bytes = [0u8; 4];
+        for (i, byte) in len_bytes.iter_mut().enumerate() {
+            *byte = *data_ptr.add((read_pos + i) % capacity);
+        }
+        let data_len = u32::from_le_bytes(len_bytes) as usize;
+
+        if data_len > capacity {
+            return Err(anyhow!(
+                "Invalid data length: {} exceeds capacity {}",
+                data_len,
+                capacity
+            ));
+        }
+
+        // Read data using bulk copy (memcpy) when possible
+        let mut data = vec![0u8; data_len];
+        let data_start = (read_pos + 4) % capacity;
+        if data_start + data_len <= capacity {
+            std::ptr::copy_nonoverlapping(data_ptr.add(data_start), data.as_mut_ptr(), data_len);
+        } else {
+            let first_part = capacity - data_start;
+            std::ptr::copy_nonoverlapping(data_ptr.add(data_start), data.as_mut_ptr(), first_part);
+            std::ptr::copy_nonoverlapping(
+                data_ptr,
+                data.as_mut_ptr().add(first_part),
+                data_len - first_part,
+            );
+        }
+
+        self.read_pos
+            .store((read_pos + data_len + 4) % capacity, Ordering::Release);
+
+        // Wake writers that may be blocked on the condvar path.
+        // Prevents stalls in mixed-mode operation (polling reader +
+        // blocking writer).
+        libc::pthread_cond_signal(&self.space_ready as *const _ as *mut _);
+
+        Ok(data)
+    }
 }
 
 /// Blocking shared memory transport.
@@ -422,6 +502,21 @@ pub struct BlockingSharedMemory {
 
     /// Whether this instance is the server (creator)
     is_server: bool,
+
+    /// Name of the active shared memory segment.
+    ///
+    /// Stored so close_blocking() can perform deterministic cleanup
+    /// (e.g., shm_unlink on server instances).
+    shared_memory_name: String,
+
+    /// Cross-container mode flag
+    ///
+    /// When true, uses container-safe synchronization
+    /// (timed waits, polling fallbacks).
+    /// When false (default), uses fast pthread_cond_wait for
+    /// same-host communication.
+    #[allow(dead_code)]
+    cross_container: bool,
 }
 
 // Safety: The ring buffer uses atomic operations for coordination
@@ -447,6 +542,8 @@ impl BlockingSharedMemory {
             ring_buffer: None,
             shmem: None,
             is_server: false,
+            shared_memory_name: String::new(),
+            cross_container: false,
         }
     }
 
@@ -553,6 +650,7 @@ impl BlockingTransport for BlockingSharedMemory {
         self.ring_buffer = Some(ptr);
         self.shmem = Some(Arc::new(Mutex::new(shmem)));
         self.is_server = true;
+        self.shared_memory_name = config.shared_memory_name.clone();
 
         debug!("Shared memory server created successfully");
 
@@ -606,6 +704,7 @@ impl BlockingTransport for BlockingSharedMemory {
         self.ring_buffer = Some(ptr);
         self.shmem = Some(Arc::new(Mutex::new(shmem)));
         self.is_server = false;
+        self.shared_memory_name = config.shared_memory_name.clone();
 
         debug!("Client connected to shared memory successfully");
         Ok(())
@@ -725,6 +824,10 @@ impl BlockingTransport for BlockingSharedMemory {
     fn close_blocking(&mut self) -> Result<()> {
         debug!("Closing blocking shared memory transport");
 
+        // Capture cleanup metadata before dropping local state.
+        let should_unlink = self.is_server && !self.shared_memory_name.is_empty();
+        let shm_name = self.shared_memory_name.clone();
+
         if let Some(ring_buffer) = self.ring_buffer {
             unsafe {
                 (*ring_buffer).shutdown.store(true, Ordering::Release);
@@ -735,20 +838,43 @@ impl BlockingTransport for BlockingSharedMemory {
                     libc::pthread_cond_broadcast(&(*ring_buffer).data_ready as *const _ as *mut _);
                     libc::pthread_cond_broadcast(&(*ring_buffer).space_ready as *const _ as *mut _);
                 }
-
-                // Only destroy synchronization primitives if we're the server
-                // (server created the shared memory)
-                #[cfg(unix)]
-                if self.is_server {
-                    libc::pthread_mutex_destroy(&(*ring_buffer).mutex as *const _ as *mut _);
-                    libc::pthread_cond_destroy(&(*ring_buffer).data_ready as *const _ as *mut _);
-                    libc::pthread_cond_destroy(&(*ring_buffer).space_ready as *const _ as *mut _);
-                }
             }
         }
 
         self.ring_buffer = None;
         self.shmem = None;
+        self.is_server = false;
+
+        // Best-effort unlink so stale SHM objects do not accumulate across runs.
+        #[cfg(target_os = "linux")]
+        if should_unlink {
+            use std::ffi::CString;
+            let posix_name = if shm_name.starts_with('/') {
+                shm_name
+            } else {
+                format!("/{}", shm_name)
+            };
+
+            match CString::new(posix_name.as_bytes()) {
+                Ok(c_name) => unsafe {
+                    let rc = libc::shm_unlink(c_name.as_ptr());
+                    if rc == 0 {
+                        debug!("Unlinked SHM segment on close: {}", posix_name);
+                    } else {
+                        debug!(
+                            "shm_unlink failed during close for {}: {}",
+                            posix_name,
+                            std::io::Error::last_os_error()
+                        );
+                    }
+                },
+                Err(_) => {
+                    debug!("Skipping shm_unlink: SHM name contains interior NUL");
+                }
+            }
+        }
+
+        self.shared_memory_name.clear();
 
         debug!("Blocking shared memory transport closed");
         Ok(())

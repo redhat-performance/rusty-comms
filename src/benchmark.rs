@@ -1602,7 +1602,10 @@ port={}",
         let unique_id = Uuid::new_v4();
         // Use shortened UUID for socket paths to stay within macOS SUN_LEN limit (104 bytes)
         let short_id = &unique_id.to_string()[..8];
-        let unique_port = self.config.port + (unique_id.as_u128() as u16 % 1000);
+        let port_offset = (unique_id.as_u128() % 1000) as u32;
+        // Keep computed ports within valid TCP range [1, 65535] without overflow.
+        let base_port = u32::from(self.config.port.max(1));
+        let unique_port = ((base_port - 1 + port_offset) % 65_535 + 1) as u16;
 
         // Determine if the current mechanism is PMQ
         let is_pmq = {
