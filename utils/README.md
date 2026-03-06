@@ -5,7 +5,7 @@ benchmarks and processing results.
 
 ## Scripts
 
-### fullrun.py
+### comprehensive-rusty-comms-testing.py
 
 A comprehensive benchmark suite runner that automates running all IPC test
 configurations across multiple execution modes.
@@ -34,28 +34,28 @@ configurations across multiple execution modes.
 
 ```bash
 # Run all tests (quiet mode) — includes Standalone, H2QM, H2NQM, C2C
-python3 fullrun.py
+python3 comprehensive-rusty-comms-testing.py
 
 # Run all tests with real-time streaming output
-python3 fullrun.py --stream
+python3 comprehensive-rusty-comms-testing.py --stream
 
 # Run only standalone tests
-python3 fullrun.py --standalone-only
+python3 comprehensive-rusty-comms-testing.py --standalone-only
 
 # Run only Host-to-non-QM container tests
-python3 fullrun.py --h2nqm-only
+python3 comprehensive-rusty-comms-testing.py --h2nqm-only
 
 # Run with streaming for specific message sizes
-python3 fullrun.py --stream --sizes 1024,4096
+python3 comprehensive-rusty-comms-testing.py --stream --sizes 1024,4096
 
 # Generate both JSON and CSV output
-python3 fullrun.py --output both
+python3 comprehensive-rusty-comms-testing.py --output both
 
 # Include QM C2C tests (not included by default)
-python3 fullrun.py --include-qm-c2c
+python3 comprehensive-rusty-comms-testing.py --include-qm-c2c
 
 # Override default paths
-python3 fullrun.py --binary /path/to/ipc-benchmark \
+python3 comprehensive-rusty-comms-testing.py --binary /path/to/ipc-benchmark \
     --output-dir /path/to/results \
     --project-dir /path/to/rusty-comms
 ```
@@ -74,6 +74,8 @@ python3 fullrun.py --binary /path/to/ipc-benchmark \
 | `--include-qm-c2c` | Include QM C2C tests (not included by default) |
 | `--blocking-only` | Only run blocking (synchronous) mode tests |
 | `--async-only` | Only run async mode tests |
+| `--mechanisms` | Only run specific mechanisms (e.g., `--mechanisms pmq,tcp`) |
+| `--allow-selinux-permissive` | Allow `setenforce 0` for PMQ tests in QM containers |
 
 **Streaming Options** (which tests show real-time output):
 

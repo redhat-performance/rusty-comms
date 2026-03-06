@@ -219,7 +219,7 @@ Advanced:
 ### Missing Files
 
 1. **CHANGELOG.md** - Referenced but doesn't exist
-2. ~~**Utility scripts documentation**~~ - `fullrun.py`, `generate_summary_csv.py` now documented in `utils/README.md`
+2. ~~**Utility scripts documentation**~~ - `comprehensive-rusty-comms-testing.py`, `generate_summary_csv.py` now documented in `utils/README.md`
 
 ---
 

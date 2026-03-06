@@ -130,7 +130,7 @@ podman exec -it qm /path/to/ipc-benchmark \
 | TCP | Network accessible | Full round-trip support |
 | UDS | Shared volume for socket | Full round-trip support |
 | SHM | Shared `/dev/shm` mount | One-way recommended |
-| PMQ | `--ipc=host` + mount `/dev/mqueue` | Full support with shared IPC namespace |
+| PMQ | `--ipc=host` + mount `/dev/mqueue` | Full support with shared IPC namespace (see [SELinux note](#selinux-and-pmq-in-qm-containers)) |
 
 ## Shared Memory Implementations
 
@@ -823,6 +823,50 @@ The benchmark provides two log streams: a user-friendly console output and a det
 # Send detailed diagnostic logs to stderr instead of a file
 ./target/release/ipc-benchmark --log-file stderr
 ```
+
+### SELinux and PMQ in QM Containers
+
+POSIX Message Queue (PMQ) tests fail inside QM containers when SELinux
+is in **Enforcing** mode. The `qm_t` SELinux domain blocks all POSIX
+message queue system calls (`mq_open`, `mq_send`, `mq_receive`),
+causing H2QM and QM-C2C PMQ tests to time out.
+
+This affects:
+- **H2QM PMQ** — host-to-QM benchmarks using POSIX message queues
+- **QM C2C PMQ** — container-to-container benchmarks within QM
+
+**Using the test runner:**
+
+Pass `--allow-selinux-permissive` to temporarily set SELinux to
+Permissive mode for the duration of the test run:
+
+```bash
+python3 utils/comprehensive-rusty-comms-testing.py --allow-selinux-permissive
+```
+
+Without the flag, PMQ tests in these modes are automatically skipped
+with a diagnostic message.
+
+**Running manually (outside the test runner):**
+
+Temporarily disable SELinux enforcement before starting the PMQ
+server inside the QM container:
+
+```bash
+# Disable enforcement (system-wide, temporary until reboot)
+setenforce 0
+
+# Run your PMQ benchmark...
+
+# Restore enforcement when done
+setenforce 1
+```
+
+You can verify the current SELinux mode at any time with `getenforce`.
+
+> **Note:** `setenforce` changes are immediate and do not persist
+> across reboots. The permanent SELinux mode is configured in
+> `/etc/selinux/config`.
 
 ### Performance Issues
 

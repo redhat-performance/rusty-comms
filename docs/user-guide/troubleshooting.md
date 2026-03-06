@@ -254,6 +254,45 @@ ls /dev/mqueue/
 rm /dev/mqueue/ipc_benchmark_*
 ```
 
+#### SELinux Blocks PMQ in QM Containers
+
+**Error:**
+```
+Permission denied (os error 13)
+```
+or PMQ tests time out waiting for queues to appear.
+
+**Cause:** The `qm_t` SELinux domain blocks all POSIX message queue
+system calls (`mq_open`, `mq_send`, `mq_receive`). This affects
+H2QM and QM-C2C PMQ benchmarks when SELinux is in Enforcing mode.
+
+**Solution:**
+
+1. **With the test runner** — pass `--allow-selinux-permissive`:
+```bash
+python3 utils/comprehensive-rusty-comms-testing.py --allow-selinux-permissive
+```
+Without the flag, affected PMQ tests are automatically skipped.
+
+2. **Running manually** — temporarily disable enforcement:
+```bash
+# Disable enforcement (immediate, system-wide)
+setenforce 0
+
+# Run your PMQ benchmark...
+
+# Restore enforcement when done
+setenforce 1
+```
+
+3. **Check current mode:**
+```bash
+getenforce
+```
+
+> **Note:** `setenforce` changes do not persist across reboots.
+> The permanent SELinux mode is set in `/etc/selinux/config`.
+
 ## Performance Issues
 
 ### Inconsistent Results
