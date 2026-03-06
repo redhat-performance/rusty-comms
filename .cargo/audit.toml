@@ -1,0 +1,12 @@
+# Audit configuration for cargo-audit
+#
+# RUSTSEC-2026-0007: bytes crate integer overflow in BytesMut::reserve
+# Fix requires bytes >= 1.11.1. Pinned via tokio dependency for MSRV
+# compatibility. This is a DoS risk only, acceptable for a benchmark tool.
+#
+# RUSTSEC-2026-0009: time crate DoS via stack exhaustion
+# Fix requires time >= 0.3.47, but we pin time to < 0.3.36
+# to maintain MSRV 1.70 compatibility. DoS risk only, acceptable
+# for a benchmark tool.
+[advisories]
+ignore = ["RUSTSEC-2026-0007", "RUSTSEC-2026-0009"]
