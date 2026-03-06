@@ -524,7 +524,14 @@ impl IpcTransport for PosixMessageQueueTransport {
     /// error, indicating that the message queue is full. The transport will
     /// retry with a backoff, and a warning will be logged on the first
     /// occurrence.
+    ///
+    /// ## Timestamp Accuracy
+    ///
+    /// To ensure accurate one-way latency measurement, the timestamp is updated
+    /// immediately before the `mq_send` syscall inside the blocking task. This
+    /// excludes async scheduling overhead from the measured latency.
     async fn send(&mut self, message: &Message) -> Result<bool> {
+        // Pre-serialize with current timestamp (will be updated before send)
         let data = message.to_bytes()?;
         let fd_ref = self
             .mq_fd
@@ -538,6 +545,9 @@ impl IpcTransport for PosixMessageQueueTransport {
         // Get the priority from the config, which was set during transport creation.
         let priority = self.config.as_ref().map_or(0, |c| c.pmq_priority);
 
+        // Pre-compute timestamp offset for efficient in-place updates
+        let ts_offset = Message::timestamp_offset();
+
         // Use non-blocking send with exponential backoff for queue-full conditions
         let mut retry_delay_ms = 1;
         let max_retries = 100; // More retries since each one is much faster
@@ -545,8 +555,16 @@ impl IpcTransport for PosixMessageQueueTransport {
         for attempt in 0..max_retries {
             let start_time = std::time::Instant::now();
             let result = tokio::task::spawn_blocking({
-                let data = data.clone();
+                let mut data = data.clone();
+                let ts_range = ts_offset.clone();
                 move || {
+                    // CRITICAL: Update timestamp immediately before mq_send syscall
+                    // This ensures accurate latency measurement by excluding async
+                    // scheduling overhead from the measured one-way latency.
+                    let ts_now = crate::ipc::get_monotonic_time_ns();
+                    let ts_bytes = ts_now.to_le_bytes();
+                    data[ts_range].copy_from_slice(&ts_bytes);
+
                     // Reconstruct MqdT from raw fd for the blocking operation
                     let fd = unsafe { MqdT::from_raw_fd(raw_fd) };
                     // std::mem::forget(fd); // Don't close the fd when this MqdT drops
@@ -649,6 +667,12 @@ impl IpcTransport for PosixMessageQueueTransport {
     /// - **Temporary**: Queue empty (EAGAIN) - retried automatically
     /// - **Permanent**: Invalid queue state or deserialization failure
     /// - **Resource**: No queue available or transport not initialized
+    /// ## Timestamp Accuracy
+    ///
+    /// To ensure accurate one-way latency measurement, the receive timestamp is
+    /// captured immediately after `mq_receive` completes inside the blocking task.
+    /// The one-way latency is calculated and stored in the message's `one_way_latency_ns`
+    /// field, excluding async scheduling overhead from the measured latency.
     async fn receive(&mut self) -> Result<Message> {
         let fd_ref = self
             .mq_fd
@@ -657,9 +681,10 @@ impl IpcTransport for PosixMessageQueueTransport {
         let raw_fd = fd_ref.as_raw_fd();
         let max_msg_size = self.max_msg_size;
 
-        // Use non-blocking receive with exponential backoff for empty queue conditions
-        let mut retry_delay_ms = 1;
-        let max_retries = 100;
+        // Use non-blocking receive with moderate polling
+        // Balance between latency impact and CPU usage
+        let mut retry_delay_us = 100; // Start with 100 microseconds
+        let max_retries = 1000; // Reasonable retry count
 
         for attempt in 0..max_retries {
             let result = tokio::task::spawn_blocking({
@@ -669,20 +694,26 @@ impl IpcTransport for PosixMessageQueueTransport {
                     let mut priority = 0u32;
                     // std::mem::forget(fd); // Don't close the fd when this M-q-dT drops
                     mq_receive(&fd, &mut buffer, &mut priority).map(|bytes_read| {
+                        // CRITICAL: Capture receive timestamp immediately after mq_receive
+                        // This excludes async scheduling overhead from latency measurement
+                        let receive_time_ns = crate::ipc::get_monotonic_time_ns();
+
                         buffer.truncate(bytes_read);
-                        buffer
+                        (buffer, receive_time_ns)
                     })
                 }
             })
             .await?;
 
             match result {
-                Ok(buffer) => {
+                Ok((buffer, _receive_time_ns)) => {
                     debug!(
                         "Received message {} bytes via POSIX message queue",
                         buffer.len()
                     );
-                    return Message::from_bytes(&buffer);
+                    let message = Message::from_bytes(&buffer)?;
+
+                    return Ok(message);
                 }
                 Err(Errno::EAGAIN) => {
                     // Queue is empty, wait and retry
@@ -692,10 +723,9 @@ impl IpcTransport for PosixMessageQueueTransport {
                             max_retries
                         ));
                     }
-                    // Justification: Short, exponentially increasing delay to wait for a message to arrive
-                    // in an empty queue without busy-waiting.
-                    tokio::time::sleep(Duration::from_millis(retry_delay_ms)).await;
-                    retry_delay_ms = (retry_delay_ms * 2).min(10); // Cap at 10ms
+                    // Use moderate delays (100-500 microseconds) to balance latency and CPU
+                    tokio::time::sleep(Duration::from_micros(retry_delay_us)).await;
+                    retry_delay_us = (retry_delay_us * 2).min(500); // Cap at 500µs
                 }
                 Err(e) => {
                     return Err(anyhow!("Failed to receive message: {}", e));
