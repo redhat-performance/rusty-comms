@@ -521,7 +521,21 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
             // CRITICAL: Capture timestamp immediately before write
             let timestamp_ns = crate::ipc::get_monotonic_time_ns();
 
-            // Write message data directly to shared memory (no serialization!)
+            // Validate payload size before writing to prevent
+            // silent truncation and potential mutex leaks on error
+            if message.payload.len() > MAX_PAYLOAD_SIZE {
+                libc::pthread_mutex_unlock(&mut (*ptr).mutex);
+                return Err(anyhow!(
+                    "Message payload size {} exceeds \
+                     MAX_PAYLOAD_SIZE {} for --shm-direct mode. \
+                     Use -m shm without --shm-direct for larger \
+                     messages, or reduce message size.",
+                    message.payload.len(),
+                    MAX_PAYLOAD_SIZE
+                ));
+            }
+
+            // Write message data directly to shared memory
             (*ptr).id = message.id;
             (*ptr).timestamp = timestamp_ns;
             (*ptr).message_type = message.message_type as u32;

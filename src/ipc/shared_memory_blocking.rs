@@ -224,12 +224,8 @@ impl SharedMemoryRingBuffer {
             .store((write_pos + required_space) % capacity, Ordering::Release);
         self.message_count.fetch_add(1, Ordering::Release);
 
-        // Wake readers that may be blocked on the condvar path.
-        // Prevents stalls in mixed-mode operation (polling writer +
-        // blocking reader).
-        unsafe {
-            libc::pthread_cond_signal(&self.data_ready as *const _ as *mut _);
-        }
+        // On non-Unix there are no condvars; readers poll with
+        // yield + sleep, so no signal is needed here.
 
         Ok(())
     }
@@ -335,6 +331,89 @@ impl SharedMemoryRingBuffer {
 
         // Unlock mutex
         libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
+
+        Ok(())
+    }
+
+    /// Fallback polling-based write when pthread primitives don't work.
+    ///
+    /// This is used when pthread_cond_timedwait fails, which can happen
+    /// in containerized environments where process-shared mutexes/condvars
+    /// may not work correctly across the container boundary.
+    ///
+    /// # Safety
+    /// Only available on Unix platforms.
+    #[cfg(unix)]
+    #[allow(dead_code)]
+    unsafe fn write_data_polling(
+        &self,
+        data: &mut [u8],
+        timestamp_offset: Option<std::ops::Range<usize>>,
+    ) -> Result<()> {
+        let data_len = data.len();
+        let required_space = data_len + 4; // 4 bytes for length prefix
+
+        let start = std::time::Instant::now();
+        let timeout = Duration::from_secs(10);
+
+        // Poll for space availability with sleep
+        while self.available_write_space() < required_space {
+            if self.shutdown.load(Ordering::Acquire) {
+                return Err(anyhow!("Connection closed"));
+            }
+
+            if start.elapsed() > timeout {
+                return Err(anyhow!(
+                    "Timeout waiting for buffer space (polling fallback)"
+                ));
+            }
+
+            // Sleep to avoid busy-waiting
+            thread::sleep(Duration::from_micros(100));
+        }
+
+        // CRITICAL: Update timestamp RIGHT BEFORE writing to shared memory
+        // This ensures accurate latency measurement even under backpressure
+        if let Some(ref ts_range) = timestamp_offset {
+            let ts_now = crate::ipc::get_monotonic_time_ns();
+            let ts_bytes = ts_now.to_le_bytes();
+            data[ts_range.clone()].copy_from_slice(&ts_bytes);
+        }
+
+        // Space is available, write the data
+        let capacity = self.capacity.load(Ordering::Acquire);
+        let write_pos = self.write_pos.load(Ordering::Acquire);
+        let data_ptr = self.data_ptr();
+
+        // Write length prefix (little-endian)
+        let len_bytes = (data_len as u32).to_le_bytes();
+        for (i, &byte) in len_bytes.iter().enumerate() {
+            *data_ptr.add((write_pos + i) % capacity) = byte;
+        }
+
+        // Write data using bulk copy (memcpy) when possible
+        let data_start = (write_pos + 4) % capacity;
+        if data_start + data_len <= capacity {
+            std::ptr::copy_nonoverlapping(data.as_ptr(), data_ptr.add(data_start), data_len);
+        } else {
+            let first_part = capacity - data_start;
+            std::ptr::copy_nonoverlapping(data.as_ptr(), data_ptr.add(data_start), first_part);
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr().add(first_part),
+                data_ptr,
+                data_len - first_part,
+            );
+        }
+
+        self.write_pos
+            .store((write_pos + required_space) % capacity, Ordering::Release);
+        self.message_count.fetch_add(1, Ordering::Release);
+
+        // Signal any reader blocked on the condvar path.
+        // Without this, a blocking reader (read_data_blocking) paired
+        // with a polling writer would never be woken, causing a
+        // deadlock in mixed-mode operation.
+        libc::pthread_cond_signal(&self.data_ready as *const _ as *mut _);
 
         Ok(())
     }
@@ -699,6 +778,11 @@ impl BlockingTransport for BlockingSharedMemory {
         // Mark client as ready
         unsafe {
             (*ptr).client_ready.store(true, Ordering::Release);
+            // Signal data_ready in case server is waiting on condvar
+            #[cfg(unix)]
+            {
+                libc::pthread_cond_broadcast(&(*ptr).data_ready as *const _ as *mut _);
+            }
         }
 
         self.ring_buffer = Some(ptr);
@@ -878,6 +962,24 @@ impl BlockingTransport for BlockingSharedMemory {
 
         debug!("Blocking shared memory transport closed");
         Ok(())
+    }
+}
+
+/// Ensure resources are cleaned up even if `close_blocking()` is never
+/// called (e.g. due to a panic or early return). Sets the shutdown flag,
+/// wakes any blocked readers/writers, and unlinks the SHM segment when
+/// this instance is the server (creator).
+impl Drop for BlockingSharedMemory {
+    fn drop(&mut self) {
+        // close_blocking() is idempotent; safe to call even if the
+        // transport was never started or was already closed.
+        if let Err(e) = self.close_blocking() {
+            tracing::debug!(
+                "BlockingSharedMemory::drop: close_blocking \
+                 returned error (best-effort cleanup): {}",
+                e
+            );
+        }
     }
 }
 
