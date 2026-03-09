@@ -296,7 +296,7 @@ async fn run_async_mode(args: Args) -> Result<()> {
                     let mut failed_result = BenchmarkResults::new(
                         mechanism,
                         config.message_size,
-                        0,
+                        0, // Buffer size unknown in failure case
                         config.concurrency,
                         config.msg_count,
                         config.duration,
@@ -525,7 +525,7 @@ fn run_blocking_mode(args: Args) -> Result<()> {
                     let mut failed_result = BenchmarkResults::new(
                         mechanism,
                         config.message_size,
-                        0,
+                        0, // Buffer size unknown in failure case
                         config.concurrency,
                         config.msg_count,
                         config.duration,

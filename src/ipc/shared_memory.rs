@@ -330,15 +330,12 @@ impl SharedMemoryConnection {
         }
     }
 
-    /// Receives a message with accurate timestamp capture for
-    /// latency measurement.
+    /// Receives a message from the shared-memory ring buffer.
     ///
-    /// The receive timestamp is captured immediately after reading
-    /// from shared memory for accurate latency calculation.
-    ///
-    /// Uses a short poll-and-sleep loop (10us) to yield to the OS
-    /// scheduler between retries, which is necessary for cross-
-    /// process shared memory where notify doesn't work.
+    /// Uses a short poll-and-sleep loop (10µs) to yield to the
+    /// OS scheduler between retries, which is necessary for
+    /// cross-process shared memory where in-process notify
+    /// doesn't reach the other process.
     async fn receive_message(&self) -> Result<Message> {
         let ring_buffer = self.get_ring_buffer();
 
@@ -349,8 +346,6 @@ impl SharedMemoryConnection {
         loop {
             match ring_buffer.read_data() {
                 Ok(data) => {
-                    let _receive_time_ns = crate::ipc::get_monotonic_time_ns();
-
                     let message = Message::from_bytes(&data)?;
                     debug!(
                         "Received message {} via connection {}",

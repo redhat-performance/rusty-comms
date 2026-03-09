@@ -668,12 +668,10 @@ impl IpcTransport for PosixMessageQueueTransport {
     /// - **Permanent**: Invalid queue state or deserialization failure
     /// - **Resource**: No queue available or transport not initialized
     ///
-    /// ## Timestamp Accuracy
+    /// ## Polling Strategy
     ///
-    /// To ensure accurate one-way latency measurement, the receive timestamp is
-    /// captured immediately after `mq_receive` completes inside the blocking task.
-    /// The one-way latency is calculated and stored in the message's `one_way_latency_ns`
-    /// field, excluding async scheduling overhead from the measured latency.
+    /// Uses moderate polling (100–500µs backoff, 1000 retries) to
+    /// balance latency impact against CPU usage.
     async fn receive(&mut self) -> Result<Message> {
         let fd_ref = self
             .mq_fd
@@ -695,19 +693,15 @@ impl IpcTransport for PosixMessageQueueTransport {
                     let mut priority = 0u32;
                     // std::mem::forget(fd); // Don't close the fd when this M-q-dT drops
                     mq_receive(&fd, &mut buffer, &mut priority).map(|bytes_read| {
-                        // CRITICAL: Capture receive timestamp immediately after mq_receive
-                        // This excludes async scheduling overhead from latency measurement
-                        let receive_time_ns = crate::ipc::get_monotonic_time_ns();
-
                         buffer.truncate(bytes_read);
-                        (buffer, receive_time_ns)
+                        buffer
                     })
                 }
             })
             .await?;
 
             match result {
-                Ok((buffer, _receive_time_ns)) => {
+                Ok(buffer) => {
                     debug!(
                         "Received message {} bytes via POSIX message queue",
                         buffer.len()

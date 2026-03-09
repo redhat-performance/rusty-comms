@@ -460,6 +460,10 @@ impl SharedMemoryRingBuffer {
             .store((write_pos + required_space) % capacity, Ordering::Release);
         self.message_count.fetch_add(1, Ordering::Release);
 
+        // Signal any reader blocked on the condvar path so it
+        // wakes up to consume the newly written data.
+        libc::pthread_cond_signal(&self.data_ready as *const _ as *mut _);
+
         Ok(())
     }
 
