@@ -271,14 +271,16 @@ impl SharedMemoryConnection {
         }
     }
 
-    /// Sends a message, returning true if the buffer was full and caused a delay.
-    /// Sends a message with accurate timestamp capture for latency measurement.
+    /// Sends a message with accurate timestamp capture for latency
+    /// measurement, returning `true` if backpressure was detected.
     ///
-    /// The timestamp is updated immediately before the write to shared memory
-    /// to ensure accurate one-way latency measurement.
+    /// The timestamp is updated immediately before the write to
+    /// shared memory to ensure accurate one-way latency measurement
+    /// (excludes serialization overhead and backpressure wait time).
     ///
-    /// Uses adaptive spinning: tight spin for immediate write, then short pause to
-    /// reduce CPU contention in sustained high-throughput scenarios.
+    /// Uses a short poll-and-sleep loop (10us) to yield to the OS
+    /// scheduler between retries, which is necessary for cross-
+    /// process shared memory where notify doesn't work.
     async fn send_message(&self, message: &Message) -> Result<bool, IpcError> {
         let ring_buffer = self.get_ring_buffer();
 
@@ -328,13 +330,15 @@ impl SharedMemoryConnection {
         }
     }
 
-    /// Receives a message with accurate timestamp capture for latency measurement.
+    /// Receives a message with accurate timestamp capture for
+    /// latency measurement.
     ///
-    /// The receive timestamp is captured immediately after reading from shared memory
-    /// and stored in the message's one_way_latency_ns field.
+    /// The receive timestamp is captured immediately after reading
+    /// from shared memory for accurate latency calculation.
     ///
-    /// Uses adaptive spinning: tight spin for immediate data, then short pause to
-    /// reduce CPU contention in sustained high-throughput scenarios.
+    /// Uses a short poll-and-sleep loop (10us) to yield to the OS
+    /// scheduler between retries, which is necessary for cross-
+    /// process shared memory where notify doesn't work.
     async fn receive_message(&self) -> Result<Message> {
         let ring_buffer = self.get_ring_buffer();
 

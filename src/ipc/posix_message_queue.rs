@@ -667,6 +667,7 @@ impl IpcTransport for PosixMessageQueueTransport {
     /// - **Temporary**: Queue empty (EAGAIN) - retried automatically
     /// - **Permanent**: Invalid queue state or deserialization failure
     /// - **Resource**: No queue available or transport not initialized
+    ///
     /// ## Timestamp Accuracy
     ///
     /// To ensure accurate one-way latency measurement, the receive timestamp is

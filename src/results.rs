@@ -1539,9 +1539,13 @@ impl BenchmarkResults {
     /// ## Parameters
     /// - `mechanism`: The IPC mechanism being tested
     /// - `message_size`: Size of messages used in testing
+    /// - `buffer_size`: Transport buffer size in bytes
     /// - `concurrency`: Number of concurrent workers
     /// - `msg_count`: Number of messages (None for duration-based)
     /// - `duration`: Test duration (None for message-count-based)
+    /// - `warmup_iterations`: Warmup messages to discard
+    /// - `one_way`: Whether one-way latency testing is enabled
+    /// - `round_trip`: Whether round-trip latency testing is enabled
     ///
     /// ## Returns
     /// Initialized results structure ready for data collection
@@ -1549,7 +1553,10 @@ impl BenchmarkResults {
     /// ## Configuration Capture
     ///
     /// The test configuration is captured at creation time to ensure
-    /// the results accurately reflect the parameters used during testing.
+    /// the results accurately reflect the parameters used during
+    /// testing. The `one_way` and `round_trip` flags are propagated
+    /// into the JSON output so downstream tooling can identify which
+    /// test modes were active.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         mechanism: IpcMechanism,

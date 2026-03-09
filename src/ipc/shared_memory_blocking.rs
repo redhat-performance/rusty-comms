@@ -276,10 +276,23 @@ impl SharedMemoryRingBuffer {
         Ok(data)
     }
 
-    /// Write data to the ring buffer (blocking with condition variable).
+    /// Write data to the ring buffer (blocking with timed
+    /// condition variable).
     ///
-    /// Uses pthread_cond_wait to block until space is available, then writes
-    /// the data and signals any waiting readers.
+    /// Uses `pthread_cond_timedwait` (500us timeout) to block until
+    /// space is available, then writes the data and signals any
+    /// waiting readers. If the condvar is detected as broken (100
+    /// wakes in under 10ms), falls back to polling via
+    /// [`write_data_polling`].
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - Mutable serialized message bytes. The timestamp
+    ///   region will be updated in-place right before the write.
+    /// * `timestamp_offset` - Byte range of the timestamp field
+    ///   within `data`. When `Some`, the timestamp is refreshed
+    ///   immediately before the memory write so that measured
+    ///   latency excludes any backpressure wait time.
     ///
     /// # Safety
     /// Only available on Unix platforms with pthread support.
@@ -382,6 +395,18 @@ impl SharedMemoryRingBuffer {
     /// Fallback polling-based write when pthread primitives
     /// don't work (e.g., cross-container glibc ABI mismatch).
     ///
+    /// Polls `available_write_space()` every 100us with a 30s
+    /// timeout. Like [`write_data_blocking`], the timestamp is
+    /// refreshed right before the actual memory write when
+    /// `timestamp_offset` is provided.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - Mutable serialized message bytes.
+    /// * `timestamp_offset` - Byte range of the timestamp field
+    ///   within `data`. When `Some`, the timestamp is refreshed
+    ///   immediately before the memory write.
+    ///
     /// # Safety
     /// Only available on Unix platforms.
     #[cfg(unix)]
@@ -438,10 +463,12 @@ impl SharedMemoryRingBuffer {
         Ok(())
     }
 
-    /// Read data from the ring buffer (blocking with condition variable).
+    /// Read data from the ring buffer (blocking with condition
+    /// variable).
     ///
-    /// Uses pthread_cond_wait to block until data is available, then reads
-    /// it and signals any waiting writers.
+    /// Uses `pthread_cond_wait` to block until data is available,
+    /// then reads it and signals any waiting writers that space
+    /// has been freed.
     ///
     /// # Safety
     /// Only available on Unix platforms with pthread support.
