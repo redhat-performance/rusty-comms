@@ -242,10 +242,12 @@ impl IpcTransport for UnixDomainSocketTransport {
         }
 
         // Lazy connection establishment for server
-        if self.stream.is_none() && self.listener.is_some() {
-            debug!("Server accepting connection on first send");
-            let (stream, _) = self.listener.as_ref().unwrap().accept().await?;
-            self.stream = Some(stream);
+        if self.stream.is_none() {
+            if let Some(listener) = self.listener.as_ref() {
+                debug!("Server accepting connection on first send");
+                let (stream, _) = listener.accept().await?;
+                self.stream = Some(stream);
+            }
         }
 
         if let Some(ref mut stream) = self.stream {
@@ -294,10 +296,12 @@ impl IpcTransport for UnixDomainSocketTransport {
         }
 
         // Lazy connection establishment for server
-        if self.stream.is_none() && self.listener.is_some() {
-            debug!("Server accepting connection on first receive");
-            let (stream, _) = self.listener.as_ref().unwrap().accept().await?;
-            self.stream = Some(stream);
+        if self.stream.is_none() {
+            if let Some(listener) = self.listener.as_ref() {
+                debug!("Server accepting connection on first receive");
+                let (stream, _) = listener.accept().await?;
+                self.stream = Some(stream);
+            }
         }
 
         if let Some(ref mut stream) = self.stream {
