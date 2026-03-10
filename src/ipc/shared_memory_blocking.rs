@@ -1327,6 +1327,7 @@ mod tests {
     /// Also tests the timestamp update path within polling
     /// writes and the `read_data_blocking()` counterpart.
     #[test]
+    #[cfg(unix)]
     fn test_write_data_polling_and_read() {
         let capacity: usize = 128;
         let total_size = SharedMemoryRingBuffer::HEADER_SIZE + capacity;

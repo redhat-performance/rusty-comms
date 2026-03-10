@@ -2398,7 +2398,7 @@ mod tests {
         assert!(!one_way_only.test_config.round_trip_enabled);
 
         let round_trip_only = BenchmarkResults::new(
-            IpcMechanism::UnixDomainSocket,
+            IpcMechanism::SharedMemory,
             128,
             8192,
             1,
