@@ -2343,6 +2343,73 @@ mod tests {
         assert_eq!(results.mechanism, IpcMechanism::TcpSocket);
         assert_eq!(results.test_config.message_size, 1024);
         assert_eq!(results.test_config.buffer_size, 8192);
+        assert!(
+            results.test_config.one_way_enabled,
+            "one_way_enabled should reflect constructor arg"
+        );
+        assert!(
+            results.test_config.round_trip_enabled,
+            "round_trip_enabled should reflect constructor arg"
+        );
+    }
+
+    /// Verifies that `one_way_enabled` and `round_trip_enabled`
+    /// are correctly set to `false` when passed as `false`,
+    /// ensuring the flags are not hardcoded.
+    #[test]
+    fn test_benchmark_results_config_flags_false() {
+        let results = BenchmarkResults::new(
+            IpcMechanism::SharedMemory,
+            256,
+            4096,
+            2,
+            Some(500),
+            None,
+            50,
+            false,
+            false,
+        );
+
+        assert!(
+            !results.test_config.one_way_enabled,
+            "one_way_enabled should be false when passed false"
+        );
+        assert!(
+            !results.test_config.round_trip_enabled,
+            "round_trip_enabled should be false when passed false"
+        );
+    }
+
+    /// Verifies mixed flag combinations propagate correctly.
+    #[test]
+    fn test_benchmark_results_config_flags_mixed() {
+        let one_way_only = BenchmarkResults::new(
+            IpcMechanism::TcpSocket,
+            128,
+            8192,
+            1,
+            Some(100),
+            None,
+            0,
+            true,
+            false,
+        );
+        assert!(one_way_only.test_config.one_way_enabled);
+        assert!(!one_way_only.test_config.round_trip_enabled);
+
+        let round_trip_only = BenchmarkResults::new(
+            IpcMechanism::UnixDomainSocket,
+            128,
+            8192,
+            1,
+            Some(100),
+            None,
+            0,
+            false,
+            true,
+        );
+        assert!(!round_trip_only.test_config.one_way_enabled);
+        assert!(round_trip_only.test_config.round_trip_enabled);
     }
 
     #[test]
