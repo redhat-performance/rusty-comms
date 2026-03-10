@@ -928,4 +928,60 @@ mod tests {
         server_handle.await.unwrap();
         client.close().await.unwrap();
     }
+
+    /// Exercises the ring buffer wrap-around code path in
+    /// `write_data()` and `read_data()`. By advancing write_pos
+    /// close to the buffer end, the next write forces data to
+    /// split across the boundary, covering the two-part
+    /// `copy_nonoverlapping` branches.
+    #[test]
+    fn test_ring_buffer_wrap_around() {
+        // Allocate a buffer with a small capacity so we can
+        // force the write position near the end.
+        let capacity: usize = 64;
+        let total_size = SharedMemoryRingBuffer::HEADER_SIZE + capacity;
+        let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();
+        let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+        assert!(!ptr.is_null());
+
+        let rb = unsafe { &mut *(ptr as *mut SharedMemoryRingBuffer) };
+        rb.capacity.store(capacity, Ordering::Release);
+        rb.read_pos.store(0, Ordering::Release);
+        rb.write_pos.store(0, Ordering::Release);
+        rb.shutdown.store(false, Ordering::Release);
+        rb.message_count.store(0, Ordering::Release);
+
+        // Write a small message to advance write_pos partway
+        // through the buffer (payload=10 bytes + 4 len prefix
+        // = 14 bytes consumed).
+        let payload_a = vec![0xAAu8; 10];
+        rb.write_data(&payload_a).unwrap();
+        let read_a = rb.read_data().unwrap();
+        assert_eq!(read_a, payload_a);
+
+        // Now write_pos and read_pos are both at 14. Advance
+        // write_pos to near the end by writing and reading a
+        // series of small messages.
+        // Each 10-byte payload consumes 14 bytes. After 3 more
+        // write+read cycles: pos = 14 + 3*14 = 56.
+        for _ in 0..3 {
+            let p = vec![0xBBu8; 10];
+            rb.write_data(&p).unwrap();
+            let r = rb.read_data().unwrap();
+            assert_eq!(r, p);
+        }
+        // write_pos = read_pos = 56. Capacity = 64.
+        // Next write of 10 bytes needs 14 bytes total.
+        // data_start = (56 + 4) % 64 = 60.
+        // data_start(60) + data_len(10) = 70 > 64 → wraps!
+        let payload_wrap = vec![0xCCu8; 10];
+        rb.write_data(&payload_wrap).unwrap();
+        let read_wrap = rb.read_data().unwrap();
+        assert_eq!(
+            read_wrap, payload_wrap,
+            "Wrap-around read should match written data"
+        );
+
+        unsafe { std::alloc::dealloc(ptr, layout) };
+    }
 }
