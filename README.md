@@ -166,6 +166,24 @@ This benchmark suite uses **high-precision monotonic clocks** to measure true IP
 - **Windows**: Falls back to system time (less precise)
 - **Characteristics**: Monotonic clocks measure time from system boot and are unaffected by NTP adjustments, daylight saving time, or manual clock changes
 
+#### Test Execution Order
+
+One-way and round-trip tests run **sequentially**, never
+simultaneously. Each test spawns its own server process, runs to
+completion, and tears down before the next test starts:
+
+1. **Warmup** (if configured)
+2. **One-way test** — client sends messages; server measures
+   receive latency
+3. **Round-trip test** — client sends a message, waits for the
+   server's response, then sends the next
+
+By default both tests are enabled. Use `--one-way` or
+`--round-trip` to run only one. For duration-based tests (`-d`),
+each test gets its own full time window, so one-way typically
+produces far more records than round-trip (fire-and-forget vs
+send-wait-receive per message).
+
 #### Timestamp Capture Points
 
 **For One-Way Latency Tests:**
@@ -390,7 +408,8 @@ ipc-benchmark --log-file stderr
 # Continue running tests even if one mechanism fails
 ipc-benchmark -m all --continue-on-error
 
-# Run only round-trip tests
+# Run only round-trip tests (one-way and round-trip run
+# sequentially by default; use these flags to select one)
 ipc-benchmark --round-trip --no-one-way
 
 # Custom percentiles for latency analysis

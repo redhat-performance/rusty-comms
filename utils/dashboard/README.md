@@ -71,7 +71,7 @@ For complete ipc-benchmark parameter documentation, see the [main README](../../
 - **Performance Overview**: AI-generated insights and key metrics cards
 - **Head-to-Head Comparisons**: Interactive comparison matrices for P50/Max latency
 - **Statistical Analysis**: Comprehensive latency and throughput breakdowns
-- **Data Tables**: Sortable pivot tables for one-way vs round-trip performance
+- **Data Tables**: Sortable pivot tables for one-way vs round-trip performance (these tests run sequentially, not simultaneously)
 
 ### **Time Series Analysis** 
 - **Interactive Visualizations**: Real-time scatter plots with advanced controls

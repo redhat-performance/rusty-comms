@@ -694,6 +694,10 @@ impl BlockingBenchmarkRunner {
     ///
     /// ## Test Execution Flow
     ///
+    /// Tests run **sequentially**, not simultaneously. Each test
+    /// spawns its own server process, runs to completion, and tears
+    /// down before the next test starts.
+    ///
     /// 1. **Validation**: Verify core availability and configuration
     /// 2. **Warmup Phase**: Run warmup iterations to stabilize performance
     /// 3. **One-way Testing**: Measure one-way latency if enabled

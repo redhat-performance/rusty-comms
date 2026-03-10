@@ -2632,4 +2632,104 @@ mod tests {
             );
         }
     }
+
+    /// Exercises the one-way streaming path with per-message
+    /// streaming enabled (not combined mode), covering the
+    /// send_timestamp_ns capture in run_one_way_test.
+    #[tokio::test]
+    async fn test_one_way_streaming_captures_send_timestamp() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+
+        let args = Args {
+            mechanisms: vec![{
+                #[cfg(unix)]
+                {
+                    IpcMechanism::UnixDomainSocket
+                }
+                #[cfg(not(unix))]
+                {
+                    IpcMechanism::TcpSocket
+                }
+            }],
+            message_size: 64,
+            msg_count: 5,
+            duration: None,
+            concurrency: 1,
+            warmup_iterations: 0,
+            one_way: true,
+            round_trip: false,
+            include_first_message: true,
+            ..Default::default()
+        };
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let mechanism = args.mechanisms[0];
+        let runner = BenchmarkRunner::new(config, mechanism, args.clone());
+
+        let mut rm = crate::results::ResultsManager::new(None, None).unwrap();
+        rm.enable_per_message_streaming(&path).unwrap();
+
+        let res = runner.run(Some(&mut rm)).await;
+        assert!(res.is_ok(), "one-way streaming run failed: {:?}", res.err());
+        rm.finalize().await.unwrap();
+
+        let s = std::fs::read_to_string(&path).expect("read streaming file");
+        assert!(
+            s.contains("\"headings\""),
+            "Streaming output should have headings"
+        );
+        assert!(s.contains("\"data\""), "Streaming output should have data");
+    }
+
+    /// Exercises the round-trip streaming path with per-message
+    /// streaming enabled (not combined mode), covering the
+    /// send_timestamp_ns capture in run_round_trip_test.
+    #[tokio::test]
+    async fn test_round_trip_streaming_captures_send_timestamp() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+
+        let args = Args {
+            mechanisms: vec![{
+                #[cfg(unix)]
+                {
+                    IpcMechanism::UnixDomainSocket
+                }
+                #[cfg(not(unix))]
+                {
+                    IpcMechanism::TcpSocket
+                }
+            }],
+            message_size: 64,
+            msg_count: 5,
+            duration: None,
+            concurrency: 1,
+            warmup_iterations: 0,
+            one_way: false,
+            round_trip: true,
+            include_first_message: true,
+            ..Default::default()
+        };
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let mechanism = args.mechanisms[0];
+        let runner = BenchmarkRunner::new(config, mechanism, args.clone());
+
+        let mut rm = crate::results::ResultsManager::new(None, None).unwrap();
+        rm.enable_per_message_streaming(&path).unwrap();
+
+        let res = runner.run(Some(&mut rm)).await;
+        assert!(
+            res.is_ok(),
+            "round-trip streaming run failed: {:?}",
+            res.err()
+        );
+        rm.finalize().await.unwrap();
+
+        let s = std::fs::read_to_string(&path).expect("read streaming file");
+        assert!(
+            s.contains("\"headings\""),
+            "Streaming output should have headings"
+        );
+        assert!(s.contains("\"data\""), "Streaming output should have data");
+    }
 }

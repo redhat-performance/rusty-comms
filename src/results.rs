@@ -2454,4 +2454,63 @@ mod tests {
         assert_eq!(results.test_config.concurrency, 2);
         assert_eq!(results.test_config.message_size, 512);
     }
+
+    /// Verify that `MessageLatencyRecord::new()` uses the
+    /// caller-provided `send_timestamp_ns` instead of capturing
+    /// `SystemTime::now()` internally.
+    #[test]
+    fn test_new_uses_provided_send_timestamp() {
+        let fixed_ts: u64 = 1_700_000_000_000_000_000;
+        let record = MessageLatencyRecord::new(
+            42,
+            IpcMechanism::TcpSocket,
+            1024,
+            LatencyType::OneWay,
+            Duration::from_micros(100),
+            fixed_ts,
+        );
+        assert_eq!(
+            record.timestamp_ns, fixed_ts,
+            "timestamp_ns should match the provided value"
+        );
+    }
+
+    /// Verify that `MessageLatencyRecord::new_combined()` uses the
+    /// caller-provided `send_timestamp_ns`.
+    #[test]
+    fn test_new_combined_uses_provided_send_timestamp() {
+        let fixed_ts: u64 = 1_600_000_000_000_000_000;
+        let record = MessageLatencyRecord::new_combined(
+            7,
+            IpcMechanism::SharedMemory,
+            512,
+            Duration::from_micros(50),
+            Duration::from_micros(120),
+            fixed_ts,
+        );
+        assert_eq!(
+            record.timestamp_ns, fixed_ts,
+            "timestamp_ns should match the provided value"
+        );
+    }
+
+    /// Verify that `current_timestamp_ns()` returns a plausible,
+    /// monotonically non-decreasing wall-clock timestamp.
+    #[test]
+    fn test_current_timestamp_ns_returns_recent_value() {
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        let ts = MessageLatencyRecord::current_timestamp_ns();
+        let after = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        assert!(
+            ts >= before && ts <= after,
+            "current_timestamp_ns should be between              before ({}) and after ({}), got {}",
+            before, after, ts
+        );
+    }
 }

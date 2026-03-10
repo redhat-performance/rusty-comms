@@ -27,6 +27,12 @@ This document provides detailed information about configuring the IPC Benchmark 
 
 ### Test Configuration
 
+One-way and round-trip tests run **sequentially**, not
+simultaneously. Each test spawns its own server process, runs to
+completion, and tears down before the next test starts. By default
+both are enabled. For duration-based tests (`-d`), each test gets
+its own full time window.
+
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `--one-way` | Boolean | `true` | Enable one-way latency tests |
