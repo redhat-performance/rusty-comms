@@ -1269,4 +1269,242 @@ mod tests {
         client.close_blocking().unwrap();
         server_handle.join().unwrap();
     }
+
+    /// Helper: allocate a ring buffer on the heap with room for
+    /// both header and data. Returns (pointer, layout) so the
+    /// caller can dealloc after use.
+    #[cfg(unix)]
+    fn alloc_ring_buffer(capacity: usize) -> (*mut u8, std::alloc::Layout) {
+        let total = SharedMemoryRingBuffer::HEADER_SIZE + capacity;
+        let layout = std::alloc::Layout::from_size_align(total, 8).unwrap();
+        let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+        assert!(!ptr.is_null());
+        let init = SharedMemoryRingBuffer::new(capacity);
+        unsafe {
+            std::ptr::write(ptr as *mut SharedMemoryRingBuffer, init);
+        }
+        (ptr, layout)
+    }
+
+    /// Exercises `write_data_polling()` and `read_data_polling()`
+    /// directly to cover the polling-based fallback paths. These
+    /// functions are only called when pthread condvar primitives
+    /// are detected as broken.
+    #[test]
+    #[cfg(unix)]
+    fn test_write_and_read_data_polling() {
+        let capacity: usize = 256;
+        let (ptr, layout) = alloc_ring_buffer(capacity);
+        let rb = unsafe { &*(ptr as *const SharedMemoryRingBuffer) };
+
+        // 1. Basic polling write without timestamp
+        let mut payload = vec![0xAAu8; 16];
+        unsafe {
+            rb.write_data_polling(&mut payload, None).unwrap();
+        }
+        assert_eq!(rb.message_count.load(Ordering::Acquire), 1);
+
+        // 2. Polling read should return same data
+        let read_back = unsafe { rb.read_data_polling().unwrap() };
+        assert_eq!(
+            read_back,
+            vec![0xAAu8; 16],
+            "Polling read should match polling write"
+        );
+
+        // 3. Write with timestamp update
+        let mut payload2 = vec![0u8; 20];
+        payload2[4..12].copy_from_slice(&[0xFF; 8]);
+        unsafe {
+            rb.write_data_polling(&mut payload2, Some(4..12usize))
+                .unwrap();
+        }
+        let ts_val = u64::from_le_bytes(payload2[4..12].try_into().unwrap());
+        assert_ne!(
+            ts_val,
+            u64::from_le_bytes([0xFF; 8]),
+            "Timestamp should be updated in-place"
+        );
+        let read_back2 = unsafe { rb.read_data_polling().unwrap() };
+        assert_eq!(read_back2.len(), 20);
+
+        unsafe { std::alloc::dealloc(ptr, layout) };
+    }
+
+    /// Verifies that `write_data_polling()` returns an error
+    /// when the shutdown flag is set before writing.
+    #[test]
+    #[cfg(unix)]
+    fn test_write_data_polling_shutdown() {
+        let capacity: usize = 256;
+        let (ptr, layout) = alloc_ring_buffer(capacity);
+        let rb = unsafe { &*(ptr as *const SharedMemoryRingBuffer) };
+
+        // Fill the buffer so write enters its wait loop
+        while rb.available_write_space() >= 14 {
+            let mut filler = vec![0xCCu8; 10];
+            unsafe {
+                rb.write_data_polling(&mut filler, None).unwrap();
+            }
+        }
+
+        // Set shutdown so the next write sees it immediately
+        rb.shutdown.store(true, Ordering::Release);
+        let mut payload = vec![0xBBu8; 10];
+        let result = unsafe { rb.write_data_polling(&mut payload, None) };
+        assert!(result.is_err(), "write should fail on shutdown");
+        assert!(
+            result.unwrap_err().to_string().contains("closed"),
+            "Error should mention connection closed"
+        );
+
+        unsafe { std::alloc::dealloc(ptr, layout) };
+    }
+
+    /// Verifies that `read_data_polling()` returns an error
+    /// when the shutdown flag is set and the buffer is empty.
+    #[test]
+    #[cfg(unix)]
+    fn test_read_data_polling_shutdown() {
+        let capacity: usize = 256;
+        let (ptr, layout) = alloc_ring_buffer(capacity);
+        let rb = unsafe { &*(ptr as *const SharedMemoryRingBuffer) };
+
+        // Buffer is empty; set shutdown so read detects it
+        rb.shutdown.store(true, Ordering::Release);
+        let result = unsafe { rb.read_data_polling() };
+        assert!(result.is_err(), "read should fail on shutdown");
+        assert!(
+            result.unwrap_err().to_string().contains("closed"),
+            "Error should mention connection closed"
+        );
+
+        unsafe { std::alloc::dealloc(ptr, layout) };
+    }
+
+    /// Verifies that the Drop implementation calls
+    /// close_blocking() for cleanup without panicking.
+    #[test]
+    fn test_drop_calls_close() {
+        let transport = BlockingSharedMemory::new();
+        drop(transport);
+    }
+
+    /// Verifies that dropping a started server without calling
+    /// close_blocking() still cleans up the SHM segment. This
+    /// exercises the Drop impl on a transport that has live
+    /// resources (ring_buffer, shmem, is_server=true).
+    #[test]
+    fn test_drop_cleans_up_server_resources() {
+        let seg = format!("test_shm_drop_{}", uuid::Uuid::new_v4().as_simple());
+        let mut server = BlockingSharedMemory::new();
+        let config = TransportConfig {
+            shared_memory_name: seg.clone(),
+            buffer_size: 4096,
+            ..Default::default()
+        };
+        server.start_server_blocking(&config).unwrap();
+
+        // Confirm SHM segment exists before drop
+        #[cfg(target_os = "linux")]
+        {
+            let shm_path = format!("/dev/shm/{}", seg);
+            assert!(
+                std::path::Path::new(&shm_path).exists(),
+                "SHM segment should exist before drop"
+            );
+        }
+
+        // Drop without calling close_blocking()
+        drop(server);
+
+        // Confirm SHM segment is removed after drop
+        #[cfg(target_os = "linux")]
+        {
+            let shm_path = format!("/dev/shm/{}", seg);
+            assert!(
+                !std::path::Path::new(&shm_path).exists(),
+                "SHM segment should be unlinked after drop"
+            );
+        }
+    }
+
+    /// Verifies that close_blocking() on the server unlinks the
+    /// SHM segment from /dev/shm so it does not leak.
+    #[test]
+    fn test_close_unlinks_shm_segment() {
+        let seg = format!("test_shm_unlink_{}", uuid::Uuid::new_v4().as_simple());
+        let mut server = BlockingSharedMemory::new();
+        let config = TransportConfig {
+            shared_memory_name: seg.clone(),
+            buffer_size: 4096,
+            ..Default::default()
+        };
+        server.start_server_blocking(&config).unwrap();
+
+        #[cfg(target_os = "linux")]
+        {
+            let shm_path = format!("/dev/shm/{}", seg);
+            assert!(
+                std::path::Path::new(&shm_path).exists(),
+                "SHM segment should exist after start"
+            );
+        }
+
+        server.close_blocking().unwrap();
+
+        #[cfg(target_os = "linux")]
+        {
+            let shm_path = format!("/dev/shm/{}", seg);
+            assert!(
+                !std::path::Path::new(&shm_path).exists(),
+                "SHM should be unlinked after close"
+            );
+        }
+
+        // close is idempotent — second call must not panic
+        server.close_blocking().unwrap();
+    }
+
+    /// Exercises the two-part memcpy wrap-around paths in
+    /// write_data_polling() and read_data_polling(). By
+    /// advancing write_pos near the end of the buffer, the
+    /// next message straddles the boundary and forces the
+    /// else-branch of the contiguous-fit check.
+    #[test]
+    #[cfg(unix)]
+    fn test_polling_wrap_around() {
+        // Capacity must be large enough for the header +
+        // length prefix + payload, but small enough that
+        // we can push write_pos near the end.
+        let capacity: usize = 64;
+        let (ptr, layout) = alloc_ring_buffer(capacity);
+        let rb = unsafe { &*(ptr as *const SharedMemoryRingBuffer) };
+
+        // Advance write_pos and read_pos close to end so
+        // the next write wraps around.  We need space for
+        // a 4-byte length prefix + payload.  Place write_pos
+        // so the data portion straddles the boundary.
+        let start_pos = capacity - 6; // 6 bytes from end
+        rb.write_pos.store(start_pos, Ordering::Release);
+        rb.read_pos.store(start_pos, Ordering::Release);
+
+        // Write a 16-byte payload.  With 4-byte length prefix
+        // this needs 20 bytes.  Starting at (capacity - 6),
+        // this will wrap around by 20 - 6 = 14 bytes.
+        let mut payload = vec![0xDE; 16];
+        unsafe {
+            rb.write_data_polling(&mut payload, None).unwrap();
+        }
+
+        // Read it back and verify data integrity
+        let readback = unsafe { rb.read_data_polling().unwrap() };
+        assert_eq!(
+            readback,
+            vec![0xDE; 16],
+            "Wrap-around read should return original data"
+        );
+
+        unsafe { std::alloc::dealloc(ptr, layout) };
+    }
 }

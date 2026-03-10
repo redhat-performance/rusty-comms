@@ -870,4 +870,75 @@ mod tests {
         // Size should include at least the payload capacity
         assert!(size >= 8192); // Minimum expected payload size
     }
+
+    /// Verifies that MAX_PAYLOAD_SIZE is a sane constant and
+    /// that RawSharedMessage::SIZE accounts for metadata beyond
+    /// just the payload array.
+    #[test]
+    fn test_max_payload_size_constant() {
+        assert_eq!(MAX_PAYLOAD_SIZE, 8192, "MAX_PAYLOAD_SIZE should be 8 KB");
+        // Use runtime values to avoid clippy::assertions_on_constants
+        let struct_size = RawSharedMessage::SIZE;
+        let payload_cap = MAX_PAYLOAD_SIZE;
+        assert!(
+            struct_size > payload_cap,
+            "Struct size ({}) must exceed payload ({}) to \
+             account for mutex, condvar, and metadata fields",
+            struct_size,
+            payload_cap
+        );
+    }
+
+    /// Exercises the oversized-payload validation in
+    /// `send_blocking`. The transport must be connected to
+    /// reach the size-check code path, so we set up a real
+    /// SHM segment via server + client.
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn test_send_rejects_oversized_payload() {
+        use crate::ipc::{Message, MessageType};
+        use std::thread;
+        use std::time::Duration;
+        use uuid::Uuid;
+
+        let shm_name = format!("test_oversize_{}", Uuid::new_v4());
+        let name_clone = shm_name.clone();
+
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingSharedMemoryDirect::new();
+            let config = TransportConfig {
+                shared_memory_name: name_clone,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+            // Keep server alive long enough for client test
+            thread::sleep(Duration::from_millis(500));
+            server.close_blocking().unwrap();
+        });
+
+        // Wait for server to be ready
+        thread::sleep(Duration::from_millis(200));
+
+        let mut client = BlockingSharedMemoryDirect::new();
+        let config = TransportConfig {
+            shared_memory_name: shm_name,
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        // Payload larger than 8 KB limit
+        let oversized = vec![0xABu8; MAX_PAYLOAD_SIZE + 1];
+        let msg = Message::new(1, oversized, MessageType::OneWay);
+        let result = client.send_blocking(&msg);
+        assert!(result.is_err(), "Oversized payload should be rejected");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("MAX_PAYLOAD_SIZE"),
+            "Error should mention MAX_PAYLOAD_SIZE: {}",
+            err_msg
+        );
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
 }

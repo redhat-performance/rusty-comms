@@ -576,4 +576,45 @@ mod tests {
             err_msg
         );
     }
+
+    /// Verifies that receive_blocking rejects messages with
+    /// invalid length prefixes (0 or > MAX_MESSAGE_SIZE) to
+    /// prevent unbounded memory allocation.
+    #[test]
+    fn test_receive_rejects_invalid_message_length() {
+        use std::io::Write;
+
+        let port = 18089;
+
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingTcpSocket::new();
+            let config = TransportConfig {
+                host: "127.0.0.1".to_string(),
+                port,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            let result = server.receive_blocking();
+            assert!(result.is_err());
+            let err_msg = result.unwrap_err().to_string();
+            assert!(
+                err_msg.contains("Invalid message length"),
+                "Error should mention invalid length: {}",
+                err_msg
+            );
+            server.close_blocking().unwrap();
+        });
+
+        // Give server time to bind
+        thread::sleep(Duration::from_millis(100));
+
+        // Connect as raw TCP client and send invalid length
+        let mut stream = std::net::TcpStream::connect("127.0.0.1:18089").unwrap();
+        let zero_len: u32 = 0;
+        stream.write_all(&zero_len.to_le_bytes()).unwrap();
+        drop(stream);
+
+        server_handle.join().unwrap();
+    }
 }
