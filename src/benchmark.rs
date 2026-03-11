@@ -446,6 +446,10 @@ impl BenchmarkRunner {
     ///
     /// ## Test Execution Flow
     ///
+    /// Tests run **sequentially**, not simultaneously. Each test
+    /// spawns its own server process, runs to completion, and tears
+    /// down before the next test starts.
+    ///
     /// 1. **Warmup Phase**: Run warmup iterations to stabilize performance
     /// 2. **One-way Testing**: Measure one-way latency if enabled
     /// 3. **Round-trip Testing**: Measure round-trip latency if enabled
@@ -2199,6 +2203,7 @@ mod tests {
     #[test]
     fn test_transport_config_buffer_size_logic() {
         const DURATION_MODE_BUFFER_SIZE: usize = 1_073_741_824; // 1 GB
+        #[cfg(target_os = "linux")]
         const PMQ_SAFE_DEFAULT_BUFFER_SIZE: usize = 8192;
 
         // Helper to get only the mechanisms available on the current platform.

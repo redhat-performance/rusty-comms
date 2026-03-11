@@ -909,7 +909,9 @@ impl BlockingTransport for BlockingSharedMemory {
         debug!("Closing blocking shared memory transport");
 
         // Capture cleanup metadata before dropping local state.
+        #[cfg(target_os = "linux")]
         let should_unlink = self.is_server && !self.shared_memory_name.is_empty();
+        #[cfg(target_os = "linux")]
         let shm_name = self.shared_memory_name.clone();
 
         if let Some(ring_buffer) = self.ring_buffer {
@@ -1396,7 +1398,9 @@ mod tests {
     /// resources (ring_buffer, shmem, is_server=true).
     #[test]
     fn test_drop_cleans_up_server_resources() {
-        let seg = format!("test_shm_drop_{}", uuid::Uuid::new_v4().as_simple());
+        // macOS limits POSIX shm names to 31 chars (incl. leading '/')
+        let id = &uuid::Uuid::new_v4().as_simple().to_string()[..8];
+        let seg = format!("shm_drop_{}", id);
         let mut server = BlockingSharedMemory::new();
         let config = TransportConfig {
             shared_memory_name: seg.clone(),
@@ -1433,7 +1437,9 @@ mod tests {
     /// SHM segment from /dev/shm so it does not leak.
     #[test]
     fn test_close_unlinks_shm_segment() {
-        let seg = format!("test_shm_unlink_{}", uuid::Uuid::new_v4().as_simple());
+        // macOS limits POSIX shm names to 31 chars (incl. leading '/')
+        let id = &uuid::Uuid::new_v4().as_simple().to_string()[..8];
+        let seg = format!("shm_unlnk_{}", id);
         let mut server = BlockingSharedMemory::new();
         let config = TransportConfig {
             shared_memory_name: seg.clone(),
