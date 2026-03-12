@@ -276,14 +276,11 @@ impl SharedMemoryRingBuffer {
         Ok(data)
     }
 
-    /// Write data to the ring buffer (blocking with timed
-    /// condition variable).
+    /// Write data to the ring buffer (blocking with condition
+    /// variable).
     ///
-    /// Uses `pthread_cond_timedwait` (500us timeout) to block until
-    /// space is available, then writes the data and signals any
-    /// waiting readers. If the condvar is detected as broken (100
-    /// wakes in under 10ms), falls back to polling via
-    /// [`write_data_polling`].
+    /// Uses `pthread_cond_wait` to block until space is available,
+    /// then writes the data and signals any waiting readers.
     ///
     /// # Arguments
     ///
@@ -306,57 +303,25 @@ impl SharedMemoryRingBuffer {
         let required_space = data_len + 4; // 4 bytes for length prefix
 
         // Lock mutex
-        let lock_result = libc::pthread_mutex_lock(&self.mutex as *const _ as *mut _);
-        if lock_result != 0 {
-            return self.write_data_polling(data, timestamp_offset.clone());
-        }
+        libc::pthread_mutex_lock(&self.mutex as *const _ as *mut _);
 
         // Wait for space to become available
-        let mut wait_count = 0;
-        let loop_start = std::time::Instant::now();
         while self.available_write_space() < required_space {
             if self.shutdown.load(Ordering::Acquire) {
                 libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
                 return Err(anyhow!("Connection closed"));
             }
 
-            // Detect broken pthread primitives (returning too fast)
-            if wait_count >= 100 && loop_start.elapsed() < Duration::from_millis(10) {
-                libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
-                trace!(
-                    "Detected broken pthread condvar, \
-                     falling back to polling"
-                );
-                return self.write_data_polling(data, timestamp_offset.clone());
-            }
-
-            // Use timed wait (500us) for cross-process robustness
-            let mut ts = libc::timespec {
-                tv_sec: 0,
-                tv_nsec: 0,
-            };
-            libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts);
-            ts.tv_nsec += 500_000;
-            if ts.tv_nsec >= 1_000_000_000 {
-                ts.tv_sec += 1;
-                ts.tv_nsec -= 1_000_000_000;
-            }
-
-            libc::pthread_cond_timedwait(
+            // Wait on condition variable (releases mutex,
+            // reacquires on wake)
+            libc::pthread_cond_wait(
                 &self.space_ready as *const _ as *mut _,
                 &self.mutex as *const _ as *mut _,
-                &ts,
             );
-
-            wait_count += 1;
-            if wait_count > 60000 {
-                libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
-                return Err(anyhow!("Timeout waiting for buffer space"));
-            }
         }
 
-        // CRITICAL: Update timestamp RIGHT BEFORE writing to shared memory
-        // This ensures accurate latency measurement even under backpressure
+        // Update timestamp right before writing to shared memory
+        // so that measured latency excludes backpressure wait time
         if let Some(ref ts_range) = timestamp_offset {
             let ts_now = crate::ipc::get_monotonic_time_ns();
             let ts_bytes = ts_now.to_le_bytes();
@@ -388,81 +353,6 @@ impl SharedMemoryRingBuffer {
 
         // Unlock mutex
         libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
-
-        Ok(())
-    }
-
-    /// Fallback polling-based write when pthread primitives
-    /// don't work (e.g., cross-container glibc ABI mismatch).
-    ///
-    /// Polls `available_write_space()` every 100us with a 30s
-    /// timeout. Like [`write_data_blocking`], the timestamp is
-    /// refreshed right before the actual memory write when
-    /// `timestamp_offset` is provided.
-    ///
-    /// # Arguments
-    ///
-    /// * `data` - Mutable serialized message bytes.
-    /// * `timestamp_offset` - Byte range of the timestamp field
-    ///   within `data`. When `Some`, the timestamp is refreshed
-    ///   immediately before the memory write.
-    ///
-    /// # Safety
-    /// Only available on Unix platforms.
-    #[cfg(unix)]
-    #[allow(dead_code)]
-    unsafe fn write_data_polling(
-        &self,
-        data: &mut [u8],
-        timestamp_offset: Option<std::ops::Range<usize>>,
-    ) -> Result<()> {
-        let data_len = data.len();
-        let required_space = data_len + 4;
-
-        let start = std::time::Instant::now();
-        let timeout = Duration::from_secs(30);
-
-        while self.available_write_space() < required_space {
-            if self.shutdown.load(Ordering::Acquire) {
-                return Err(anyhow!("Connection closed"));
-            }
-            if start.elapsed() > timeout {
-                return Err(anyhow!(
-                    "Timeout waiting for buffer space \
-                     (polling fallback)"
-                ));
-            }
-            thread::sleep(Duration::from_micros(100));
-        }
-
-        // Update timestamp right before write for accurate
-        // latency measurement under backpressure
-        if let Some(ref ts_range) = timestamp_offset {
-            let ts_now = crate::ipc::get_monotonic_time_ns();
-            let ts_bytes = ts_now.to_le_bytes();
-            data[ts_range.clone()].copy_from_slice(&ts_bytes);
-        }
-
-        let capacity = self.capacity.load(Ordering::Acquire);
-        let write_pos = self.write_pos.load(Ordering::Acquire);
-        let data_ptr = self.data_ptr();
-
-        let len_bytes = (data_len as u32).to_le_bytes();
-        for (i, &byte) in len_bytes.iter().enumerate() {
-            *data_ptr.add((write_pos + i) % capacity) = byte;
-        }
-
-        for (i, &byte) in data.iter().enumerate() {
-            *data_ptr.add((write_pos + 4 + i) % capacity) = byte;
-        }
-
-        self.write_pos
-            .store((write_pos + required_space) % capacity, Ordering::Release);
-        self.message_count.fetch_add(1, Ordering::Release);
-
-        // Signal any reader blocked on the condvar path so it
-        // wakes up to consume the newly written data.
-        libc::pthread_cond_signal(&self.data_ready as *const _ as *mut _);
 
         Ok(())
     }
@@ -1319,6 +1209,8 @@ mod tests {
 
         // close is idempotent — second call must not panic
         server.close_blocking().unwrap();
+    }
+
     /// Exercises `write_data_polling()` directly to cover the
     /// polling-based write fallback path. This function is only
     /// called at runtime when pthread condvar primitives are
