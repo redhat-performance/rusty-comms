@@ -335,89 +335,6 @@ impl SharedMemoryRingBuffer {
         Ok(())
     }
 
-    /// Fallback polling-based write when pthread primitives don't work.
-    ///
-    /// This is used when pthread_cond_timedwait fails, which can happen
-    /// in containerized environments where process-shared mutexes/condvars
-    /// may not work correctly across the container boundary.
-    ///
-    /// # Safety
-    /// Only available on Unix platforms.
-    #[cfg(unix)]
-    #[allow(dead_code)]
-    unsafe fn write_data_polling(
-        &self,
-        data: &mut [u8],
-        timestamp_offset: Option<std::ops::Range<usize>>,
-    ) -> Result<()> {
-        let data_len = data.len();
-        let required_space = data_len + 4; // 4 bytes for length prefix
-
-        let start = std::time::Instant::now();
-        let timeout = Duration::from_secs(10);
-
-        // Poll for space availability with sleep
-        while self.available_write_space() < required_space {
-            if self.shutdown.load(Ordering::Acquire) {
-                return Err(anyhow!("Connection closed"));
-            }
-
-            if start.elapsed() > timeout {
-                return Err(anyhow!(
-                    "Timeout waiting for buffer space (polling fallback)"
-                ));
-            }
-
-            // Sleep to avoid busy-waiting
-            thread::sleep(Duration::from_micros(100));
-        }
-
-        // CRITICAL: Update timestamp RIGHT BEFORE writing to shared memory
-        // This ensures accurate latency measurement even under backpressure
-        if let Some(ref ts_range) = timestamp_offset {
-            let ts_now = crate::ipc::get_monotonic_time_ns();
-            let ts_bytes = ts_now.to_le_bytes();
-            data[ts_range.clone()].copy_from_slice(&ts_bytes);
-        }
-
-        // Space is available, write the data
-        let capacity = self.capacity.load(Ordering::Acquire);
-        let write_pos = self.write_pos.load(Ordering::Acquire);
-        let data_ptr = self.data_ptr();
-
-        // Write length prefix (little-endian)
-        let len_bytes = (data_len as u32).to_le_bytes();
-        for (i, &byte) in len_bytes.iter().enumerate() {
-            *data_ptr.add((write_pos + i) % capacity) = byte;
-        }
-
-        // Write data using bulk copy (memcpy) when possible
-        let data_start = (write_pos + 4) % capacity;
-        if data_start + data_len <= capacity {
-            std::ptr::copy_nonoverlapping(data.as_ptr(), data_ptr.add(data_start), data_len);
-        } else {
-            let first_part = capacity - data_start;
-            std::ptr::copy_nonoverlapping(data.as_ptr(), data_ptr.add(data_start), first_part);
-            std::ptr::copy_nonoverlapping(
-                data.as_ptr().add(first_part),
-                data_ptr,
-                data_len - first_part,
-            );
-        }
-
-        self.write_pos
-            .store((write_pos + required_space) % capacity, Ordering::Release);
-        self.message_count.fetch_add(1, Ordering::Release);
-
-        // Signal any reader blocked on the condvar path.
-        // Without this, a blocking reader (read_data_blocking) paired
-        // with a polling writer would never be woken, causing a
-        // deadlock in mixed-mode operation.
-        libc::pthread_cond_signal(&self.data_ready as *const _ as *mut _);
-
-        Ok(())
-    }
-
     /// Read data from the ring buffer (blocking with condition variable).
     ///
     /// Uses pthread_cond_wait to block until data is available, then reads
@@ -484,79 +401,6 @@ impl SharedMemoryRingBuffer {
 
         Ok(data)
     }
-
-    /// Fallback polling-based read when pthread primitives don't work.
-    ///
-    /// This is used when pthread_cond_timedwait fails, which can happen
-    /// in containerized environments where process-shared mutexes/condvars
-    /// may not work correctly across the container boundary.
-    ///
-    /// # Safety
-    /// Only available on Unix platforms.
-    #[cfg(unix)]
-    #[allow(dead_code)]
-    unsafe fn read_data_polling(&self) -> Result<Vec<u8>> {
-        let start = std::time::Instant::now();
-        let timeout = Duration::from_secs(10);
-
-        // Poll for data availability
-        while self.available_read_data() < 4 {
-            if self.shutdown.load(Ordering::Acquire) {
-                return Err(anyhow!("Connection closed"));
-            }
-
-            if start.elapsed() > timeout {
-                return Err(anyhow!("Timeout waiting for data (polling fallback)"));
-            }
-
-            thread::sleep(Duration::from_micros(100));
-        }
-
-        // Data is available, read it
-        let capacity = self.capacity.load(Ordering::Acquire);
-        let read_pos = self.read_pos.load(Ordering::Acquire);
-        let data_ptr = self.data_ptr();
-
-        // Read length prefix
-        let mut len_bytes = [0u8; 4];
-        for (i, byte) in len_bytes.iter_mut().enumerate() {
-            *byte = *data_ptr.add((read_pos + i) % capacity);
-        }
-        let data_len = u32::from_le_bytes(len_bytes) as usize;
-
-        if data_len > capacity {
-            return Err(anyhow!(
-                "Invalid data length: {} exceeds capacity {}",
-                data_len,
-                capacity
-            ));
-        }
-
-        // Read data using bulk copy (memcpy) when possible
-        let mut data = vec![0u8; data_len];
-        let data_start = (read_pos + 4) % capacity;
-        if data_start + data_len <= capacity {
-            std::ptr::copy_nonoverlapping(data_ptr.add(data_start), data.as_mut_ptr(), data_len);
-        } else {
-            let first_part = capacity - data_start;
-            std::ptr::copy_nonoverlapping(data_ptr.add(data_start), data.as_mut_ptr(), first_part);
-            std::ptr::copy_nonoverlapping(
-                data_ptr,
-                data.as_mut_ptr().add(first_part),
-                data_len - first_part,
-            );
-        }
-
-        self.read_pos
-            .store((read_pos + data_len + 4) % capacity, Ordering::Release);
-
-        // Wake writers that may be blocked on the condvar path.
-        // Prevents stalls in mixed-mode operation (polling reader +
-        // blocking writer).
-        libc::pthread_cond_signal(&self.space_ready as *const _ as *mut _);
-
-        Ok(data)
-    }
 }
 
 /// Blocking shared memory transport.
@@ -587,15 +431,6 @@ pub struct BlockingSharedMemory {
     /// Stored so close_blocking() can perform deterministic cleanup
     /// (e.g., shm_unlink on server instances).
     shared_memory_name: String,
-
-    /// Cross-container mode flag
-    ///
-    /// When true, uses container-safe synchronization
-    /// (timed waits, polling fallbacks).
-    /// When false (default), uses fast pthread_cond_wait for
-    /// same-host communication.
-    #[allow(dead_code)]
-    cross_container: bool,
 }
 
 // Safety: The ring buffer uses atomic operations for coordination
@@ -622,7 +457,6 @@ impl BlockingSharedMemory {
             shmem: None,
             is_server: false,
             shared_memory_name: String::new(),
-            cross_container: false,
         }
     }
 
@@ -778,11 +612,6 @@ impl BlockingTransport for BlockingSharedMemory {
         // Mark client as ready
         unsafe {
             (*ptr).client_ready.store(true, Ordering::Release);
-            // Signal data_ready in case server is waiting on condvar
-            #[cfg(unix)]
-            {
-                libc::pthread_cond_broadcast(&(*ptr).data_ready as *const _ as *mut _);
-            }
         }
 
         self.ring_buffer = Some(ptr);
@@ -909,9 +738,7 @@ impl BlockingTransport for BlockingSharedMemory {
         debug!("Closing blocking shared memory transport");
 
         // Capture cleanup metadata before dropping local state.
-        #[cfg(target_os = "linux")]
         let should_unlink = self.is_server && !self.shared_memory_name.is_empty();
-        #[cfg(target_os = "linux")]
         let shm_name = self.shared_memory_name.clone();
 
         if let Some(ring_buffer) = self.ring_buffer {
@@ -932,30 +759,32 @@ impl BlockingTransport for BlockingSharedMemory {
         self.is_server = false;
 
         // Best-effort unlink so stale SHM objects do not accumulate across runs.
-        #[cfg(target_os = "linux")]
         if should_unlink {
-            use std::ffi::CString;
-            let posix_name = if shm_name.starts_with('/') {
-                shm_name
-            } else {
-                format!("/{}", shm_name)
-            };
+            #[cfg(unix)]
+            {
+                use std::ffi::CString;
+                let posix_name = if shm_name.starts_with('/') {
+                    shm_name
+                } else {
+                    format!("/{}", shm_name)
+                };
 
-            match CString::new(posix_name.as_bytes()) {
-                Ok(c_name) => unsafe {
-                    let rc = libc::shm_unlink(c_name.as_ptr());
-                    if rc == 0 {
-                        debug!("Unlinked SHM segment on close: {}", posix_name);
-                    } else {
-                        debug!(
-                            "shm_unlink failed during close for {}: {}",
-                            posix_name,
-                            std::io::Error::last_os_error()
-                        );
+                match CString::new(posix_name.as_bytes()) {
+                    Ok(c_name) => unsafe {
+                        let rc = libc::shm_unlink(c_name.as_ptr());
+                        if rc == 0 {
+                            debug!("Unlinked SHM segment on close: {}", posix_name);
+                        } else {
+                            debug!(
+                                "shm_unlink failed during close for {}: {}",
+                                posix_name,
+                                std::io::Error::last_os_error()
+                            );
+                        }
+                    },
+                    Err(_) => {
+                        debug!("Skipping shm_unlink: name contains interior NUL");
                     }
-                },
-                Err(_) => {
-                    debug!("Skipping shm_unlink: SHM name contains interior NUL");
                 }
             }
         }
@@ -1272,118 +1101,6 @@ mod tests {
         server_handle.join().unwrap();
     }
 
-    /// Helper: allocate a ring buffer on the heap with room for
-    /// both header and data. Returns (pointer, layout) so the
-    /// caller can dealloc after use.
-    #[cfg(unix)]
-    fn alloc_ring_buffer(capacity: usize) -> (*mut u8, std::alloc::Layout) {
-        let total = SharedMemoryRingBuffer::HEADER_SIZE + capacity;
-        let layout = std::alloc::Layout::from_size_align(total, 8).unwrap();
-        let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
-        assert!(!ptr.is_null());
-        let init = SharedMemoryRingBuffer::new(capacity);
-        unsafe {
-            std::ptr::write(ptr as *mut SharedMemoryRingBuffer, init);
-        }
-        (ptr, layout)
-    }
-
-    /// Exercises `write_data_polling()` and `read_data_polling()`
-    /// directly to cover the polling-based fallback paths. These
-    /// functions are only called when pthread condvar primitives
-    /// are detected as broken.
-    #[test]
-    #[cfg(unix)]
-    fn test_write_and_read_data_polling() {
-        let capacity: usize = 256;
-        let (ptr, layout) = alloc_ring_buffer(capacity);
-        let rb = unsafe { &*(ptr as *const SharedMemoryRingBuffer) };
-
-        // 1. Basic polling write without timestamp
-        let mut payload = vec![0xAAu8; 16];
-        unsafe {
-            rb.write_data_polling(&mut payload, None).unwrap();
-        }
-        assert_eq!(rb.message_count.load(Ordering::Acquire), 1);
-
-        // 2. Polling read should return same data
-        let read_back = unsafe { rb.read_data_polling().unwrap() };
-        assert_eq!(
-            read_back,
-            vec![0xAAu8; 16],
-            "Polling read should match polling write"
-        );
-
-        // 3. Write with timestamp update
-        let mut payload2 = vec![0u8; 20];
-        payload2[4..12].copy_from_slice(&[0xFF; 8]);
-        unsafe {
-            rb.write_data_polling(&mut payload2, Some(4..12usize))
-                .unwrap();
-        }
-        let ts_val = u64::from_le_bytes(payload2[4..12].try_into().unwrap());
-        assert_ne!(
-            ts_val,
-            u64::from_le_bytes([0xFF; 8]),
-            "Timestamp should be updated in-place"
-        );
-        let read_back2 = unsafe { rb.read_data_polling().unwrap() };
-        assert_eq!(read_back2.len(), 20);
-
-        unsafe { std::alloc::dealloc(ptr, layout) };
-    }
-
-    /// Verifies that `write_data_polling()` returns an error
-    /// when the shutdown flag is set before writing.
-    #[test]
-    #[cfg(unix)]
-    fn test_write_data_polling_shutdown() {
-        let capacity: usize = 256;
-        let (ptr, layout) = alloc_ring_buffer(capacity);
-        let rb = unsafe { &*(ptr as *const SharedMemoryRingBuffer) };
-
-        // Fill the buffer so write enters its wait loop
-        while rb.available_write_space() >= 14 {
-            let mut filler = vec![0xCCu8; 10];
-            unsafe {
-                rb.write_data_polling(&mut filler, None).unwrap();
-            }
-        }
-
-        // Set shutdown so the next write sees it immediately
-        rb.shutdown.store(true, Ordering::Release);
-        let mut payload = vec![0xBBu8; 10];
-        let result = unsafe { rb.write_data_polling(&mut payload, None) };
-        assert!(result.is_err(), "write should fail on shutdown");
-        assert!(
-            result.unwrap_err().to_string().contains("closed"),
-            "Error should mention connection closed"
-        );
-
-        unsafe { std::alloc::dealloc(ptr, layout) };
-    }
-
-    /// Verifies that `read_data_polling()` returns an error
-    /// when the shutdown flag is set and the buffer is empty.
-    #[test]
-    #[cfg(unix)]
-    fn test_read_data_polling_shutdown() {
-        let capacity: usize = 256;
-        let (ptr, layout) = alloc_ring_buffer(capacity);
-        let rb = unsafe { &*(ptr as *const SharedMemoryRingBuffer) };
-
-        // Buffer is empty; set shutdown so read detects it
-        rb.shutdown.store(true, Ordering::Release);
-        let result = unsafe { rb.read_data_polling() };
-        assert!(result.is_err(), "read should fail on shutdown");
-        assert!(
-            result.unwrap_err().to_string().contains("closed"),
-            "Error should mention connection closed"
-        );
-
-        unsafe { std::alloc::dealloc(ptr, layout) };
-    }
-
     /// Verifies that the Drop implementation calls
     /// close_blocking() for cleanup without panicking.
     #[test]
@@ -1470,47 +1187,5 @@ mod tests {
 
         // close is idempotent — second call must not panic
         server.close_blocking().unwrap();
-    }
-
-    /// Exercises the two-part memcpy wrap-around paths in
-    /// write_data_polling() and read_data_polling(). By
-    /// advancing write_pos near the end of the buffer, the
-    /// next message straddles the boundary and forces the
-    /// else-branch of the contiguous-fit check.
-    #[test]
-    #[cfg(unix)]
-    fn test_polling_wrap_around() {
-        // Capacity must be large enough for the header +
-        // length prefix + payload, but small enough that
-        // we can push write_pos near the end.
-        let capacity: usize = 64;
-        let (ptr, layout) = alloc_ring_buffer(capacity);
-        let rb = unsafe { &*(ptr as *const SharedMemoryRingBuffer) };
-
-        // Advance write_pos and read_pos close to end so
-        // the next write wraps around.  We need space for
-        // a 4-byte length prefix + payload.  Place write_pos
-        // so the data portion straddles the boundary.
-        let start_pos = capacity - 6; // 6 bytes from end
-        rb.write_pos.store(start_pos, Ordering::Release);
-        rb.read_pos.store(start_pos, Ordering::Release);
-
-        // Write a 16-byte payload.  With 4-byte length prefix
-        // this needs 20 bytes.  Starting at (capacity - 6),
-        // this will wrap around by 20 - 6 = 14 bytes.
-        let mut payload = vec![0xDE; 16];
-        unsafe {
-            rb.write_data_polling(&mut payload, None).unwrap();
-        }
-
-        // Read it back and verify data integrity
-        let readback = unsafe { rb.read_data_polling().unwrap() };
-        assert_eq!(
-            readback,
-            vec![0xDE; 16],
-            "Wrap-around read should return original data"
-        );
-
-        unsafe { std::alloc::dealloc(ptr, layout) };
     }
 }

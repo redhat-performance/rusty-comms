@@ -405,28 +405,26 @@ impl IpcTransport for TcpSocketTransport {
                             connection_id, client_addr
                         );
 
-                        // Configure socket options
+                        // Configure socket options for low latency.
+                        // Failure here means the socket would run
+                        // without TCP_NODELAY, which skews benchmark
+                        // results, so we drop the connection instead.
                         if let Ok(std_stream) = stream.into_std() {
-                            // Clone the stream so we can configure via
-                            // socket2 while keeping the original for
-                            // Tokio. If the clone fails (e.g. fd limit)
-                            // we skip socket tuning rather than panic.
-                            if let Ok(cloned) = std_stream.try_clone() {
-                                let socket = socket2::Socket::from(cloned);
-                                let _ = socket.set_nodelay(true);
-                                let _ = socket.set_recv_buffer_size(buffer_size);
-                                let _ = socket.set_send_buffer_size(buffer_size);
-                            } else {
-                                warn!(
-                                    "Failed to clone TCP stream for \
-                                     socket configuration on \
-                                     connection {}",
-                                    connection_id
-                                );
-                            }
+                            let socket =
+                                socket2::Socket::from(std_stream.try_clone().unwrap_or_else(|e| {
+                                    panic!(
+                                        "Failed to clone TCP stream for \
+                                         socket tuning on connection {}: {}",
+                                        connection_id, e
+                                    );
+                                }));
+                            socket.set_nodelay(true).unwrap_or_else(|e| {
+                                warn!("set_nodelay failed on connection {}: {}", connection_id, e);
+                            });
+                            let _ = socket.set_recv_buffer_size(buffer_size);
+                            let _ = socket.set_send_buffer_size(buffer_size);
 
                             if let Ok(tokio_stream) = TcpStream::from_std(std_stream) {
-                                // Spawn handler for this connection
                                 let handler_sender = message_sender.clone();
                                 let handler_connections = connections.clone();
 
