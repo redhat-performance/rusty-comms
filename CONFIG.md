@@ -33,7 +33,7 @@ This document provides detailed information about configuring the IPC Benchmark 
 | `--round-trip` | Boolean | `true` | Enable round-trip latency tests |
 | `--warmup-iterations` | `-w` | Number | `1000` | Number of warmup iterations |
 | `--percentiles` | Number[] | `[50.0, 95.0, 99.0, 99.9]` | Percentiles to calculate |
-| `--buffer-size` | Number | `8192` | Buffer size for shared memory/queues |
+| `--buffer-size` | Number | *auto* | Override buffer size (auto-sized per mechanism when omitted) |
 
 ### Advanced Options
 
@@ -169,12 +169,20 @@ IPC_BENCHMARK_CONFIG=./default.json ipc-benchmark
 | Setting | Description | Default | Range |
 |---------|-------------|---------|-------|
 | `shared_memory_name` | Shared memory segment name | `ipc_benchmark_<uuid>` | Valid identifier |
-| `buffer_size` | Ring buffer size | `8192` | 4096 - 1GB |
+| `buffer_size` | Ring buffer size | 64 KB (auto) | 4096 - 1GB |
+
+**Automatic Buffer Sizing:** When `--buffer-size` is omitted,
+SHM uses a fixed 64 KB ring buffer (or 2x message size for
+large messages). This enables proper streaming where the writer
+blocks when the buffer is full, rather than dumping all data at
+once into an oversized buffer.
 
 **Optimal Settings:**
 - Message size: 1024 - 65536 bytes for highest throughput
-- Concurrency: 2-8 (one producer, multiple consumers)
-- Buffer size: 64KB - 1MB depending on message size
+- Concurrency: 1 (single producer, single consumer)
+- Buffer size: Leave at automatic (64 KB) for streaming;
+  override with `--buffer-size` only to test specific
+  backpressure scenarios
 
 ### TCP Sockets
 

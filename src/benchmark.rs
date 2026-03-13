@@ -2348,6 +2348,83 @@ mod tests {
         }
     }
 
+    /// Verify SHM auto-sizing uses 2x message size when messages
+    /// are larger than half the 64 KB default buffer.
+    #[test]
+    fn test_shm_large_message_buffer_sizing() {
+        let large_msg_size: usize = 40_000; // > 32KB
+        let config = BenchmarkConfig {
+            mechanism: IpcMechanism::SharedMemory,
+            message_size: large_msg_size,
+            msg_count: Some(100),
+            duration: None,
+            concurrency: 1,
+            one_way: true,
+            round_trip: false,
+            warmup_iterations: 0,
+            percentiles: vec![],
+            buffer_size: None,
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            server_affinity: None,
+            client_affinity: None,
+            send_delay: None,
+            pmq_priority: 0,
+            include_first_message: false,
+        };
+        let args = Args::default();
+        let runner = BenchmarkRunner::new(config, IpcMechanism::SharedMemory, args.clone());
+        let tc = runner.create_transport_config_internal(&args).unwrap();
+
+        // 2 * (40000 + 64) = 80128, which exceeds 64KB (65536)
+        let expected = (large_msg_size + 64) * 2;
+        assert_eq!(
+            tc.buffer_size, expected,
+            "SHM should use 2x message size ({}) when it \
+             exceeds the 64KB default",
+            expected
+        );
+        assert!(
+            tc.buffer_size > 65536,
+            "Large-message SHM buffer should exceed 64KB"
+        );
+    }
+
+    /// Verify SHM in duration mode still gets the fixed 64 KB
+    /// buffer, not the 1 GB duration default used by TCP/UDS.
+    #[test]
+    fn test_shm_duration_mode_uses_fixed_buffer() {
+        let config = BenchmarkConfig {
+            mechanism: IpcMechanism::SharedMemory,
+            message_size: 1024,
+            msg_count: None,
+            duration: Some(Duration::from_secs(5)),
+            concurrency: 1,
+            one_way: true,
+            round_trip: false,
+            warmup_iterations: 0,
+            percentiles: vec![],
+            buffer_size: None,
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            server_affinity: None,
+            client_affinity: None,
+            send_delay: None,
+            pmq_priority: 0,
+            include_first_message: false,
+        };
+        let args = Args::default();
+        let runner = BenchmarkRunner::new(config, IpcMechanism::SharedMemory, args.clone());
+        let tc = runner.create_transport_config_internal(&args).unwrap();
+
+        let expected_shm = std::cmp::max(65536, (1024 + 64) * 2);
+        assert_eq!(
+            tc.buffer_size, expected_shm,
+            "SHM in duration mode should use fixed 64KB buffer, \
+             not the 1GB duration default"
+        );
+    }
+
     /// Test that the send_delay parameter is correctly applied.
     #[tokio::test]
     #[cfg(unix)]

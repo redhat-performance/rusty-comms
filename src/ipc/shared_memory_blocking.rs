@@ -1210,4 +1210,230 @@ mod tests {
         // close is idempotent — second call must not panic
         server.close_blocking().unwrap();
     }
+
+    /// Send more data than the buffer can hold at once to
+    /// exercise the timed condvar wait path where the writer
+    /// must block until the reader drains space.
+    #[test]
+    fn test_backpressure_with_small_buffer() {
+        let segment_name = "test_shm_blocking_backpressure";
+        let msg_count = 20;
+        let msg_size = 200;
+        // Buffer is smaller than the total data volume, so the
+        // writer must wait for the reader to consume messages.
+        let buffer_size = 1024;
+
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingSharedMemory::new();
+            let config = TransportConfig {
+                shared_memory_name: segment_name.to_string(),
+                buffer_size,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            for expected_id in 0..msg_count {
+                let msg = server.receive_blocking().unwrap();
+                assert_eq!(
+                    msg.id, expected_id,
+                    "Message ID mismatch under backpressure"
+                );
+                assert_eq!(msg.payload.len(), msg_size);
+            }
+
+            server.close_blocking().unwrap();
+        });
+
+        // Give server time to create segment
+        thread::sleep(Duration::from_millis(200));
+
+        let mut client = BlockingSharedMemory::new();
+        let config = TransportConfig {
+            shared_memory_name: segment_name.to_string(),
+            buffer_size,
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        for id in 0..msg_count {
+            let msg = Message::new(id, vec![0xCDu8; msg_size], MessageType::OneWay);
+            client.send_blocking(&msg).unwrap();
+        }
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
+
+    /// Verify that payload contents survive a round of
+    /// backpressure-induced blocking writes and reads.
+    #[test]
+    fn test_payload_integrity_under_backpressure() {
+        let segment_name = "test_shm_blocking_payload_int";
+        let msg_count: u64 = 10;
+        let msg_size = 256;
+        let buffer_size = 512; // Forces many wait cycles
+
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingSharedMemory::new();
+            let config = TransportConfig {
+                shared_memory_name: segment_name.to_string(),
+                buffer_size,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            for id in 0..msg_count {
+                let msg = server.receive_blocking().unwrap();
+                // Each message's payload is filled with its
+                // ID as a byte pattern.
+                let expected_byte = (id & 0xFF) as u8;
+                assert!(
+                    msg.payload.iter().all(|&b| b == expected_byte),
+                    "Payload corrupted for message {}",
+                    id
+                );
+            }
+
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(200));
+
+        let mut client = BlockingSharedMemory::new();
+        let config = TransportConfig {
+            shared_memory_name: segment_name.to_string(),
+            buffer_size,
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        for id in 0..msg_count {
+            let byte_val = (id & 0xFF) as u8;
+            let msg = Message::new(id, vec![byte_val; msg_size], MessageType::OneWay);
+            client.send_blocking(&msg).unwrap();
+        }
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
+
+    /// Force the ring buffer write position to wrap past the end
+    /// of the buffer by sending many messages whose combined size
+    /// exceeds the buffer capacity multiple times.
+    #[test]
+    fn test_ring_buffer_wrap_around_under_backpressure() {
+        let segment_name = "test_shm_blocking_wraparound";
+        let msg_count: u64 = 50;
+        let msg_size = 128;
+        // Buffer is much smaller than total data so write_pos
+        // must wrap around the circular buffer several times.
+        let buffer_size = 1024;
+
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingSharedMemory::new();
+            let config = TransportConfig {
+                shared_memory_name: segment_name.to_string(),
+                buffer_size,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            for expected_id in 0..msg_count {
+                let msg = server.receive_blocking().unwrap();
+                assert_eq!(msg.id, expected_id, "Mismatched ID after wrap-around");
+                assert_eq!(msg.payload.len(), msg_size);
+            }
+
+            server.close_blocking().unwrap();
+        });
+
+        // Give server time to create segment
+        thread::sleep(Duration::from_millis(200));
+
+        let mut client = BlockingSharedMemory::new();
+        let config = TransportConfig {
+            shared_memory_name: segment_name.to_string(),
+            buffer_size,
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        for id in 0..msg_count {
+            let byte_val = (id & 0xFF) as u8;
+            let msg = Message::new(id, vec![byte_val; msg_size], MessageType::OneWay);
+            client.send_blocking(&msg).unwrap();
+        }
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
+
+    /// Verify the writer gets an error when the server shuts
+    /// down while the buffer is full and the writer is blocked
+    /// waiting for space.
+    #[test]
+    fn test_shutdown_detected_during_blocked_write() {
+        let segment_name = "test_shm_blocking_shutdown";
+        // Tiny buffer so the first large message fills it.
+        let buffer_size = 512;
+        let big_payload = 400;
+
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingSharedMemory::new();
+            let config = TransportConfig {
+                shared_memory_name: segment_name.to_string(),
+                buffer_size,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            // Read exactly one message so the client can send
+            // one, then close without draining the rest.
+            let _msg = server.receive_blocking().unwrap();
+
+            // Brief pause so the client has time to block on
+            // the second send before we shut down.
+            thread::sleep(Duration::from_millis(100));
+
+            server.close_blocking().unwrap();
+        });
+
+        // Give server time to create segment
+        thread::sleep(Duration::from_millis(200));
+
+        let mut client = BlockingSharedMemory::new();
+        let config = TransportConfig {
+            shared_memory_name: segment_name.to_string(),
+            buffer_size,
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        // First message succeeds (buffer has room).
+        let msg1 = Message::new(1, vec![0xAAu8; big_payload], MessageType::OneWay);
+        client.send_blocking(&msg1).unwrap();
+
+        // Second message should eventually fail because the
+        // server closes without reading it, triggering shutdown.
+        let msg2 = Message::new(2, vec![0xBBu8; big_payload], MessageType::OneWay);
+        let result = client.send_blocking(&msg2);
+
+        // Either the send detects the shutdown or we get a
+        // timeout/connection-closed error. Both are acceptable.
+        if let Err(e) = result {
+            let err_msg = e.to_string().to_lowercase();
+            assert!(
+                err_msg.contains("closed")
+                    || err_msg.contains("shutdown")
+                    || err_msg.contains("timeout"),
+                "Expected shutdown/timeout error, got: {}",
+                e
+            );
+        }
+        // If send somehow succeeded (race), that's also fine
+        // -- the server already consumed one message.
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
 }

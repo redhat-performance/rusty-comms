@@ -1034,29 +1034,41 @@ ipc-benchmark -m shm -c 4 -i 1000 -s 1024
 
 ### Buffer Size Configuration
 
-The `--buffer-size` flag controls the size of internal buffers. Its behavior is designed to be both user-friendly by default and flexible for advanced testing.
+The `--buffer-size` flag controls the size of internal buffers.
+When omitted, each mechanism receives an appropriate automatic
+default. When provided, the user-specified value applies to all
+mechanisms.
 
-- **Automatic Sizing (Default)**: When the `--buffer-size` flag is omitted, the benchmark calculates an optimal buffer size large enough to handle all messages without backpressure. This is the recommended mode for measuring maximum throughput.
-  - For **POSIX Message Queues**, the automatic default is a safe `8192` bytes to stay within common OS limits.
+**Automatic Sizing (Default):**
 
-- **User-Provided Size**: You can provide a specific size to test how a system behaves under backpressure (when the data volume is larger than the buffer). This is a valid testing scenario, and the tool will warn you when this condition is met.
+| Mechanism | Auto Buffer Size | Rationale |
+|-----------|-----------------|-----------|
+| **SHM** | 64 KB (or 2x message size) | Fixed buffer enables streaming; writer blocks when full |
+| **PMQ** | 8,192 bytes | Safe default within common OS limits |
+| **TCP/UDS** (duration mode) | 1 GB | Avoids backpressure during timed runs |
+| **TCP/UDS** (msg-count mode) | `msg_count * (msg_size + 64)` | Sized to fit all messages |
+
+**User-Provided Size:** You can override the automatic default
+with `--buffer-size <bytes>` to test specific backpressure
+scenarios. This is a valid testing approach -- the tool will log
+a message when the buffer is smaller than the total data volume.
 
 ```bash
-# Example of intentionally setting a small buffer to test backpressure:
-ipc-benchmark -m shm -i 10000 -s 1024 --buffer-size 8192
-
-# The tool will issue a warning to confirm this is the intended scenario:
-# Warning: Buffer size (8192 bytes) is smaller than the total data size (10560000 bytes). 
-# This may cause backpressure, which is a valid test scenario.
+# Override buffer to test backpressure on TCP:
+ipc-benchmark -m tcp -i 10000 -s 1024 --buffer-size 8192
 ```
 
 ### Error Prevention
 
 Common issues and solutions:
 
-1. **"Unexpected end of file"**: Increase `--buffer-size` for shared memory
-2. **"Timeout sending message"**: Buffer too small, increase `--buffer-size`
-3. **Hanging with concurrency**: Fixed - now uses safe fallbacks
+1. **"Timeout sending message"**: Buffer too small for the
+   mechanism; increase `--buffer-size` or let automatic sizing
+   handle it
+2. **"Timeout waiting for buffer space"**: SHM reader fell too
+   far behind the writer; this can occur with very large message
+   sizes or slow consumers
+3. **Hanging with concurrency**: Fixed -- now uses safe fallbacks
 
 ### Performance Notes
 

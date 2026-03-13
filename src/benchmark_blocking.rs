@@ -1324,6 +1324,7 @@ impl BlockingBenchmarkRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn test_new_creates_runner() {
@@ -2111,5 +2112,191 @@ mod tests {
         assert_eq!(runner.config.server_affinity, Some(0));
         assert_eq!(runner.config.client_affinity, Some(1));
         assert!(runner.config.include_first_message);
+    }
+
+    /// Verify blocking-mode buffer sizing logic mirrors the async
+    /// implementation: SHM gets a fixed 64 KB buffer, PMQ gets
+    /// its safe default, and TCP/UDS size to fit all messages.
+    #[test]
+    fn test_blocking_transport_config_buffer_size_logic() {
+        const DURATION_MODE_BUFFER_SIZE: usize = 1_073_741_824;
+        const PMQ_SAFE_DEFAULT_BUFFER_SIZE: usize = 8192;
+
+        let mut base_config = BenchmarkConfig {
+            mechanism: IpcMechanism::SharedMemory,
+            message_size: 1024,
+            msg_count: Some(10000),
+            duration: None,
+            concurrency: 1,
+            one_way: true,
+            round_trip: false,
+            warmup_iterations: 100,
+            percentiles: vec![],
+            buffer_size: None,
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            server_affinity: None,
+            client_affinity: None,
+            send_delay: None,
+            pmq_priority: 0,
+            include_first_message: false,
+        };
+        let args = Args {
+            blocking: true,
+            ..Default::default()
+        };
+
+        // User-provided buffer size is always respected.
+        base_config.buffer_size = Some(9999);
+        let runner = BlockingBenchmarkRunner::new(
+            base_config.clone(),
+            IpcMechanism::TcpSocket,
+            args.clone(),
+        );
+        let tc = runner.create_transport_config_internal(&args).unwrap();
+        assert_eq!(
+            tc.buffer_size, 9999,
+            "User-provided buffer size must be respected"
+        );
+        base_config.buffer_size = None;
+
+        // SHM uses fixed 64KB buffer (or 2x message size).
+        {
+            let runner = BlockingBenchmarkRunner::new(
+                base_config.clone(),
+                IpcMechanism::SharedMemory,
+                args.clone(),
+            );
+            let tc = runner.create_transport_config_internal(&args).unwrap();
+            let expected = std::cmp::max(65536, (base_config.message_size + 64) * 2);
+            assert_eq!(tc.buffer_size, expected, "SHM should use fixed 64KB buffer");
+        }
+
+        // TCP sizes buffer for all messages in msg-count mode.
+        {
+            let runner = BlockingBenchmarkRunner::new(
+                base_config.clone(),
+                IpcMechanism::TcpSocket,
+                args.clone(),
+            );
+            let tc = runner.create_transport_config_internal(&args).unwrap();
+            let expected = 10000 * (1024 + 64);
+            assert_eq!(
+                tc.buffer_size, expected,
+                "TCP msg-count buffer should fit all messages"
+            );
+        }
+
+        // Duration mode uses 1 GB for TCP (not SHM).
+        {
+            let mut dur_config = base_config.clone();
+            dur_config.duration = Some(Duration::from_secs(1));
+            dur_config.msg_count = None;
+            let runner =
+                BlockingBenchmarkRunner::new(dur_config, IpcMechanism::TcpSocket, args.clone());
+            let tc = runner.create_transport_config_internal(&args).unwrap();
+            assert_eq!(
+                tc.buffer_size, DURATION_MODE_BUFFER_SIZE,
+                "TCP duration mode should use 1GB buffer"
+            );
+        }
+
+        // PMQ always uses the safe default, regardless of mode.
+        #[cfg(target_os = "linux")]
+        {
+            let runner = BlockingBenchmarkRunner::new(
+                base_config.clone(),
+                IpcMechanism::PosixMessageQueue,
+                args.clone(),
+            );
+            let tc = runner.create_transport_config_internal(&args).unwrap();
+            assert_eq!(
+                tc.buffer_size, PMQ_SAFE_DEFAULT_BUFFER_SIZE,
+                "PMQ should always use safe default"
+            );
+        }
+    }
+
+    /// Verify SHM in blocking duration mode still gets the
+    /// fixed 64 KB buffer, not the 1 GB default used by TCP/UDS.
+    #[test]
+    fn test_blocking_shm_duration_mode_uses_fixed_buffer() {
+        let config = BenchmarkConfig {
+            mechanism: IpcMechanism::SharedMemory,
+            message_size: 1024,
+            msg_count: None,
+            duration: Some(Duration::from_secs(5)),
+            concurrency: 1,
+            one_way: true,
+            round_trip: false,
+            warmup_iterations: 0,
+            percentiles: vec![],
+            buffer_size: None,
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            server_affinity: None,
+            client_affinity: None,
+            send_delay: None,
+            pmq_priority: 0,
+            include_first_message: false,
+        };
+        let args = Args {
+            blocking: true,
+            ..Default::default()
+        };
+        let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::SharedMemory, args.clone());
+        let tc = runner.create_transport_config_internal(&args).unwrap();
+
+        let expected = std::cmp::max(65536, (1024 + 64) * 2);
+        assert_eq!(
+            tc.buffer_size, expected,
+            "Blocking SHM duration mode should use fixed \
+             64KB buffer, not the 1GB TCP/UDS default"
+        );
+    }
+
+    /// Verify SHM blocking buffer sizing uses 2x message size
+    /// when the message is large enough to exceed the 64 KB
+    /// default.
+    #[test]
+    fn test_blocking_shm_large_message_buffer_sizing() {
+        let large_msg_size: usize = 40_000;
+        let config = BenchmarkConfig {
+            mechanism: IpcMechanism::SharedMemory,
+            message_size: large_msg_size,
+            msg_count: Some(100),
+            duration: None,
+            concurrency: 1,
+            one_way: true,
+            round_trip: false,
+            warmup_iterations: 0,
+            percentiles: vec![],
+            buffer_size: None,
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            server_affinity: None,
+            client_affinity: None,
+            send_delay: None,
+            pmq_priority: 0,
+            include_first_message: false,
+        };
+        let args = Args {
+            blocking: true,
+            ..Default::default()
+        };
+        let runner = BlockingBenchmarkRunner::new(config, IpcMechanism::SharedMemory, args.clone());
+        let tc = runner.create_transport_config_internal(&args).unwrap();
+
+        let expected = (large_msg_size + 64) * 2;
+        assert_eq!(
+            tc.buffer_size, expected,
+            "Blocking SHM should use 2x message size ({}) \
+             when it exceeds 64KB",
+            expected
+        );
+        assert!(
+            tc.buffer_size > 65536,
+            "Large-message SHM buffer should exceed 64KB"
+        );
     }
 }
