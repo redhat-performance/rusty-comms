@@ -1125,27 +1125,22 @@ impl BlockingBenchmarkRunner {
 
         for (i, line) in reader.lines().enumerate() {
             let line = line.context("Failed to read line from latency file")?;
-            let latency_ns: u64 = line
-                .parse()
-                .with_context(|| format!("Failed to parse latency from line: {}", line))?;
+            // Parse "wall_send_ns,latency_ns" format written
+            // by the server process.
+            let (wall_send_ns, latency_ns) = crate::benchmark::parse_latency_file_line(&line)?;
 
             let latency = std::time::Duration::from_nanos(latency_ns);
 
-            // Record in metrics collector
             metrics_collector.record_message(self.config.message_size, Some(latency))?;
 
-            // Stream latency if enabled
             if let Some(ref mut manager) = results_manager {
-                // Use current timestamp since this is server-measured latency read from file
-                let send_timestamp_ns =
-                    crate::results::MessageLatencyRecord::current_timestamp_ns();
                 let record = crate::results::MessageLatencyRecord::new(
                     i as u64,
                     self.mechanism,
                     self.config.message_size,
                     crate::metrics::LatencyType::OneWay,
                     latency,
-                    send_timestamp_ns,
+                    wall_send_ns,
                 );
                 let _ = manager.stream_latency_record(&record);
             }

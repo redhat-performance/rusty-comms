@@ -42,6 +42,7 @@ use ipc_benchmark::{
     results_blocking::BlockingResultsManager,
 };
 use std::io::{self, Write};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 
 use tracing_subscriber::{filter::LevelFilter, prelude::*, Layer};
@@ -679,7 +680,7 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
     // Buffer latencies in memory instead of per-message file I/O
     // This avoids the massive overhead of writing to disk for each message
     let latency_file_path = args.internal_latency_file.clone();
-    let mut latency_buffer: Vec<u64> = if latency_file_path.is_some() {
+    let mut latency_buffer: Vec<(u64, u64)> = if latency_file_path.is_some() {
         Vec::with_capacity(100_000) // Pre-allocate for performance
     } else {
         Vec::new()
@@ -695,7 +696,12 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
                 let latency_ns = receive_time_ns.saturating_sub(message.timestamp);
 
                 if should_buffer_latency(latency_file_path.is_some(), message.id) {
-                    latency_buffer.push(latency_ns);
+                    let wall_now_ns = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos() as u64;
+                    let wall_send_ns = wall_now_ns.saturating_sub(latency_ns);
+                    latency_buffer.push((wall_send_ns, latency_ns));
                 }
 
                 // Check for shutdown message (used by PMQ and other queue-based transports)
@@ -876,7 +882,7 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
     // Buffer latencies in memory instead of per-message file I/O
     // This avoids the massive overhead of writing to disk for each message
     let latency_file_path = args.internal_latency_file.clone();
-    let mut latency_buffer: Vec<u64> = if latency_file_path.is_some() {
+    let mut latency_buffer: Vec<(u64, u64)> = if latency_file_path.is_some() {
         Vec::with_capacity(100_000) // Pre-allocate for performance
     } else {
         Vec::new()
@@ -895,7 +901,12 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
                 let latency_ns = receive_time_ns.saturating_sub(msg.timestamp);
 
                 if should_buffer_latency(latency_file_path.is_some(), msg.id) {
-                    latency_buffer.push(latency_ns);
+                    let wall_now_ns = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos() as u64;
+                    let wall_send_ns = wall_now_ns.saturating_sub(latency_ns);
+                    latency_buffer.push((wall_send_ns, latency_ns));
                 }
 
                 // Message received
@@ -995,14 +1006,20 @@ fn should_buffer_latency(latency_file_enabled: bool, message_id: u64) -> bool {
 
 /// Write a buffer of latency values to a file.
 ///
-/// Each latency is written as a single line containing the
-/// nanosecond value in decimal. This format matches what the
-/// client-side benchmark reader expects.
+/// Each entry is written as a single line containing a
+/// `"wall_send_ns,latency_ns"` pair. `wall_send_ns` is the
+/// approximate wall-clock send time (computed as `wall_now - latency`
+/// on the server) and `latency_ns` is the measured one-way IPC
+/// latency. This format matches what `parse_latency_file_line()`
+/// in the client-side benchmark reader expects.
 ///
 /// # Errors
 ///
 /// Returns an error if the file cannot be created or written.
-fn write_latency_buffer(path: &str, buffer: &[u64]) -> Result<()> {
+fn write_latency_buffer(
+    path: &str,
+    buffer: &[(u64, u64)],
+) -> Result<()> {
     debug!(
         "Writing {} buffered latencies to file: {}",
         buffer.len(),
@@ -1010,8 +1027,8 @@ fn write_latency_buffer(path: &str, buffer: &[u64]) -> Result<()> {
     );
     let mut file = std::fs::File::create(path)
         .with_context(|| format!("Failed to create latency file: {}", path))?;
-    for latency_ns in buffer {
-        writeln!(file, "{}", latency_ns).ok();
+    for &(wall_send_ns, latency_ns) in buffer {
+        writeln!(file, "{},{}", wall_send_ns, latency_ns).ok();
     }
     debug!("Finished writing latencies to file");
     Ok(())
@@ -1051,9 +1068,9 @@ mod tests {
         assert!(!should_buffer_latency(false, u64::MAX));
     }
 
-    /// Verify that write_latency_buffer produces one decimal
-    /// u64 value per line, matching the format that the
-    /// client-side reader expects.
+    /// Verify that write_latency_buffer produces one
+    /// "wall_send_ns,latency_ns" pair per line, matching
+    /// the format that parse_latency_file_line() expects.
     #[test]
     fn test_write_latency_buffer_format() {
         let dir = std::env::temp_dir();
@@ -1062,18 +1079,25 @@ mod tests {
             .to_string_lossy()
             .to_string();
 
-        let latencies: Vec<u64> = vec![100, 200, 999, 0, 42];
-        write_latency_buffer(&path, &latencies).unwrap();
+        let entries: Vec<(u64, u64)> = vec![
+            (1000, 100),
+            (2000, 200),
+            (3000, 999),
+            (0, 0),
+            (5000, 42),
+        ];
+        write_latency_buffer(&path, &entries).unwrap();
 
         let file = std::fs::File::open(&path).unwrap();
-        let lines: Vec<String> = BufReader::new(file).lines().map(|l| l.unwrap()).collect();
+        let lines: Vec<String> =
+            BufReader::new(file).lines().map(|l| l.unwrap()).collect();
 
         assert_eq!(lines.len(), 5);
-        assert_eq!(lines[0], "100");
-        assert_eq!(lines[1], "200");
-        assert_eq!(lines[2], "999");
-        assert_eq!(lines[3], "0");
-        assert_eq!(lines[4], "42");
+        assert_eq!(lines[0], "1000,100");
+        assert_eq!(lines[1], "2000,200");
+        assert_eq!(lines[2], "3000,999");
+        assert_eq!(lines[3], "0,0");
+        assert_eq!(lines[4], "5000,42");
 
         let _ = std::fs::remove_file(&path);
     }
@@ -1102,19 +1126,29 @@ mod tests {
     /// matching the same parse logic the benchmark reader uses.
     #[test]
     fn test_write_latency_buffer_round_trip_parse() {
+        use ipc_benchmark::benchmark::parse_latency_file_line;
+
         let dir = std::env::temp_dir();
         let path = dir
             .join("test_latency_buffer_roundtrip.txt")
             .to_string_lossy()
             .to_string();
 
-        let original: Vec<u64> = vec![1, u64::MAX - 1, 0, 123_456_789];
+        let original: Vec<(u64, u64)> = vec![
+            (1, 1),
+            (u64::MAX - 1, u64::MAX - 1),
+            (0, 0),
+            (999_999_999, 123_456_789),
+        ];
         write_latency_buffer(&path, &original).unwrap();
 
         let file = std::fs::File::open(&path).unwrap();
-        let parsed: Vec<u64> = BufReader::new(file)
+        let parsed: Vec<(u64, u64)> = BufReader::new(file)
             .lines()
-            .filter_map(|l| l.ok().and_then(|s| s.trim().parse::<u64>().ok()))
+            .filter_map(|l| {
+                l.ok()
+                    .and_then(|s| parse_latency_file_line(&s).ok())
+            })
             .collect();
 
         assert_eq!(parsed, original);
@@ -1126,7 +1160,10 @@ mod tests {
     /// an invalid path (e.g. a non-existent directory).
     #[test]
     fn test_write_latency_buffer_invalid_path() {
-        let result = write_latency_buffer("/no/such/directory/latencies.txt", &[1, 2, 3]);
+        let result = write_latency_buffer(
+            "/no/such/directory/latencies.txt",
+            &[(1000, 1), (2000, 2), (3000, 3)],
+        );
         assert!(result.is_err(), "writing to invalid path should fail");
     }
 }
