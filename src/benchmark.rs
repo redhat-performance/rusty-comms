@@ -1597,10 +1597,15 @@ port={}",
     /// ## Buffer Size Calculation
     ///
     /// - If a buffer size is provided by the user, it is always used.
-    /// - If the mechanism is PMQ, always use a safe, small default.
-    /// - If in duration mode, use a large fixed size to avoid backpressure.
-    /// - Otherwise, the buffer size is calculated based on message size and count
-    ///   to fit the expected data volume.
+    /// - If the mechanism is PMQ, use a safe default (8192 bytes).
+    /// - If the mechanism is SHM, use a fixed 64 KB buffer (or
+    ///   2× message size when a single message exceeds 32 KB).
+    ///   This enables streaming where the writer blocks when the
+    ///   buffer is full, rather than dumping all data at once.
+    /// - If in duration mode and mechanism is TCP/UDS, use 1 GB
+    ///   to avoid backpressure during timed runs.
+    /// - Otherwise (TCP/UDS msg-count mode), size the buffer to
+    ///   fit all messages: `msg_count × (msg_size + 64)`.
     pub fn create_transport_config_internal(&self, args: &Args) -> Result<TransportConfig> {
         const DURATION_MODE_BUFFER_SIZE: usize = 1_073_741_824; // 1 GB
         const PMQ_SAFE_DEFAULT_BUFFER_SIZE: usize = 8192;
@@ -2422,6 +2427,119 @@ mod tests {
             tc.buffer_size, expected_shm,
             "SHM in duration mode should use fixed 64KB buffer, \
              not the 1GB duration default"
+        );
+    }
+
+    /// Verify that a user-provided `--buffer-size` overrides
+    /// SHM's automatic 64 KB default. Without the override the
+    /// runner would pick 64 KB; with it, the exact user value
+    /// must be used.
+    #[test]
+    fn test_user_buffer_size_overrides_shm_default() {
+        let user_size: usize = 16384; // 16 KB — smaller than 64 KB
+        let config = BenchmarkConfig {
+            mechanism: IpcMechanism::SharedMemory,
+            message_size: 1024,
+            msg_count: Some(500),
+            duration: None,
+            concurrency: 1,
+            one_way: true,
+            round_trip: false,
+            warmup_iterations: 0,
+            percentiles: vec![],
+            buffer_size: Some(user_size),
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            server_affinity: None,
+            client_affinity: None,
+            send_delay: None,
+            pmq_priority: 0,
+            include_first_message: false,
+        };
+        let args = Args::default();
+        let runner = BenchmarkRunner::new(config, IpcMechanism::SharedMemory, args.clone());
+        let tc = runner.create_transport_config_internal(&args).unwrap();
+
+        assert_eq!(
+            tc.buffer_size, user_size,
+            "User-provided buffer size ({}) must override \
+             SHM's automatic 64KB default",
+            user_size
+        );
+    }
+
+    /// Verify SHM buffer sizing at the exact 32 KB boundary
+    /// where `2 * (msg_size + 64)` transitions from below
+    /// to above the 64 KB default.
+    #[test]
+    fn test_shm_buffer_sizing_at_32kb_boundary() {
+        let args = Args::default();
+
+        // Just below boundary: 2 * (32700 + 64) = 65528 < 65536
+        // Should use the 64 KB default.
+        let below_config = BenchmarkConfig {
+            mechanism: IpcMechanism::SharedMemory,
+            message_size: 32700,
+            msg_count: Some(100),
+            duration: None,
+            concurrency: 1,
+            one_way: true,
+            round_trip: false,
+            warmup_iterations: 0,
+            percentiles: vec![],
+            buffer_size: None,
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            server_affinity: None,
+            client_affinity: None,
+            send_delay: None,
+            pmq_priority: 0,
+            include_first_message: false,
+        };
+        let runner_below =
+            BenchmarkRunner::new(below_config, IpcMechanism::SharedMemory, args.clone());
+        let tc_below = runner_below
+            .create_transport_config_internal(&args)
+            .unwrap();
+        assert_eq!(
+            tc_below.buffer_size, 65536,
+            "Below boundary: SHM should use 64KB default \
+             when 2*(msg+64) < 64KB"
+        );
+
+        // At boundary: 2 * (32736 + 64) = 65600 > 65536
+        // Should use 2x message size.
+        let at_config = BenchmarkConfig {
+            mechanism: IpcMechanism::SharedMemory,
+            message_size: 32736,
+            msg_count: Some(100),
+            duration: None,
+            concurrency: 1,
+            one_way: true,
+            round_trip: false,
+            warmup_iterations: 0,
+            percentiles: vec![],
+            buffer_size: None,
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            server_affinity: None,
+            client_affinity: None,
+            send_delay: None,
+            pmq_priority: 0,
+            include_first_message: false,
+        };
+        let runner_at = BenchmarkRunner::new(at_config, IpcMechanism::SharedMemory, args.clone());
+        let tc_at = runner_at.create_transport_config_internal(&args).unwrap();
+        let expected = (32736 + 64) * 2; // 65600
+        assert_eq!(
+            tc_at.buffer_size, expected,
+            "At boundary: SHM should use 2x msg size ({}) \
+             when it exceeds 64KB",
+            expected
+        );
+        assert!(
+            tc_at.buffer_size > 65536,
+            "At boundary: buffer must exceed 64KB"
         );
     }
 

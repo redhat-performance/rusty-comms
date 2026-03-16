@@ -1436,4 +1436,59 @@ mod tests {
         client.close_blocking().unwrap();
         server_handle.join().unwrap();
     }
+
+    /// Send a high volume of messages through a small buffer to
+    /// stress the condvar timed-wait path. With 100 messages of
+    /// 128 bytes through a 512-byte buffer, the writer must
+    /// block and be woken dozens of times, exercising the
+    /// `pthread_cond_timedwait` retry loop extensively.
+    #[test]
+    fn test_high_volume_condvar_stress() {
+        let segment_name = "test_shm_blocking_condvar_stress";
+        let msg_count: u64 = 100;
+        let msg_size = 128;
+        let buffer_size = 512;
+
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingSharedMemory::new();
+            let config = TransportConfig {
+                shared_memory_name: segment_name.to_string(),
+                buffer_size,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            for expected_id in 0..msg_count {
+                let msg = server.receive_blocking().unwrap();
+                assert_eq!(
+                    msg.id, expected_id,
+                    "ID mismatch at message {}",
+                    expected_id
+                );
+                assert_eq!(msg.payload.len(), msg_size);
+            }
+
+            server.close_blocking().unwrap();
+        });
+
+        // Give server time to create segment
+        thread::sleep(Duration::from_millis(200));
+
+        let mut client = BlockingSharedMemory::new();
+        let config = TransportConfig {
+            shared_memory_name: segment_name.to_string(),
+            buffer_size,
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        for id in 0..msg_count {
+            let byte_val = (id & 0xFF) as u8;
+            let msg = Message::new(id, vec![byte_val; msg_size], MessageType::OneWay);
+            client.send_blocking(&msg).unwrap();
+        }
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
 }
