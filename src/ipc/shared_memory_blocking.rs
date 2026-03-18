@@ -224,6 +224,9 @@ impl SharedMemoryRingBuffer {
             .store((write_pos + required_space) % capacity, Ordering::Release);
         self.message_count.fetch_add(1, Ordering::Release);
 
+        // On non-Unix there are no condvars; readers poll with
+        // yield + sleep, so no signal is needed here.
+
         Ok(())
     }
 
@@ -422,6 +425,12 @@ pub struct BlockingSharedMemory {
 
     /// Whether this instance is the server (creator)
     is_server: bool,
+
+    /// Name of the active shared memory segment.
+    ///
+    /// Stored so close_blocking() can perform deterministic cleanup
+    /// (e.g., shm_unlink on server instances).
+    shared_memory_name: String,
 }
 
 // Safety: The ring buffer uses atomic operations for coordination
@@ -447,6 +456,7 @@ impl BlockingSharedMemory {
             ring_buffer: None,
             shmem: None,
             is_server: false,
+            shared_memory_name: String::new(),
         }
     }
 
@@ -553,6 +563,7 @@ impl BlockingTransport for BlockingSharedMemory {
         self.ring_buffer = Some(ptr);
         self.shmem = Some(Arc::new(Mutex::new(shmem)));
         self.is_server = true;
+        self.shared_memory_name = config.shared_memory_name.clone();
 
         debug!("Shared memory server created successfully");
 
@@ -606,6 +617,7 @@ impl BlockingTransport for BlockingSharedMemory {
         self.ring_buffer = Some(ptr);
         self.shmem = Some(Arc::new(Mutex::new(shmem)));
         self.is_server = false;
+        self.shared_memory_name = config.shared_memory_name.clone();
 
         debug!("Client connected to shared memory successfully");
         Ok(())
@@ -725,6 +737,10 @@ impl BlockingTransport for BlockingSharedMemory {
     fn close_blocking(&mut self) -> Result<()> {
         debug!("Closing blocking shared memory transport");
 
+        // Capture cleanup metadata before dropping local state.
+        let should_unlink = self.is_server && !self.shared_memory_name.is_empty();
+        let shm_name = self.shared_memory_name.clone();
+
         if let Some(ring_buffer) = self.ring_buffer {
             unsafe {
                 (*ring_buffer).shutdown.store(true, Ordering::Release);
@@ -735,23 +751,66 @@ impl BlockingTransport for BlockingSharedMemory {
                     libc::pthread_cond_broadcast(&(*ring_buffer).data_ready as *const _ as *mut _);
                     libc::pthread_cond_broadcast(&(*ring_buffer).space_ready as *const _ as *mut _);
                 }
-
-                // Only destroy synchronization primitives if we're the server
-                // (server created the shared memory)
-                #[cfg(unix)]
-                if self.is_server {
-                    libc::pthread_mutex_destroy(&(*ring_buffer).mutex as *const _ as *mut _);
-                    libc::pthread_cond_destroy(&(*ring_buffer).data_ready as *const _ as *mut _);
-                    libc::pthread_cond_destroy(&(*ring_buffer).space_ready as *const _ as *mut _);
-                }
             }
         }
 
         self.ring_buffer = None;
         self.shmem = None;
+        self.is_server = false;
+
+        // Best-effort unlink so stale SHM objects do not accumulate across runs.
+        if should_unlink {
+            #[cfg(unix)]
+            {
+                use std::ffi::CString;
+                let posix_name = if shm_name.starts_with('/') {
+                    shm_name
+                } else {
+                    format!("/{}", shm_name)
+                };
+
+                match CString::new(posix_name.as_bytes()) {
+                    Ok(c_name) => unsafe {
+                        let rc = libc::shm_unlink(c_name.as_ptr());
+                        if rc == 0 {
+                            debug!("Unlinked SHM segment on close: {}", posix_name);
+                        } else {
+                            debug!(
+                                "shm_unlink failed during close for {}: {}",
+                                posix_name,
+                                std::io::Error::last_os_error()
+                            );
+                        }
+                    },
+                    Err(_) => {
+                        debug!("Skipping shm_unlink: name contains interior NUL");
+                    }
+                }
+            }
+        }
+
+        self.shared_memory_name.clear();
 
         debug!("Blocking shared memory transport closed");
         Ok(())
+    }
+}
+
+/// Ensure resources are cleaned up even if `close_blocking()` is never
+/// called (e.g. due to a panic or early return). Sets the shutdown flag,
+/// wakes any blocked readers/writers, and unlinks the SHM segment when
+/// this instance is the server (creator).
+impl Drop for BlockingSharedMemory {
+    fn drop(&mut self) {
+        // close_blocking() is idempotent; safe to call even if the
+        // transport was never started or was already closed.
+        if let Err(e) = self.close_blocking() {
+            tracing::debug!(
+                "BlockingSharedMemory::drop: close_blocking \
+                 returned error (best-effort cleanup): {}",
+                e
+            );
+        }
     }
 }
 
@@ -1040,5 +1099,93 @@ mod tests {
 
         client.close_blocking().unwrap();
         server_handle.join().unwrap();
+    }
+
+    /// Verifies that the Drop implementation calls
+    /// close_blocking() for cleanup without panicking.
+    #[test]
+    fn test_drop_calls_close() {
+        let transport = BlockingSharedMemory::new();
+        drop(transport);
+    }
+
+    /// Verifies that dropping a started server without calling
+    /// close_blocking() still cleans up the SHM segment. This
+    /// exercises the Drop impl on a transport that has live
+    /// resources (ring_buffer, shmem, is_server=true).
+    #[test]
+    fn test_drop_cleans_up_server_resources() {
+        // macOS limits POSIX shm names to 31 chars (incl. leading '/')
+        let id = &uuid::Uuid::new_v4().as_simple().to_string()[..8];
+        let seg = format!("shm_drop_{}", id);
+        let mut server = BlockingSharedMemory::new();
+        let config = TransportConfig {
+            shared_memory_name: seg.clone(),
+            buffer_size: 4096,
+            ..Default::default()
+        };
+        server.start_server_blocking(&config).unwrap();
+
+        // Confirm SHM segment exists before drop
+        #[cfg(target_os = "linux")]
+        {
+            let shm_path = format!("/dev/shm/{}", seg);
+            assert!(
+                std::path::Path::new(&shm_path).exists(),
+                "SHM segment should exist before drop"
+            );
+        }
+
+        // Drop without calling close_blocking()
+        drop(server);
+
+        // Confirm SHM segment is removed after drop
+        #[cfg(target_os = "linux")]
+        {
+            let shm_path = format!("/dev/shm/{}", seg);
+            assert!(
+                !std::path::Path::new(&shm_path).exists(),
+                "SHM segment should be unlinked after drop"
+            );
+        }
+    }
+
+    /// Verifies that close_blocking() on the server unlinks the
+    /// SHM segment from /dev/shm so it does not leak.
+    #[test]
+    fn test_close_unlinks_shm_segment() {
+        // macOS limits POSIX shm names to 31 chars (incl. leading '/')
+        let id = &uuid::Uuid::new_v4().as_simple().to_string()[..8];
+        let seg = format!("shm_unlnk_{}", id);
+        let mut server = BlockingSharedMemory::new();
+        let config = TransportConfig {
+            shared_memory_name: seg.clone(),
+            buffer_size: 4096,
+            ..Default::default()
+        };
+        server.start_server_blocking(&config).unwrap();
+
+        #[cfg(target_os = "linux")]
+        {
+            let shm_path = format!("/dev/shm/{}", seg);
+            assert!(
+                std::path::Path::new(&shm_path).exists(),
+                "SHM segment should exist after start"
+            );
+        }
+
+        server.close_blocking().unwrap();
+
+        #[cfg(target_os = "linux")]
+        {
+            let shm_path = format!("/dev/shm/{}", seg);
+            assert!(
+                !std::path::Path::new(&shm_path).exists(),
+                "SHM should be unlinked after close"
+            );
+        }
+
+        // close is idempotent — second call must not panic
+        server.close_blocking().unwrap();
     }
 }

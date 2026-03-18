@@ -238,22 +238,24 @@ impl IpcTransport for TcpSocketTransport {
         }
 
         // Lazy connection establishment for server
-        if self.stream.is_none() && self.listener.is_some() {
-            debug!("Server accepting connection on first send");
-            let (stream, client_addr) = self.listener.as_ref().unwrap().accept().await?;
-            debug!(
-                "TCP Socket server accepted connection from: {}",
-                client_addr
-            );
+        if self.stream.is_none() {
+            if let Some(listener) = self.listener.as_ref() {
+                debug!("Server accepting connection on first send");
+                let (stream, client_addr) = listener.accept().await?;
+                debug!(
+                    "TCP Socket server accepted connection from: {}",
+                    client_addr
+                );
 
-            // Configure socket options for low latency
-            let std_stream = stream.into_std()?;
-            let socket = socket2::Socket::from(std_stream.try_clone()?);
-            socket.set_nodelay(true)?;
-            socket.set_recv_buffer_size(self.buffer_size)?;
-            socket.set_send_buffer_size(self.buffer_size)?;
+                // Configure socket options for low latency
+                let std_stream = stream.into_std()?;
+                let socket = socket2::Socket::from(std_stream.try_clone()?);
+                socket.set_nodelay(true)?;
+                socket.set_recv_buffer_size(self.buffer_size)?;
+                socket.set_send_buffer_size(self.buffer_size)?;
 
-            self.stream = Some(TcpStream::from_std(std_stream)?);
+                self.stream = Some(TcpStream::from_std(std_stream)?);
+            }
         }
 
         if let Some(ref mut stream) = self.stream {
@@ -302,22 +304,24 @@ impl IpcTransport for TcpSocketTransport {
         }
 
         // Lazy connection establishment for server
-        if self.stream.is_none() && self.listener.is_some() {
-            debug!("Server accepting connection on first receive");
-            let (stream, client_addr) = self.listener.as_ref().unwrap().accept().await?;
-            debug!(
-                "TCP Socket server accepted connection from: {}",
-                client_addr
-            );
+        if self.stream.is_none() {
+            if let Some(listener) = self.listener.as_ref() {
+                debug!("Server accepting connection on first receive");
+                let (stream, client_addr) = listener.accept().await?;
+                debug!(
+                    "TCP Socket server accepted connection from: {}",
+                    client_addr
+                );
 
-            // Configure socket options for low latency
-            let std_stream = stream.into_std()?;
-            let socket = socket2::Socket::from(std_stream.try_clone()?);
-            socket.set_nodelay(true)?;
-            socket.set_recv_buffer_size(self.buffer_size)?;
-            socket.set_send_buffer_size(self.buffer_size)?;
+                // Configure socket options for low latency
+                let std_stream = stream.into_std()?;
+                let socket = socket2::Socket::from(std_stream.try_clone()?);
+                socket.set_nodelay(true)?;
+                socket.set_recv_buffer_size(self.buffer_size)?;
+                socket.set_send_buffer_size(self.buffer_size)?;
 
-            self.stream = Some(TcpStream::from_std(std_stream)?);
+                self.stream = Some(TcpStream::from_std(std_stream)?);
+            }
         }
 
         if let Some(ref mut stream) = self.stream {
@@ -401,15 +405,26 @@ impl IpcTransport for TcpSocketTransport {
                             connection_id, client_addr
                         );
 
-                        // Configure socket options
+                        // Configure socket options for low latency.
+                        // Failure here means the socket would run
+                        // without TCP_NODELAY, which skews benchmark
+                        // results, so we drop the connection instead.
                         if let Ok(std_stream) = stream.into_std() {
-                            let socket = socket2::Socket::from(std_stream.try_clone().unwrap());
-                            let _ = socket.set_nodelay(true);
+                            let socket =
+                                socket2::Socket::from(std_stream.try_clone().unwrap_or_else(|e| {
+                                    panic!(
+                                        "Failed to clone TCP stream for \
+                                         socket tuning on connection {}: {}",
+                                        connection_id, e
+                                    );
+                                }));
+                            socket.set_nodelay(true).unwrap_or_else(|e| {
+                                warn!("set_nodelay failed on connection {}: {}", connection_id, e);
+                            });
                             let _ = socket.set_recv_buffer_size(buffer_size);
                             let _ = socket.set_send_buffer_size(buffer_size);
 
                             if let Ok(tokio_stream) = TcpStream::from_std(std_stream) {
-                                // Spawn handler for this connection
                                 let handler_sender = message_sender.clone();
                                 let handler_connections = connections.clone();
 

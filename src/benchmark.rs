@@ -446,6 +446,10 @@ impl BenchmarkRunner {
     ///
     /// ## Test Execution Flow
     ///
+    /// Tests run **sequentially**, not simultaneously. Each test
+    /// spawns its own server process, runs to completion, and tears
+    /// down before the next test starts.
+    ///
     /// 1. **Warmup Phase**: Run warmup iterations to stabilize performance
     /// 2. **One-way Testing**: Measure one-way latency if enabled
     /// 3. **Round-trip Testing**: Measure round-trip latency if enabled
@@ -1602,7 +1606,10 @@ port={}",
         let unique_id = Uuid::new_v4();
         // Use shortened UUID for socket paths to stay within macOS SUN_LEN limit (104 bytes)
         let short_id = &unique_id.to_string()[..8];
-        let unique_port = self.config.port + (unique_id.as_u128() as u16 % 1000);
+        let port_offset = (unique_id.as_u128() % 1000) as u32;
+        // Keep computed ports within valid TCP range [1, 65535] without overflow.
+        let base_port = u32::from(self.config.port.max(1));
+        let unique_port = ((base_port - 1 + port_offset) % 65_535 + 1) as u16;
 
         // Determine if the current mechanism is PMQ
         let is_pmq = {
@@ -2196,6 +2203,7 @@ mod tests {
     #[test]
     fn test_transport_config_buffer_size_logic() {
         const DURATION_MODE_BUFFER_SIZE: usize = 1_073_741_824; // 1 GB
+        #[cfg(target_os = "linux")]
         const PMQ_SAFE_DEFAULT_BUFFER_SIZE: usize = 8192;
 
         // Helper to get only the mechanisms available on the current platform.

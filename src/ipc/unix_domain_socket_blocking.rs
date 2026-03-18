@@ -50,7 +50,7 @@
 //! ```
 
 use crate::ipc::{BlockingTransport, Message, TransportConfig};
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use std::io::{Read, Write};
 #[cfg(unix)]
 use std::os::unix::io::AsRawFd;
@@ -87,6 +87,9 @@ pub struct BlockingUnixDomainSocket {
 }
 
 impl BlockingUnixDomainSocket {
+    /// Maximum accepted frame size (matches async transport guard).
+    const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
+
     /// Create a new Unix Domain Socket transport.
     ///
     /// Creates an uninitialized transport. Call `start_server_blocking()` or
@@ -307,6 +310,13 @@ impl BlockingTransport for BlockingUnixDomainSocket {
                  Connection may be closed or peer disconnected.",
         )?;
         let len = u32::from_le_bytes(len_bytes) as usize;
+        if len == 0 || len > Self::MAX_MESSAGE_SIZE {
+            return Err(anyhow!(
+                "Invalid message length: {} bytes (allowed: 1..={})",
+                len,
+                Self::MAX_MESSAGE_SIZE
+            ));
+        }
 
         trace!("Receiving message of {} bytes", len);
 
@@ -1486,6 +1496,49 @@ mod tests {
         client.close_blocking().unwrap();
         server_handle.join().unwrap();
 
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    /// Verifies that receive_blocking rejects messages with
+    /// invalid length prefixes (0 or > MAX_MESSAGE_SIZE) to
+    /// prevent unbounded memory allocation.
+    #[test]
+    fn test_receive_rejects_invalid_message_length() {
+        use std::io::Write;
+
+        let socket_path = get_temp_socket_path("test_uds_invalid_msglen.sock");
+        let _ = std::fs::remove_file(&socket_path);
+
+        let server_path = socket_path.clone();
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingUnixDomainSocket::new();
+            let config = TransportConfig {
+                socket_path: server_path,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            let result = server.receive_blocking();
+            assert!(result.is_err());
+            let err_msg = result.unwrap_err().to_string();
+            assert!(
+                err_msg.contains("Invalid message length"),
+                "Error should mention invalid length: {}",
+                err_msg
+            );
+            server.close_blocking().unwrap();
+        });
+
+        // Give server time to bind
+        thread::sleep(Duration::from_millis(100));
+
+        // Connect as raw Unix client and send invalid length
+        let mut stream = std::os::unix::net::UnixStream::connect(&socket_path).unwrap();
+        let zero_len: u32 = 0;
+        stream.write_all(&zero_len.to_le_bytes()).unwrap();
+        drop(stream);
+
+        server_handle.join().unwrap();
         let _ = std::fs::remove_file(&socket_path);
     }
 }

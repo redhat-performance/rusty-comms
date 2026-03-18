@@ -570,6 +570,35 @@ impl IpcTransport for SharedMemoryTransport {
             conns.clear();
         }
 
+        // Unlink shared memory segment if we're the server (creator).
+        // This releases the system resource so it can be reclaimed.
+        if self.role == Some(ConnectionRole::Server) && !self.shared_memory_name.is_empty() {
+            #[cfg(unix)]
+            {
+                use std::ffi::CString;
+                // POSIX requires shm names to start with '/'
+                let posix_name = if self.shared_memory_name.starts_with('/') {
+                    self.shared_memory_name.clone()
+                } else {
+                    format!("/{}", self.shared_memory_name)
+                };
+                if let Ok(name) = CString::new(posix_name.as_str()) {
+                    unsafe {
+                        let result = libc::shm_unlink(name.as_ptr());
+                        if result == 0 {
+                            debug!("Unlinked SHM segment: {}", posix_name);
+                        } else {
+                            debug!(
+                                "shm_unlink failed for {}: {}",
+                                posix_name,
+                                std::io::Error::last_os_error()
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         self.single_connection = None;
         self.role = None;
         self.message_receiver = None;

@@ -129,11 +129,8 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y build-essential pkg-config
 
-    - name: Remove lockfile to allow old Cargo to resolve deps
-      run: rm Cargo.lock
-
     - name: Check if project builds with MSRV
-      run: cargo build --verbose
+      run: cargo build --locked --verbose
 
   build_and_test:
     name: Build and Test
