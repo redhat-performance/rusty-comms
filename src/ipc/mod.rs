@@ -1574,3 +1574,35 @@ mod tests {
         );
     }
 }
+
+#[test]
+fn test_timestamp_offset_update_in_serialized_buffer() {
+    use super::*;
+
+    // Create a message with timestamp 0
+    let mut msg = Message::new(42, vec![1, 2, 3, 4], MessageType::OneWay);
+    msg.timestamp = 0;
+
+    // Serialize it
+    let mut serialized = bincode::serialize(&msg).unwrap();
+
+    // Verify timestamp is 0 in bytes 8-15
+    let extracted_ts = u64::from_le_bytes(serialized[8..16].try_into().unwrap());
+    assert_eq!(extracted_ts, 0, "Timestamp should be 0 initially");
+
+    // Now update the timestamp bytes
+    let new_ts: u64 = 123456789;
+    let ts_bytes = new_ts.to_le_bytes();
+    serialized[8..16].copy_from_slice(&ts_bytes);
+
+    // Verify it was updated
+    let updated_ts = u64::from_le_bytes(serialized[8..16].try_into().unwrap());
+    assert_eq!(updated_ts, new_ts, "Timestamp should be updated");
+
+    // Deserialize and verify
+    let deserialized: Message = bincode::deserialize(&serialized).unwrap();
+    assert_eq!(
+        deserialized.timestamp, new_ts,
+        "Deserialized timestamp should match"
+    );
+}

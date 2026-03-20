@@ -276,15 +276,29 @@ impl SharedMemoryRingBuffer {
         Ok(data)
     }
 
-    /// Write data to the ring buffer (blocking with condition variable).
+    /// Write data to the ring buffer (blocking with condition
+    /// variable).
     ///
-    /// Uses pthread_cond_wait to block until space is available, then writes
-    /// the data and signals any waiting readers.
+    /// Uses `pthread_cond_wait` to block until space is available,
+    /// then writes the data and signals any waiting readers.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - Mutable serialized message bytes. The timestamp
+    ///   region will be updated in-place right before the write.
+    /// * `timestamp_offset` - Byte range of the timestamp field
+    ///   within `data`. When `Some`, the timestamp is refreshed
+    ///   immediately before the memory write so that measured
+    ///   latency excludes any backpressure wait time.
     ///
     /// # Safety
     /// Only available on Unix platforms with pthread support.
     #[cfg(unix)]
-    unsafe fn write_data_blocking(&self, data: &[u8]) -> Result<()> {
+    unsafe fn write_data_blocking(
+        &self,
+        data: &mut [u8],
+        timestamp_offset: Option<std::ops::Range<usize>>,
+    ) -> Result<()> {
         let data_len = data.len();
         let required_space = data_len + 4; // 4 bytes for length prefix
 
@@ -293,17 +307,25 @@ impl SharedMemoryRingBuffer {
 
         // Wait for space to become available
         while self.available_write_space() < required_space {
-            // Check for shutdown while waiting
             if self.shutdown.load(Ordering::Acquire) {
                 libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
                 return Err(anyhow!("Connection closed"));
             }
 
-            // Wait on condition variable (releases mutex, reacquires on wake)
+            // Wait on condition variable (releases mutex,
+            // reacquires on wake)
             libc::pthread_cond_wait(
                 &self.space_ready as *const _ as *mut _,
                 &self.mutex as *const _ as *mut _,
             );
+        }
+
+        // Update timestamp right before writing to shared memory
+        // so that measured latency excludes backpressure wait time
+        if let Some(ref ts_range) = timestamp_offset {
+            let ts_now = crate::ipc::get_monotonic_time_ns();
+            let ts_bytes = ts_now.to_le_bytes();
+            data[ts_range.clone()].copy_from_slice(&ts_bytes);
         }
 
         // Space is available, write the data
@@ -335,10 +357,12 @@ impl SharedMemoryRingBuffer {
         Ok(())
     }
 
-    /// Read data from the ring buffer (blocking with condition variable).
+    /// Read data from the ring buffer (blocking with condition
+    /// variable).
     ///
-    /// Uses pthread_cond_wait to block until data is available, then reads
-    /// it and signals any waiting writers.
+    /// Uses `pthread_cond_wait` to block until data is available,
+    /// then reads it and signals any waiting writers that space
+    /// has been freed.
     ///
     /// # Safety
     /// Only available on Unix platforms with pthread support.
@@ -651,18 +675,16 @@ impl BlockingTransport for BlockingSharedMemory {
         let mut serialized =
             bincode::serialize(&message_with_timestamp).context("Failed to serialize message")?;
 
-        // Capture timestamp immediately before send and update bytes in buffer
-        message_with_timestamp.set_timestamp_now();
-        let timestamp_bytes = message_with_timestamp.timestamp.to_le_bytes();
-        let ts_offset = Message::timestamp_offset();
-        serialized[ts_offset].copy_from_slice(&timestamp_bytes);
+        // Timestamp will be captured inside write_data_blocking right before
+        // the actual memory write, ensuring accurate latency even under backpressure
 
-        // Send immediately - no intervening work
+        // Send message - timestamp is updated atomically right before memory write
         // Use condition variable-based blocking write
         #[cfg(unix)]
         {
             unsafe {
-                (*ring_buffer).write_data_blocking(&serialized)?;
+                (*ring_buffer)
+                    .write_data_blocking(&mut serialized, Some(Message::timestamp_offset()))?;
             }
             trace!("Message ID {} sent successfully", message.id);
             Ok(())

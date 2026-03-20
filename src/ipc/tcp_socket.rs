@@ -69,7 +69,14 @@ impl TcpSocketTransport {
         Message::from_bytes(&message_data)
     }
 
-    /// Write a message to the TCP stream
+    /// Write a message to the TCP stream.
+    ///
+    /// Unlike SHM and PMQ, the timestamp is not refreshed
+    /// after serialization. The gap between `to_bytes()` and
+    /// the kernel `write_all()` is only a length-prefix write
+    /// plus the data write (nanoseconds of CPU work, no
+    /// userspace backpressure loop or async scheduling hop).
+    /// This makes the timestamp error negligible for TCP.
     async fn write_message(stream: &mut TcpStream, message: &Message) -> Result<(), IpcError> {
         const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
         let message_bytes = message.to_bytes().map_err(IpcError::Generic)?;

@@ -1539,9 +1539,13 @@ impl BenchmarkResults {
     /// ## Parameters
     /// - `mechanism`: The IPC mechanism being tested
     /// - `message_size`: Size of messages used in testing
+    /// - `buffer_size`: Transport buffer size in bytes
     /// - `concurrency`: Number of concurrent workers
     /// - `msg_count`: Number of messages (None for duration-based)
     /// - `duration`: Test duration (None for message-count-based)
+    /// - `warmup_iterations`: Warmup messages to discard
+    /// - `one_way`: Whether one-way latency testing is enabled
+    /// - `round_trip`: Whether round-trip latency testing is enabled
     ///
     /// ## Returns
     /// Initialized results structure ready for data collection
@@ -1549,7 +1553,11 @@ impl BenchmarkResults {
     /// ## Configuration Capture
     ///
     /// The test configuration is captured at creation time to ensure
-    /// the results accurately reflect the parameters used during testing.
+    /// the results accurately reflect the parameters used during
+    /// testing. The `one_way` and `round_trip` flags are propagated
+    /// into the JSON output so downstream tooling can identify which
+    /// test modes were active.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         mechanism: IpcMechanism,
         message_size: usize,
@@ -1558,6 +1566,8 @@ impl BenchmarkResults {
         msg_count: Option<usize>,
         duration: Option<Duration>,
         warmup_iterations: usize,
+        one_way: bool,
+        round_trip: bool,
     ) -> Self {
         let test_config = TestConfiguration {
             message_size,
@@ -1565,8 +1575,8 @@ impl BenchmarkResults {
             concurrency,
             msg_count,
             duration,
-            one_way_enabled: false,
-            round_trip_enabled: false,
+            one_way_enabled: one_way,
+            round_trip_enabled: round_trip,
             warmup_iterations,
             percentiles: vec![50.0, 95.0, 99.0, 99.9],
         };
@@ -1888,6 +1898,8 @@ mod tests {
             Some(1000),
             None,
             0,
+            true,
+            true,
         );
 
         assert_eq!(results.mechanism, IpcMechanism::UnixDomainSocket);
@@ -2292,8 +2304,17 @@ mod tests {
     fn test_results_manager_add_results() {
         let mut mgr = ResultsManager::new(None, None).unwrap();
 
-        let results =
-            BenchmarkResults::new(IpcMechanism::TcpSocket, 1024, 8192, 1, Some(100), None, 0);
+        let results = BenchmarkResults::new(
+            IpcMechanism::TcpSocket,
+            1024,
+            8192,
+            1,
+            Some(100),
+            None,
+            0,
+            true,
+            true,
+        );
 
         let rt = Runtime::new().unwrap();
         rt.block_on(mgr.add_results(results.clone())).unwrap();
@@ -2305,14 +2326,90 @@ mod tests {
 
     #[test]
     fn test_benchmark_results_new() {
-        let results =
-            BenchmarkResults::new(IpcMechanism::TcpSocket, 1024, 8192, 1, Some(100), None, 0);
+        let results = BenchmarkResults::new(
+            IpcMechanism::TcpSocket,
+            1024,
+            8192,
+            1,
+            Some(100),
+            None,
+            0,
+            true,
+            true,
+        );
 
         assert!(results.one_way_results.is_none());
         assert!(results.round_trip_results.is_none());
         assert_eq!(results.mechanism, IpcMechanism::TcpSocket);
         assert_eq!(results.test_config.message_size, 1024);
         assert_eq!(results.test_config.buffer_size, 8192);
+        assert!(
+            results.test_config.one_way_enabled,
+            "one_way_enabled should reflect constructor arg"
+        );
+        assert!(
+            results.test_config.round_trip_enabled,
+            "round_trip_enabled should reflect constructor arg"
+        );
+    }
+
+    /// Verifies that `one_way_enabled` and `round_trip_enabled`
+    /// are correctly set to `false` when passed as `false`,
+    /// ensuring the flags are not hardcoded.
+    #[test]
+    fn test_benchmark_results_config_flags_false() {
+        let results = BenchmarkResults::new(
+            IpcMechanism::SharedMemory,
+            256,
+            4096,
+            2,
+            Some(500),
+            None,
+            50,
+            false,
+            false,
+        );
+
+        assert!(
+            !results.test_config.one_way_enabled,
+            "one_way_enabled should be false when passed false"
+        );
+        assert!(
+            !results.test_config.round_trip_enabled,
+            "round_trip_enabled should be false when passed false"
+        );
+    }
+
+    /// Verifies mixed flag combinations propagate correctly.
+    #[test]
+    fn test_benchmark_results_config_flags_mixed() {
+        let one_way_only = BenchmarkResults::new(
+            IpcMechanism::TcpSocket,
+            128,
+            8192,
+            1,
+            Some(100),
+            None,
+            0,
+            true,
+            false,
+        );
+        assert!(one_way_only.test_config.one_way_enabled);
+        assert!(!one_way_only.test_config.round_trip_enabled);
+
+        let round_trip_only = BenchmarkResults::new(
+            IpcMechanism::SharedMemory,
+            128,
+            8192,
+            1,
+            Some(100),
+            None,
+            0,
+            false,
+            true,
+        );
+        assert!(!round_trip_only.test_config.one_way_enabled);
+        assert!(round_trip_only.test_config.round_trip_enabled);
     }
 
     #[test]
@@ -2325,6 +2422,8 @@ mod tests {
             None,
             Some(Duration::from_secs(10)),
             100,
+            true,
+            true,
         );
 
         assert_eq!(results.test_config.duration, Some(Duration::from_secs(10)));
