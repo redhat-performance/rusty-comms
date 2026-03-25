@@ -31,16 +31,8 @@ This benchmark suite provides a systematic way to evaluate the performance of va
 ### Output Formats
 
 - **JSON**: Optional, machine-readable structured output for final, aggregated results. Generated only when the `--output-file` flag is used.
-- **Streaming JSON**: Real-time, per-message latency data written
-  to a file in a columnar JSON format. This allows for efficient,
-  live monitoring of long-running tests. The format consists of a
-  `headings` array and a `data` array containing value arrays for
-  each message. See [Streaming Output Columns](#streaming-output-columns)
-  for the column definitions.
-- **Streaming CSV**: Real-time, per-message latency data written
-  to a standard CSV file. The columns match the streaming JSON
-  headings. This format is ideal for easy import into spreadsheets
-  and data analysis tools.
+- **Streaming JSON**: Real-time, per-message latency data written to a file in a columnar JSON format. This allows for efficient, live monitoring of long-running tests. The format consists of a `headings` array and a `data` array containing value arrays for each message.
+- **Streaming CSV**: Real-time, per-message latency data written to a standard CSV file. This format is ideal for easy import into spreadsheets and data analysis tools.
 - **Console Output**: User-friendly, color-coded summaries on `stdout`. Includes a configuration summary at startup and a detailed results summary upon completion.
 - **Detailed Logs**: Structured, timestamped logs written to a file or `stderr` for diagnostics.
 
@@ -174,24 +166,6 @@ This benchmark suite uses **high-precision monotonic clocks** to measure true IP
 - **Windows**: Falls back to system time (less precise)
 - **Characteristics**: Monotonic clocks measure time from system boot and are unaffected by NTP adjustments, daylight saving time, or manual clock changes
 
-#### Test Execution Order
-
-One-way and round-trip tests run **sequentially**, never
-simultaneously. Each test spawns its own server process, runs to
-completion, and tears down before the next test starts:
-
-1. **Warmup** (if configured)
-2. **One-way test** — client sends messages; server measures
-   receive latency
-3. **Round-trip test** — client sends a message, waits for the
-   server's response, then sends the next
-
-By default both tests are enabled. Use `--one-way` or
-`--round-trip` to run only one. For duration-based tests (`-d`),
-each test gets its own full time window, so one-way typically
-produces far more records than round-trip (fire-and-forget vs
-send-wait-receive per message).
-
 #### Timestamp Capture Points
 
 **For One-Way Latency Tests:**
@@ -204,28 +178,6 @@ send-wait-receive per message).
 2. **Server Side**: Receives request, sends response immediately
 3. **Client Side**: Timestamp captured after receiving response
 4. **Latency Calculation**: Total elapsed time from send to receive
-
-#### Streaming Output Columns
-
-The per-message streaming output (JSON and CSV) contains the
-following columns:
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `timestamp_ns` | `u64` | Approximate wall-clock time (nanoseconds since Unix epoch) when the message was sent. For round-trip and combined tests this is captured on the client immediately before `send()`. For one-way tests the server approximates it as `wall_clock_now - latency`. |
-| `message_id` | `u64` | Zero-based sequential message identifier. |
-| `mechanism` | `string` | IPC mechanism name (e.g. `"TcpSocket"`, `"UnixDomainSocket"`). |
-| `message_size` | `u64` | Payload size in bytes. |
-| `one_way_latency_ns` | `u64` or `null` | One-way latency in nanoseconds, or `null` if this record is round-trip only. |
-| `round_trip_latency_ns` | `u64` or `null` | Round-trip latency in nanoseconds, or `null` if this record is one-way only. |
-
-> **Note on `timestamp_ns` accuracy:** For one-way tests the
-> server computes the send timestamp by subtracting the measured
-> monotonic latency from its current wall-clock time. This mixes
-> two clock domains (wall-clock and monotonic) and is subject to
-> minor drift from NTP adjustments, but it is the best
-> approximation available without clock synchronization between
-> the client and server processes.
 
 ### What's Measured
 
@@ -438,8 +390,7 @@ ipc-benchmark --log-file stderr
 # Continue running tests even if one mechanism fails
 ipc-benchmark -m all --continue-on-error
 
-# Run only round-trip tests (one-way and round-trip run
-# sequentially by default; use these flags to select one)
+# Run only round-trip tests
 ipc-benchmark --round-trip --no-one-way
 
 # Custom percentiles for latency analysis
