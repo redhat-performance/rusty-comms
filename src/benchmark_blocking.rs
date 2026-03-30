@@ -557,6 +557,10 @@ impl BlockingBenchmarkRunner {
         // 5. Otherwise, calculate based on message count (for UDS/TCP which handle backpressure well).
         let is_shm = self.mechanism == IpcMechanism::SharedMemory;
         const SHM_DEFAULT_BUFFER_SIZE: usize = 65536; // 64KB - matches H2C behavior
+                                                      // Per-message overhead for buffer sizing: 8 (id) + 8
+                                                      // (timestamp) + 8 (bincode vec length) + 1 (message
+                                                      // type) + 4 (ring buffer length prefix) = 29 bytes,
+                                                      // rounded up to 64 for alignment and safety margin.
         const MESSAGE_OVERHEAD: usize = 64;
 
         let buffer_size = self.config.buffer_size.unwrap_or_else(|| {
@@ -571,7 +575,7 @@ impl BlockingBenchmarkRunner {
             } else {
                 // For message-count mode with UDS/TCP, size buffer to fit all messages.
                 // These mechanisms handle backpressure via kernel buffers.
-                self.get_msg_count() * (self.config.message_size + 64)
+                self.get_msg_count() * (self.config.message_size + MESSAGE_OVERHEAD)
             }
         });
 
@@ -588,7 +592,8 @@ impl BlockingBenchmarkRunner {
 
         // Log SHM buffer info - fixed buffer enables streaming, not batching
         if self.mechanism == IpcMechanism::SharedMemory && self.config.duration.is_none() {
-            let total_message_data = self.get_msg_count() * (self.config.message_size + 32);
+            let total_message_data =
+                self.get_msg_count() * (self.config.message_size + MESSAGE_OVERHEAD);
             if buffer_size < total_message_data {
                 debug!(
                     "SHM using fixed {}KB buffer for {} bytes of data - streaming mode enabled",
