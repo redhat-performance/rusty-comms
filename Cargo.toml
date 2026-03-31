@@ -29,7 +29,8 @@ libc = "0.2"
 nix = { version = "0.29", features = ["time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-uuid = { version = "1.17", features = ["v4"] }
+# MSRV: uuid 1.21+ requires Rust 1.85+
+uuid = { version = ">=1.17, <1.21", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 num_cpus = "1.17"
 rand = "0.8"
@@ -53,10 +54,19 @@ tokio-macros = "=2.5.0"  # tokio-macros 2.6.0+ requires Rust 1.71+
 mio = "=1.0.4"  # mio 1.1.0+ requires Rust 1.71+
 core_affinity = "0.8.3"
 os_pipe = "1.1.5"
+# MSRV: zmij 1.0.20+ requires Rust 1.71+
+zmij = "=1.0.19"
+# MSRV: proc-macro ecosystem pins — 1.0.45/2.0.115+/1.0.23+
+# all bumped MSRV to Rust 1.71+
+quote = "=1.0.44"
+syn = "=2.0.114"
+unicode-ident = "=1.0.22"
 
 [dev-dependencies]
 criterion = "0.5"
-tempfile = "3.20"
+# MSRV: tempfile 3.25+ depends on getrandom >=0.3,<0.5 which resolves
+# to 0.4.x (edition 2024, unparseable by Rust 1.70's cargo)
+tempfile = ">=3.20, <3.25"
 
 [[bin]]
 name = "ipc-benchmark"
