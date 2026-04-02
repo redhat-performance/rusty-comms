@@ -730,11 +730,13 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
         }
     }
 
-    transport.close_blocking()?;
+    let close_result = transport.close_blocking();
 
     if let Some(ref path) = latency_file_path {
         write_latency_buffer(path, &latency_buffer)?;
     }
+
+    close_result?;
 
     info!("Server exiting cleanly.");
     Ok(())
@@ -925,10 +927,14 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
         }
     }
 
-    let _ = transport.close().await;
+    let close_result = transport.close().await;
 
     if let Some(ref path) = latency_file_path {
         write_latency_buffer(path, &latency_buffer)?;
+    }
+
+    if let Err(e) = close_result {
+        warn!("Transport close error: {}", e);
     }
 
     info!("Server mode finished.");
