@@ -676,14 +676,13 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
         .context("Failed to write server ready byte to stdout")?;
     io::stdout().flush().ok();
 
-    // Open latency file for writing if specified
-    let mut latency_file = if let Some(ref path) = args.internal_latency_file {
-        Some(
-            std::fs::File::create(path)
-                .with_context(|| format!("Failed to create latency file: {}", path))?,
-        )
+    // Buffer latencies in memory instead of per-message file I/O
+    // This avoids the massive overhead of writing to disk for each message
+    let latency_file_path = args.internal_latency_file.clone();
+    let mut latency_buffer: Vec<u64> = if latency_file_path.is_some() {
+        Vec::with_capacity(100_000) // Pre-allocate for performance
     } else {
-        None
+        Vec::new()
     };
 
     // Persistent server loop: receive messages and optionally reply
@@ -695,12 +694,8 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
                 let receive_time_ns = get_monotonic_time_ns();
                 let latency_ns = receive_time_ns.saturating_sub(message.timestamp);
 
-                // Write latency to file if enabled (one latency per line in nanoseconds)
-                // Skip canary messages (ID == u64::MAX) which are used for warmup
-                if let Some(ref mut file) = latency_file {
-                    if message.id != u64::MAX {
-                        writeln!(file, "{}", latency_ns).ok();
-                    }
+                if should_buffer_latency(latency_file_path.is_some(), message.id) {
+                    latency_buffer.push(latency_ns);
                 }
 
                 // Check for shutdown message (used by PMQ and other queue-based transports)
@@ -735,7 +730,14 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
         }
     }
 
-    transport.close_blocking()?;
+    let close_result = transport.close_blocking();
+
+    if let Some(ref path) = latency_file_path {
+        write_latency_buffer(path, &latency_buffer)?;
+    }
+
+    close_result?;
+
     info!("Server exiting cleanly.");
     Ok(())
 }
@@ -871,15 +873,13 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
         .context("Failed to write server ready byte to stdout")?;
     io::stdout().flush().ok();
 
-    // Open latency file for writing if specified
-    let mut latency_file = if let Some(ref path) = args.internal_latency_file {
-        Some(
-            tokio::fs::File::create(path)
-                .await
-                .with_context(|| format!("Failed to create latency file: {}", path))?,
-        )
+    // Buffer latencies in memory instead of per-message file I/O
+    // This avoids the massive overhead of writing to disk for each message
+    let latency_file_path = args.internal_latency_file.clone();
+    let mut latency_buffer: Vec<u64> = if latency_file_path.is_some() {
+        Vec::with_capacity(100_000) // Pre-allocate for performance
     } else {
-        None
+        Vec::new()
     };
 
     // Persistent server loop: receive messages and optionally reply to
@@ -894,13 +894,8 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
                 let receive_time_ns = get_monotonic_time_ns();
                 let latency_ns = receive_time_ns.saturating_sub(msg.timestamp);
 
-                // Write latency to file if enabled (one latency per line in nanoseconds)
-                // Skip canary messages (ID == u64::MAX) which are used for warmup
-                if let Some(ref mut file) = latency_file {
-                    if msg.id != u64::MAX {
-                        use tokio::io::AsyncWriteExt;
-                        let _ = file.write_all(format!("{}\n", latency_ns).as_bytes()).await;
-                    }
+                if should_buffer_latency(latency_file_path.is_some(), msg.id) {
+                    latency_buffer.push(latency_ns);
                 }
 
                 // Message received
@@ -932,7 +927,16 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
         }
     }
 
-    let _ = transport.close().await;
+    let close_result = transport.close().await;
+
+    if let Some(ref path) = latency_file_path {
+        write_latency_buffer(path, &latency_buffer)?;
+    }
+
+    if let Err(e) = close_result {
+        warn!("Transport close error: {}", e);
+    }
+
     info!("Server mode finished.");
     Ok(())
 }
@@ -978,4 +982,151 @@ async fn run_benchmark_for_mechanism(
     // and final consolidated output formatting
     results_manager.add_results(results).await?;
     Ok(())
+}
+
+/// Returns `true` if a latency value should be buffered.
+///
+/// Latencies are only buffered when a latency file path is
+/// configured and the message is not a warmup canary
+/// (canary messages use `id == u64::MAX`).
+fn should_buffer_latency(latency_file_enabled: bool, message_id: u64) -> bool {
+    latency_file_enabled && message_id != u64::MAX
+}
+
+/// Write a buffer of latency values to a file.
+///
+/// Each latency is written as a single line containing the
+/// nanosecond value in decimal. This format matches what the
+/// client-side benchmark reader expects.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be created or written.
+fn write_latency_buffer(path: &str, buffer: &[u64]) -> Result<()> {
+    debug!(
+        "Writing {} buffered latencies to file: {}",
+        buffer.len(),
+        path,
+    );
+    let mut file = std::fs::File::create(path)
+        .with_context(|| format!("Failed to create latency file: {}", path))?;
+    for latency_ns in buffer {
+        writeln!(file, "{}", latency_ns).ok();
+    }
+    debug!("Finished writing latencies to file");
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader};
+
+    /// Canary messages (id == u64::MAX) must not be buffered
+    /// because they are warmup probes, not real measurements.
+    #[test]
+    fn test_should_buffer_latency_excludes_canary() {
+        assert!(
+            !should_buffer_latency(true, u64::MAX),
+            "canary messages must be excluded"
+        );
+    }
+
+    /// Normal messages should be buffered when latency file
+    /// collection is enabled.
+    #[test]
+    fn test_should_buffer_latency_includes_normal() {
+        assert!(should_buffer_latency(true, 0));
+        assert!(should_buffer_latency(true, 1));
+        assert!(should_buffer_latency(true, 42));
+        assert!(should_buffer_latency(true, u64::MAX - 1));
+    }
+
+    /// When the latency file path is not configured, no
+    /// messages should be buffered regardless of id.
+    #[test]
+    fn test_should_buffer_latency_disabled() {
+        assert!(!should_buffer_latency(false, 0));
+        assert!(!should_buffer_latency(false, 42));
+        assert!(!should_buffer_latency(false, u64::MAX));
+    }
+
+    /// Verify that write_latency_buffer produces one decimal
+    /// u64 value per line, matching the format that the
+    /// client-side reader expects.
+    #[test]
+    fn test_write_latency_buffer_format() {
+        let dir = std::env::temp_dir();
+        let path = dir
+            .join("test_latency_buffer_format.txt")
+            .to_string_lossy()
+            .to_string();
+
+        let latencies: Vec<u64> = vec![100, 200, 999, 0, 42];
+        write_latency_buffer(&path, &latencies).unwrap();
+
+        let file = std::fs::File::open(&path).unwrap();
+        let lines: Vec<String> = BufReader::new(file).lines().map(|l| l.unwrap()).collect();
+
+        assert_eq!(lines.len(), 5);
+        assert_eq!(lines[0], "100");
+        assert_eq!(lines[1], "200");
+        assert_eq!(lines[2], "999");
+        assert_eq!(lines[3], "0");
+        assert_eq!(lines[4], "42");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// An empty buffer should produce an empty file.
+    #[test]
+    fn test_write_latency_buffer_empty() {
+        let dir = std::env::temp_dir();
+        let path = dir
+            .join("test_latency_buffer_empty.txt")
+            .to_string_lossy()
+            .to_string();
+
+        write_latency_buffer(&path, &[]).unwrap();
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            contents.is_empty(),
+            "empty buffer should produce empty file"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Verify values round-trip through file I/O correctly,
+    /// matching the same parse logic the benchmark reader uses.
+    #[test]
+    fn test_write_latency_buffer_round_trip_parse() {
+        let dir = std::env::temp_dir();
+        let path = dir
+            .join("test_latency_buffer_roundtrip.txt")
+            .to_string_lossy()
+            .to_string();
+
+        let original: Vec<u64> = vec![1, u64::MAX - 1, 0, 123_456_789];
+        write_latency_buffer(&path, &original).unwrap();
+
+        let file = std::fs::File::open(&path).unwrap();
+        let parsed: Vec<u64> = BufReader::new(file)
+            .lines()
+            .filter_map(|l| l.ok().and_then(|s| s.trim().parse::<u64>().ok()))
+            .collect();
+
+        assert_eq!(parsed, original);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// write_latency_buffer should return an error when given
+    /// an invalid path (e.g. a non-existent directory).
+    #[test]
+    fn test_write_latency_buffer_invalid_path() {
+        let result = write_latency_buffer("/no/such/directory/latencies.txt", &[1, 2, 3]);
+        assert!(result.is_err(), "writing to invalid path should fail");
+    }
 }
