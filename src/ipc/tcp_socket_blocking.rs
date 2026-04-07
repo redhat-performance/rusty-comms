@@ -106,6 +106,17 @@ impl BlockingTcpSocket {
         }
     }
 
+    /// Create a transport from a pre-accepted TCP stream.
+    ///
+    /// Used by the standalone server to wrap each accepted connection
+    /// in its own transport instance for per-client handler threads.
+    pub fn from_stream(stream: TcpStream) -> Self {
+        Self {
+            listener: None,
+            stream: Some(stream),
+        }
+    }
+
     /// Accept a connection if we haven't already.
     /// This is called automatically on first send/receive in server mode.
     fn ensure_connection(&mut self) -> Result<()> {
