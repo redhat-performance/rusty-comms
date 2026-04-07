@@ -38,8 +38,8 @@ use ipc_benchmark::{
     benchmark_blocking::BlockingBenchmarkRunner,
     cli::{Args, IpcMechanism},
     ipc::{
-        get_monotonic_time_ns, BlockingTransportFactory, Message, MessageType, TransportConfig,
-        TransportFactory,
+        get_monotonic_time_ns, BlockingTransport, BlockingTransportFactory, Message, MessageType,
+        TransportConfig, TransportFactory,
     },
     metrics::{LatencyType, MetricsCollector},
     results::{BenchmarkResults, MessageLatencyRecord, ResultsManager},
@@ -1114,7 +1114,30 @@ fn run_standalone_server(args: Args) -> Result<()> {
 /// monotonic clock difference between send and receive timestamps.
 /// This is accurate when server and client share the same kernel
 /// clock (same host, container-to-host, container-to-container).
+///
+/// For TCP and UDS, the server accepts multiple concurrent connections,
+/// spawning a handler thread per client. For SHM and PMQ, only a single
+/// connection is supported.
 fn run_standalone_server_blocking(
+    args: &Args,
+    mechanism: IpcMechanism,
+    transport_config: &TransportConfig,
+    config: &BenchmarkConfig,
+) -> Result<()> {
+    match mechanism {
+        IpcMechanism::TcpSocket => {
+            run_standalone_server_blocking_multi_accept_tcp(transport_config, config)
+        }
+        #[cfg(unix)]
+        IpcMechanism::UnixDomainSocket => {
+            run_standalone_server_blocking_multi_accept_uds(transport_config, config)
+        }
+        _ => run_standalone_server_blocking_single(args, mechanism, transport_config, config),
+    }
+}
+
+/// Single-connection blocking server for SHM/PMQ mechanisms.
+fn run_standalone_server_blocking_single(
     args: &Args,
     mechanism: IpcMechanism,
     transport_config: &TransportConfig,
@@ -1127,7 +1150,6 @@ fn run_standalone_server_blocking(
 
     info!("Server listening, waiting for client...");
 
-    // Collect one-way latency metrics on the server side
     let mut one_way_metrics =
         MetricsCollector::new(Some(LatencyType::OneWay), config.percentiles.clone())?;
     let mut one_way_count = 0u64;
@@ -1138,7 +1160,6 @@ fn run_standalone_server_blocking(
             break;
         }
 
-        // Measure one-way latency for OneWay messages
         if message.message_type == MessageType::OneWay && message.id != u64::MAX {
             let receive_time_ns = get_monotonic_time_ns();
             let latency_ns = receive_time_ns.saturating_sub(message.timestamp);
@@ -1155,7 +1176,285 @@ fn run_standalone_server_blocking(
         }
     }
 
-    // Print server-side one-way latency results
+    print_server_one_way_latency(one_way_count, &one_way_metrics);
+    transport.close_blocking()?;
+    info!("Standalone server exiting cleanly.");
+    Ok(())
+}
+
+/// Handle a single client connection in a server handler thread.
+///
+/// Runs the message dispatch loop and collects one-way latency metrics.
+/// Returns the metrics collector when the client disconnects or sends Shutdown.
+fn handle_client_connection(
+    transport: &mut dyn ipc_benchmark::ipc::BlockingTransport,
+    config: &BenchmarkConfig,
+) -> Result<MetricsCollector> {
+    let mut one_way_metrics =
+        MetricsCollector::new(Some(LatencyType::OneWay), config.percentiles.clone())?;
+
+    while let Ok(message) = transport.receive_blocking() {
+        if message.message_type == MessageType::Shutdown {
+            debug!("Handler received shutdown message");
+            break;
+        }
+
+        if message.message_type == MessageType::OneWay && message.id != u64::MAX {
+            let receive_time_ns = get_monotonic_time_ns();
+            let latency_ns = receive_time_ns.saturating_sub(message.timestamp);
+            let latency = std::time::Duration::from_nanos(latency_ns);
+            one_way_metrics.record_message(config.message_size, Some(latency))?;
+        }
+
+        if let Some(response) = dispatch_server_message(&message) {
+            if let Err(e) = transport.send_blocking(&response) {
+                warn!("Handler failed to send response: {}", e);
+                break;
+            }
+        }
+    }
+
+    Ok(one_way_metrics)
+}
+
+/// Multi-accept blocking TCP server.
+///
+/// Binds a raw TCP listener and accepts connections in a loop, spawning
+/// a handler thread per client. Each handler gets its own `BlockingTcpSocket`
+/// via `from_stream()`. Metrics are aggregated across all handlers at shutdown.
+fn run_standalone_server_blocking_multi_accept_tcp(
+    transport_config: &TransportConfig,
+    config: &BenchmarkConfig,
+) -> Result<()> {
+    use ipc_benchmark::ipc::BlockingTcpSocket;
+    use socket2::{Domain, Socket, Type};
+    use std::sync::{Arc, Mutex};
+
+    let addr = format!("{}:{}", transport_config.host, transport_config.port);
+    let socket =
+        Socket::new(Domain::IPV4, Type::STREAM, None).context("Failed to create TCP socket")?;
+    socket
+        .set_reuse_address(true)
+        .context("Failed to set SO_REUSEADDR")?;
+    let socket_addr: std::net::SocketAddr = addr
+        .parse()
+        .with_context(|| format!("Failed to parse address: {}", addr))?;
+    socket
+        .bind(&socket_addr.into())
+        .with_context(|| format!("Failed to bind TCP socket to {}", addr))?;
+    socket
+        .listen(128)
+        .context("Failed to listen on TCP socket")?;
+    let listener: std::net::TcpListener = socket.into();
+    // Non-blocking so we can periodically check if all handler threads
+    // have finished (i.e. all clients disconnected).
+    listener
+        .set_nonblocking(true)
+        .context("Failed to set listener to non-blocking")?;
+
+    info!("TCP server listening on {}, accepting connections...", addr);
+
+    let worker_metrics: Arc<Mutex<Vec<MetricsCollector>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut handles = Vec::new();
+    // Grace period after first client connects before we check if all
+    // handlers are done. This prevents premature exit when a fast client
+    // finishes before slower clients have connected.
+    let mut first_client_time: Option<std::time::Instant> = None;
+    let accept_grace_period = std::time::Duration::from_secs(2);
+
+    loop {
+        match listener.accept() {
+            Ok((stream, peer_addr)) => {
+                info!("Accepted connection from {}", peer_addr);
+                if first_client_time.is_none() {
+                    first_client_time = Some(std::time::Instant::now());
+                }
+                stream
+                    .set_nodelay(true)
+                    .context("Failed to set TCP_NODELAY")?;
+
+                let metrics_clone = worker_metrics.clone();
+                let handler_config = config.clone();
+
+                let handle = std::thread::spawn(move || {
+                    let mut transport = BlockingTcpSocket::from_stream(stream);
+                    match handle_client_connection(&mut transport, &handler_config) {
+                        Ok(collector) => {
+                            metrics_clone.lock().unwrap().push(collector);
+                        }
+                        Err(e) => {
+                            warn!("Handler error: {}", e);
+                        }
+                    }
+                    let _ = transport.close_blocking();
+                    info!("Client {} disconnected", peer_addr);
+                });
+                handles.push(handle);
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                // No pending connection. Check if all handlers are done,
+                // but only after the grace period has elapsed since the
+                // first client connected.
+                let grace_elapsed =
+                    first_client_time.is_some_and(|t| t.elapsed() > accept_grace_period);
+                if grace_elapsed && !handles.is_empty() && handles.iter().all(|h| h.is_finished()) {
+                    debug!("All clients disconnected, shutting down");
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => {
+                debug!("Accept error: {}", e);
+                break;
+            }
+        }
+    }
+
+    for handle in handles {
+        let _ = handle.join();
+    }
+
+    let collectors = worker_metrics.lock().unwrap();
+    aggregate_and_print_server_metrics(&collectors, &config.percentiles);
+
+    info!("Standalone server exiting cleanly.");
+    Ok(())
+}
+
+/// Multi-accept blocking UDS server.
+///
+/// Same pattern as the TCP multi-accept server but using Unix domain sockets.
+#[cfg(unix)]
+fn run_standalone_server_blocking_multi_accept_uds(
+    transport_config: &TransportConfig,
+    config: &BenchmarkConfig,
+) -> Result<()> {
+    use ipc_benchmark::ipc::BlockingUnixDomainSocket;
+    use std::sync::{Arc, Mutex};
+
+    // Remove existing socket file
+    let _ = std::fs::remove_file(&transport_config.socket_path);
+
+    let listener = std::os::unix::net::UnixListener::bind(&transport_config.socket_path)
+        .with_context(|| {
+            format!(
+                "Failed to bind Unix domain socket at: {}",
+                transport_config.socket_path
+            )
+        })?;
+    listener
+        .set_nonblocking(true)
+        .context("Failed to set UDS listener to non-blocking")?;
+
+    info!(
+        "UDS server listening on {}, accepting connections...",
+        transport_config.socket_path
+    );
+
+    let worker_metrics: Arc<Mutex<Vec<MetricsCollector>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut handles = Vec::new();
+    let mut first_client_time: Option<std::time::Instant> = None;
+    let accept_grace_period = std::time::Duration::from_secs(2);
+
+    loop {
+        match listener.accept() {
+            Ok((stream, peer_addr)) => {
+                info!("Accepted UDS connection from {:?}", peer_addr);
+                if first_client_time.is_none() {
+                    first_client_time = Some(std::time::Instant::now());
+                }
+
+                let metrics_clone = worker_metrics.clone();
+                let handler_config = config.clone();
+
+                let handle = std::thread::spawn(move || {
+                    let mut transport = BlockingUnixDomainSocket::from_stream(stream);
+                    match handle_client_connection(&mut transport, &handler_config) {
+                        Ok(collector) => {
+                            metrics_clone.lock().unwrap().push(collector);
+                        }
+                        Err(e) => {
+                            warn!("Handler error: {}", e);
+                        }
+                    }
+                    let _ = transport.close_blocking();
+                    info!("UDS client disconnected");
+                });
+                handles.push(handle);
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                let grace_elapsed =
+                    first_client_time.is_some_and(|t| t.elapsed() > accept_grace_period);
+                if grace_elapsed && !handles.is_empty() && handles.iter().all(|h| h.is_finished()) {
+                    debug!("All clients disconnected, shutting down");
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => {
+                debug!("Accept error: {}", e);
+                break;
+            }
+        }
+    }
+
+    for handle in handles {
+        let _ = handle.join();
+    }
+
+    let collectors = worker_metrics.lock().unwrap();
+    aggregate_and_print_server_metrics(&collectors, &config.percentiles);
+
+    // Clean up socket file
+    let _ = std::fs::remove_file(&transport_config.socket_path);
+    info!("Standalone server exiting cleanly.");
+    Ok(())
+}
+
+/// Aggregate and print server-side one-way latency from multiple handler threads.
+fn aggregate_and_print_server_metrics(collectors: &[MetricsCollector], percentiles: &[f64]) {
+    let total_one_way: u64 = collectors
+        .iter()
+        .map(|c| c.get_metrics().throughput.total_messages as u64)
+        .sum();
+
+    if total_one_way > 0 {
+        let all_metrics: Vec<_> = collectors.iter().map(|c| c.get_metrics()).collect();
+        match MetricsCollector::aggregate_worker_metrics(all_metrics, percentiles) {
+            Ok(aggregated) => {
+                if let Some(ref latency) = aggregated.latency {
+                    info!(
+                        "Server one-way latency ({} messages, {} clients): \
+                         mean={:.2}us, P50={:.2}us, P95={:.2}us, P99={:.2}us, \
+                         min={:.2}us, max={:.2}us",
+                        total_one_way,
+                        collectors.len(),
+                        latency.mean_ns / 1000.0,
+                        latency.median_ns / 1000.0,
+                        latency
+                            .percentiles
+                            .iter()
+                            .find(|p| (p.percentile - 95.0).abs() < 0.1)
+                            .map_or(0.0, |p| p.value_ns as f64)
+                            / 1000.0,
+                        latency
+                            .percentiles
+                            .iter()
+                            .find(|p| (p.percentile - 99.0).abs() < 0.1)
+                            .map_or(0.0, |p| p.value_ns as f64)
+                            / 1000.0,
+                        latency.min_ns as f64 / 1000.0,
+                        latency.max_ns as f64 / 1000.0,
+                    );
+                }
+            }
+            Err(e) => warn!("Failed to aggregate server metrics: {}", e),
+        }
+    }
+}
+
+/// Print server-side one-way latency summary.
+fn print_server_one_way_latency(one_way_count: u64, one_way_metrics: &MetricsCollector) {
     if one_way_count > 0 {
         let metrics = one_way_metrics.get_metrics();
         if let Some(ref latency) = metrics.latency {
@@ -1183,10 +1482,6 @@ fn run_standalone_server_blocking(
             );
         }
     }
-
-    transport.close_blocking()?;
-    info!("Standalone server exiting cleanly.");
-    Ok(())
 }
 
 /// Async standalone server implementation.
@@ -1395,11 +1690,62 @@ fn connect_blocking_with_retry(
 }
 
 /// Blocking standalone client implementation.
+///
+/// When `concurrency > 1` (and mechanism supports it), spawns N worker
+/// threads each with their own transport connection. Results are
+/// aggregated across all workers.
 fn run_standalone_client_blocking(
     args: Args,
     mechanism: IpcMechanism,
     transport_config: TransportConfig,
     results_manager: &mut BlockingResultsManager,
+) -> Result<()> {
+    let config = BenchmarkConfig::from_args(&args)?;
+
+    // Force concurrency=1 for mechanisms that don't support multiple connections.
+    // Only TCP and UDS support concurrent clients (socket-based accept loop).
+    let mut supports_concurrency = mechanism == IpcMechanism::TcpSocket;
+    #[cfg(unix)]
+    {
+        supports_concurrency = supports_concurrency || mechanism == IpcMechanism::UnixDomainSocket;
+    }
+    let concurrency = if !supports_concurrency && config.concurrency > 1 {
+        warn!(
+            "{} does not support concurrency > 1. Forcing concurrency = 1.",
+            mechanism
+        );
+        1
+    } else {
+        config.concurrency
+    };
+
+    if concurrency > 1 {
+        run_standalone_client_blocking_concurrent(
+            args,
+            mechanism,
+            transport_config,
+            results_manager,
+            &config,
+            concurrency,
+        )
+    } else {
+        run_standalone_client_blocking_single(
+            args,
+            mechanism,
+            transport_config,
+            results_manager,
+            &config,
+        )
+    }
+}
+
+/// Single-threaded blocking standalone client (original behavior).
+fn run_standalone_client_blocking_single(
+    args: Args,
+    mechanism: IpcMechanism,
+    transport_config: TransportConfig,
+    results_manager: &mut BlockingResultsManager,
+    config: &BenchmarkConfig,
 ) -> Result<()> {
     let mut transport = BlockingTransportFactory::create(&mechanism, args.shm_direct)?;
 
@@ -1407,7 +1753,6 @@ fn run_standalone_client_blocking(
     connect_blocking_with_retry(&mut transport, &transport_config)?;
     info!("Connected to server.");
 
-    let config = BenchmarkConfig::from_args(&args)?;
     let msg_count = config
         .msg_count
         .unwrap_or(ipc_benchmark::defaults::MSG_COUNT);
@@ -1417,7 +1762,7 @@ fn run_standalone_client_blocking(
         mechanism,
         config.message_size,
         transport_config.buffer_size,
-        1, // standalone is single-threaded
+        1,
         config.msg_count,
         config.duration,
         config.warmup_iterations,
@@ -1591,6 +1936,226 @@ fn run_standalone_client_blocking(
     Ok(())
 }
 
+/// Multi-threaded blocking standalone client.
+///
+/// Spawns `concurrency` worker threads, each creating its own transport
+/// connection to the server. Each worker runs the test loop independently
+/// with its own `MetricsCollector`. Results are aggregated across all
+/// workers using `MetricsCollector::aggregate_worker_metrics()`.
+fn run_standalone_client_blocking_concurrent(
+    args: Args,
+    mechanism: IpcMechanism,
+    transport_config: TransportConfig,
+    results_manager: &mut BlockingResultsManager,
+    config: &BenchmarkConfig,
+    concurrency: usize,
+) -> Result<()> {
+    use ipc_benchmark::metrics::PerformanceMetrics;
+
+    let msg_count = config
+        .msg_count
+        .unwrap_or(ipc_benchmark::defaults::MSG_COUNT);
+    let messages_per_worker = msg_count / concurrency;
+
+    info!(
+        "Starting {} concurrent workers ({} messages each)...",
+        concurrency, messages_per_worker
+    );
+
+    let total_start = std::time::Instant::now();
+
+    // Spawn worker threads for one-way test
+    let one_way_results: Option<Vec<PerformanceMetrics>> = if config.one_way {
+        let handles: Vec<_> = (0..concurrency)
+            .map(|worker_id| {
+                let tc = transport_config.clone();
+                let percentiles = config.percentiles.clone();
+                let message_size = config.message_size;
+                let duration = config.duration;
+                let send_delay = config.send_delay;
+                let include_first = config.include_first_message;
+                let shm_direct = args.shm_direct;
+                let mech = mechanism;
+
+                std::thread::spawn(move || -> Result<PerformanceMetrics> {
+                    let mut transport = BlockingTransportFactory::create(&mech, shm_direct)?;
+                    connect_blocking_with_retry(&mut transport, &tc)?;
+                    debug!("Worker {} connected (one-way)", worker_id);
+
+                    let mut metrics = MetricsCollector::new(None, percentiles)?;
+                    let payload = vec![0u8; message_size];
+
+                    if !include_first {
+                        let canary = Message::new(u64::MAX, payload.clone(), MessageType::OneWay);
+                        let _ = transport.send_blocking(&canary);
+                    }
+
+                    let mut msg = Message::new(0, payload, MessageType::OneWay);
+
+                    if let Some(test_duration) = duration {
+                        let start = std::time::Instant::now();
+                        let mut c = 0u64;
+                        while start.elapsed() < test_duration {
+                            msg.id = worker_id as u64 * u32::MAX as u64 + c;
+                            msg.timestamp = get_monotonic_time_ns();
+                            transport.send_blocking(&msg)?;
+                            metrics.record_message(message_size, None)?;
+                            if let Some(delay) = send_delay {
+                                std::thread::sleep(delay);
+                            }
+                            c += 1;
+                        }
+                    } else {
+                        for i in 0..messages_per_worker {
+                            msg.id = (worker_id * messages_per_worker + i) as u64;
+                            msg.timestamp = get_monotonic_time_ns();
+                            transport.send_blocking(&msg)?;
+                            metrics.record_message(message_size, None)?;
+                            if let Some(delay) = send_delay {
+                                std::thread::sleep(delay);
+                            }
+                        }
+                    }
+
+                    let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+                    let _ = transport.send_blocking(&shutdown);
+                    transport.close_blocking()?;
+                    debug!("Worker {} finished (one-way)", worker_id);
+                    Ok(metrics.get_metrics())
+                })
+            })
+            .collect();
+
+        let worker_results: Vec<PerformanceMetrics> = handles
+            .into_iter()
+            .enumerate()
+            .map(|(id, h)| {
+                h.join()
+                    .unwrap_or_else(|_| Err(anyhow::anyhow!("Worker {} panicked", id)))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Some(worker_results)
+    } else {
+        None
+    };
+
+    // Spawn worker threads for round-trip test
+    let round_trip_results: Option<Vec<PerformanceMetrics>> = if config.round_trip {
+        let handles: Vec<_> = (0..concurrency)
+            .map(|worker_id| {
+                let tc = transport_config.clone();
+                let percentiles = config.percentiles.clone();
+                let message_size = config.message_size;
+                let duration = config.duration;
+                let send_delay = config.send_delay;
+                let include_first = config.include_first_message;
+                let shm_direct = args.shm_direct;
+                let mech = mechanism;
+
+                std::thread::spawn(move || -> Result<PerformanceMetrics> {
+                    let mut transport = BlockingTransportFactory::create(&mech, shm_direct)?;
+                    connect_blocking_with_retry(&mut transport, &tc)?;
+                    debug!("Worker {} connected (round-trip)", worker_id);
+
+                    let mut metrics =
+                        MetricsCollector::new(Some(LatencyType::RoundTrip), percentiles)?;
+                    let payload = vec![0u8; message_size];
+
+                    if !include_first {
+                        let canary = Message::new(u64::MAX, payload.clone(), MessageType::Request);
+                        if transport.send_blocking(&canary).is_ok() {
+                            let _ = transport.receive_blocking();
+                        }
+                    }
+
+                    let mut msg = Message::new(0, payload, MessageType::Request);
+
+                    if let Some(test_duration) = duration {
+                        let start = std::time::Instant::now();
+                        let mut i = 0u64;
+                        while start.elapsed() < test_duration {
+                            msg.id = worker_id as u64 * u32::MAX as u64 + i;
+                            msg.timestamp = get_monotonic_time_ns();
+                            let send_time = std::time::Instant::now();
+                            transport.send_blocking(&msg)?;
+                            let _response = transport.receive_blocking()?;
+                            let latency = send_time.elapsed();
+                            metrics.record_message(message_size, Some(latency))?;
+                            if let Some(delay) = send_delay {
+                                std::thread::sleep(delay);
+                            }
+                            i += 1;
+                        }
+                    } else {
+                        for i in 0..messages_per_worker {
+                            msg.id = (worker_id * messages_per_worker + i) as u64;
+                            msg.timestamp = get_monotonic_time_ns();
+                            let send_time = std::time::Instant::now();
+                            transport.send_blocking(&msg)?;
+                            let _response = transport.receive_blocking()?;
+                            let latency = send_time.elapsed();
+                            metrics.record_message(message_size, Some(latency))?;
+                            if let Some(delay) = send_delay {
+                                std::thread::sleep(delay);
+                            }
+                        }
+                    }
+
+                    let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+                    let _ = transport.send_blocking(&shutdown);
+                    transport.close_blocking()?;
+                    debug!("Worker {} finished (round-trip)", worker_id);
+                    Ok(metrics.get_metrics())
+                })
+            })
+            .collect();
+
+        let worker_results: Vec<PerformanceMetrics> = handles
+            .into_iter()
+            .enumerate()
+            .map(|(id, h)| {
+                h.join()
+                    .unwrap_or_else(|_| Err(anyhow::anyhow!("Worker {} panicked", id)))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Some(worker_results)
+    } else {
+        None
+    };
+
+    // Aggregate results
+    let mut results = BenchmarkResults::new(
+        mechanism,
+        config.message_size,
+        transport_config.buffer_size,
+        concurrency,
+        config.msg_count,
+        config.duration,
+        config.warmup_iterations,
+        config.one_way,
+        config.round_trip,
+    );
+
+    if let Some(one_way) = one_way_results {
+        let aggregated = MetricsCollector::aggregate_worker_metrics(one_way, &config.percentiles)?;
+        results.add_one_way_results(aggregated);
+    }
+
+    if let Some(round_trip) = round_trip_results {
+        let aggregated =
+            MetricsCollector::aggregate_worker_metrics(round_trip, &config.percentiles)?;
+        results.add_round_trip_results(aggregated);
+    }
+
+    results.test_duration = total_start.elapsed();
+    results_manager.add_results(results)?;
+
+    info!("Standalone client finished ({} workers).", concurrency);
+    Ok(())
+}
+
 /// Async connect with retry.
 async fn connect_async_with_retry(
     transport: &mut Box<dyn ipc_benchmark::ipc::IpcTransport>,
@@ -1616,6 +2181,8 @@ async fn connect_async_with_retry(
 }
 
 /// Async standalone client implementation.
+///
+/// Dispatches to single or concurrent mode based on concurrency setting.
 #[tokio::main]
 async fn run_standalone_client_async(
     args: Args,
@@ -1623,13 +2190,52 @@ async fn run_standalone_client_async(
     transport_config: TransportConfig,
     results_manager: &mut BlockingResultsManager,
 ) -> Result<()> {
+    let config = BenchmarkConfig::from_args(&args)?;
+
+    // Force concurrency=1 for mechanisms that don't support multiple connections.
+    let mut supports_concurrency = mechanism == IpcMechanism::TcpSocket;
+    #[cfg(unix)]
+    {
+        supports_concurrency = supports_concurrency || mechanism == IpcMechanism::UnixDomainSocket;
+    }
+    let concurrency = if !supports_concurrency && config.concurrency > 1 {
+        warn!(
+            "{} does not support concurrency > 1. Forcing concurrency = 1.",
+            mechanism
+        );
+        1
+    } else {
+        config.concurrency
+    };
+
+    if concurrency > 1 {
+        run_standalone_client_async_concurrent(
+            mechanism,
+            transport_config,
+            results_manager,
+            &config,
+            concurrency,
+        )
+        .await
+    } else {
+        run_standalone_client_async_single(mechanism, transport_config, results_manager, &config)
+            .await
+    }
+}
+
+/// Single-connection async standalone client (original behavior).
+async fn run_standalone_client_async_single(
+    mechanism: IpcMechanism,
+    transport_config: TransportConfig,
+    results_manager: &mut BlockingResultsManager,
+    config: &BenchmarkConfig,
+) -> Result<()> {
     let mut transport = TransportFactory::create(&mechanism)?;
 
     info!("Connecting to server...");
     connect_async_with_retry(&mut transport, &transport_config).await?;
     info!("Connected to server.");
 
-    let config = BenchmarkConfig::from_args(&args)?;
     let msg_count = config
         .msg_count
         .unwrap_or(ipc_benchmark::defaults::MSG_COUNT);
@@ -1810,6 +2416,212 @@ async fn run_standalone_client_async(
 
     let _ = transport.close().await;
     info!("Standalone client finished.");
+    Ok(())
+}
+
+/// Multi-task async standalone client.
+///
+/// Spawns `concurrency` tokio tasks, each creating its own async transport
+/// connection. Results are aggregated across all workers.
+async fn run_standalone_client_async_concurrent(
+    mechanism: IpcMechanism,
+    transport_config: TransportConfig,
+    results_manager: &mut BlockingResultsManager,
+    config: &BenchmarkConfig,
+    concurrency: usize,
+) -> Result<()> {
+    use ipc_benchmark::metrics::PerformanceMetrics;
+    use tokio::task::JoinSet;
+
+    let msg_count = config
+        .msg_count
+        .unwrap_or(ipc_benchmark::defaults::MSG_COUNT);
+    let messages_per_worker = msg_count / concurrency;
+
+    info!(
+        "Starting {} concurrent async workers ({} messages each)...",
+        concurrency, messages_per_worker
+    );
+
+    let total_start = std::time::Instant::now();
+
+    // One-way test
+    let one_way_results: Option<Vec<PerformanceMetrics>> = if config.one_way {
+        let mut join_set: JoinSet<Result<PerformanceMetrics>> = JoinSet::new();
+        for worker_id in 0..concurrency {
+            let tc = transport_config.clone();
+            let percentiles = config.percentiles.clone();
+            let message_size = config.message_size;
+            let duration = config.duration;
+            let send_delay = config.send_delay;
+            let include_first = config.include_first_message;
+            let mech = mechanism;
+
+            join_set.spawn(async move {
+                let mut transport = TransportFactory::create(&mech)?;
+                connect_async_with_retry(&mut transport, &tc).await?;
+                debug!("Async worker {} connected (one-way)", worker_id);
+
+                let mut metrics = MetricsCollector::new(None, percentiles)?;
+                let payload = vec![0u8; message_size];
+
+                if !include_first {
+                    let canary = Message::new(u64::MAX, payload.clone(), MessageType::OneWay);
+                    let _ = transport.send(&canary).await;
+                }
+
+                let mut msg = Message::new(0, payload, MessageType::OneWay);
+
+                if let Some(test_duration) = duration {
+                    let start = std::time::Instant::now();
+                    let mut c = 0u64;
+                    while start.elapsed() < test_duration {
+                        msg.id = worker_id as u64 * u32::MAX as u64 + c;
+                        msg.timestamp = get_monotonic_time_ns();
+                        transport.send(&msg).await?;
+                        metrics.record_message(message_size, None)?;
+                        if let Some(delay) = send_delay {
+                            tokio::time::sleep(delay).await;
+                        }
+                        c += 1;
+                    }
+                } else {
+                    for i in 0..messages_per_worker {
+                        msg.id = (worker_id * messages_per_worker + i) as u64;
+                        msg.timestamp = get_monotonic_time_ns();
+                        transport.send(&msg).await?;
+                        metrics.record_message(message_size, None)?;
+                        if let Some(delay) = send_delay {
+                            tokio::time::sleep(delay).await;
+                        }
+                    }
+                }
+
+                let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+                let _ = transport.send(&shutdown).await;
+                let _ = transport.close().await;
+                debug!("Async worker {} finished (one-way)", worker_id);
+                Ok(metrics.get_metrics())
+            });
+        }
+
+        let mut worker_results = Vec::new();
+        while let Some(result) = join_set.join_next().await {
+            worker_results.push(result.context("Worker task panicked")??);
+        }
+        Some(worker_results)
+    } else {
+        None
+    };
+
+    // Round-trip test
+    let round_trip_results: Option<Vec<PerformanceMetrics>> = if config.round_trip {
+        let mut join_set: JoinSet<Result<PerformanceMetrics>> = JoinSet::new();
+        for worker_id in 0..concurrency {
+            let tc = transport_config.clone();
+            let percentiles = config.percentiles.clone();
+            let message_size = config.message_size;
+            let duration = config.duration;
+            let send_delay = config.send_delay;
+            let include_first = config.include_first_message;
+            let mech = mechanism;
+
+            join_set.spawn(async move {
+                let mut transport = TransportFactory::create(&mech)?;
+                connect_async_with_retry(&mut transport, &tc).await?;
+                debug!("Async worker {} connected (round-trip)", worker_id);
+
+                let mut metrics = MetricsCollector::new(Some(LatencyType::RoundTrip), percentiles)?;
+                let payload = vec![0u8; message_size];
+
+                if !include_first {
+                    let canary = Message::new(u64::MAX, payload.clone(), MessageType::Request);
+                    if transport.send(&canary).await.is_ok() {
+                        let _ = transport.receive().await;
+                    }
+                }
+
+                let mut msg = Message::new(0, payload, MessageType::Request);
+
+                if let Some(test_duration) = duration {
+                    let start = std::time::Instant::now();
+                    let mut i = 0u64;
+                    while start.elapsed() < test_duration {
+                        msg.id = worker_id as u64 * u32::MAX as u64 + i;
+                        msg.timestamp = get_monotonic_time_ns();
+                        let send_time = std::time::Instant::now();
+                        transport.send(&msg).await?;
+                        let _response = transport.receive().await?;
+                        let latency = send_time.elapsed();
+                        metrics.record_message(message_size, Some(latency))?;
+                        if let Some(delay) = send_delay {
+                            tokio::time::sleep(delay).await;
+                        }
+                        i += 1;
+                    }
+                } else {
+                    for i in 0..messages_per_worker {
+                        msg.id = (worker_id * messages_per_worker + i) as u64;
+                        msg.timestamp = get_monotonic_time_ns();
+                        let send_time = std::time::Instant::now();
+                        transport.send(&msg).await?;
+                        let _response = transport.receive().await?;
+                        let latency = send_time.elapsed();
+                        metrics.record_message(message_size, Some(latency))?;
+                        if let Some(delay) = send_delay {
+                            tokio::time::sleep(delay).await;
+                        }
+                    }
+                }
+
+                let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+                let _ = transport.send(&shutdown).await;
+                let _ = transport.close().await;
+                debug!("Async worker {} finished (round-trip)", worker_id);
+                Ok(metrics.get_metrics())
+            });
+        }
+
+        let mut worker_results = Vec::new();
+        while let Some(result) = join_set.join_next().await {
+            worker_results.push(result.context("Worker task panicked")??);
+        }
+        Some(worker_results)
+    } else {
+        None
+    };
+
+    // Aggregate results
+    let mut results = BenchmarkResults::new(
+        mechanism,
+        config.message_size,
+        transport_config.buffer_size,
+        concurrency,
+        config.msg_count,
+        config.duration,
+        config.warmup_iterations,
+        config.one_way,
+        config.round_trip,
+    );
+
+    if let Some(one_way) = one_way_results {
+        let aggregated = MetricsCollector::aggregate_worker_metrics(one_way, &config.percentiles)?;
+        results.add_one_way_results(aggregated);
+    }
+
+    if let Some(round_trip) = round_trip_results {
+        let aggregated =
+            MetricsCollector::aggregate_worker_metrics(round_trip, &config.percentiles)?;
+        results.add_round_trip_results(aggregated);
+    }
+
+    results.test_duration = total_start.elapsed();
+    results_manager.add_results(results)?;
+
+    info!(
+        "Standalone client finished ({} async workers).",
+        concurrency
+    );
     Ok(())
 }
 
@@ -2284,6 +3096,189 @@ mod tests {
 
         // Give server time to process and exit
         std::thread::sleep(std::time::Duration::from_millis(100));
+        transport.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
+
+    // --- Concurrency tests ---
+
+    /// Integration test: multi-accept TCP server handles 3 concurrent
+    /// round-trip clients.
+    #[test]
+    fn test_standalone_concurrent_tcp_round_trip() {
+        use ipc_benchmark::ipc::BlockingTcpSocket;
+        use std::sync::{Arc, Mutex};
+
+        let port = 18310u16;
+        let addr = format!("127.0.0.1:{}", port);
+        let num_clients = 3usize;
+        let msgs_per_client = 5usize;
+
+        // Start multi-accept server using blocking accept with known
+        // client count to avoid the non-blocking race condition where
+        // a fast client could finish before others connect.
+        let server_handle = std::thread::spawn(move || {
+            let listener = std::net::TcpListener::bind(&addr).unwrap();
+            let metrics: Arc<Mutex<Vec<MetricsCollector>>> = Arc::new(Mutex::new(Vec::new()));
+            let mut handles = Vec::new();
+
+            // Accept exactly num_clients connections (blocking)
+            for _ in 0..num_clients {
+                let (stream, _) = listener.accept().unwrap();
+                stream.set_nodelay(true).unwrap();
+                let mc = metrics.clone();
+                let handle = std::thread::spawn(move || {
+                    let mut transport = BlockingTcpSocket::from_stream(stream);
+                    let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+                    let config = BenchmarkConfig::from_args(&args).unwrap();
+                    if let Ok(collector) = handle_client_connection(&mut transport, &config) {
+                        mc.lock().unwrap().push(collector);
+                    }
+                    let _ = transport.close_blocking();
+                });
+                handles.push(handle);
+            }
+
+            for handle in handles {
+                let _ = handle.join();
+            }
+
+            let collectors = metrics.lock().unwrap();
+            assert_eq!(
+                collectors.len(),
+                num_clients,
+                "Server should have handled {} clients",
+                num_clients
+            );
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // Spawn concurrent clients
+        let client_handles: Vec<_> = (0..num_clients)
+            .map(|worker_id| {
+                let config = TransportConfig {
+                    host: "127.0.0.1".to_string(),
+                    port,
+                    ..Default::default()
+                };
+                std::thread::spawn(move || {
+                    let mut transport =
+                        BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+                    connect_blocking_with_retry(&mut transport, &config).unwrap();
+
+                    for i in 0..msgs_per_client {
+                        let msg = Message::new(
+                            (worker_id * msgs_per_client + i) as u64,
+                            vec![0u8; 64],
+                            MessageType::Request,
+                        );
+                        transport.send_blocking(&msg).unwrap();
+                        let resp = transport.receive_blocking().unwrap();
+                        assert_eq!(resp.message_type, MessageType::Response);
+                    }
+
+                    let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+                    let _ = transport.send_blocking(&shutdown);
+                    transport.close_blocking().unwrap();
+                })
+            })
+            .collect();
+
+        for h in client_handles {
+            h.join().unwrap();
+        }
+        server_handle.join().unwrap();
+    }
+
+    /// Test: handle_client_connection correctly dispatches message types
+    /// and returns metrics.
+    #[test]
+    fn test_handle_client_connection_round_trip() {
+        let port = 18311u16;
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+
+        let server_config = transport_config.clone();
+        let server_handle = std::thread::spawn(move || {
+            let mut transport =
+                BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+            transport.start_server_blocking(&server_config).unwrap();
+
+            let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+            let config = BenchmarkConfig::from_args(&args).unwrap();
+            let collector = handle_client_connection(transport.as_mut(), &config).unwrap();
+            // Round-trip messages don't get recorded as one-way
+            let metrics = collector.get_metrics();
+            assert_eq!(metrics.throughput.total_messages, 0);
+            transport.close_blocking().unwrap();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let mut transport =
+            BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+        connect_blocking_with_retry(&mut transport, &transport_config).unwrap();
+
+        // Send round-trip messages (should NOT be recorded as one-way)
+        for i in 0..5u64 {
+            let msg = Message::new(i, vec![0u8; 64], MessageType::Request);
+            transport.send_blocking(&msg).unwrap();
+            let resp = transport.receive_blocking().unwrap();
+            assert_eq!(resp.message_type, MessageType::Response);
+        }
+
+        let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+        let _ = transport.send_blocking(&shutdown);
+        transport.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
+
+    /// Test: handle_client_connection records one-way latency metrics.
+    #[test]
+    fn test_handle_client_connection_one_way_metrics() {
+        let port = 18312u16;
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+
+        let server_config = transport_config.clone();
+        let server_handle = std::thread::spawn(move || {
+            let mut transport =
+                BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+            transport.start_server_blocking(&server_config).unwrap();
+
+            let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+            let config = BenchmarkConfig::from_args(&args).unwrap();
+            let collector = handle_client_connection(transport.as_mut(), &config).unwrap();
+            let metrics = collector.get_metrics();
+            // One-way messages should be recorded
+            assert_eq!(
+                metrics.throughput.total_messages, 5,
+                "Should have recorded 5 one-way messages"
+            );
+            transport.close_blocking().unwrap();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let mut transport =
+            BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+        connect_blocking_with_retry(&mut transport, &transport_config).unwrap();
+
+        // Send one-way messages
+        for i in 0..5u64 {
+            let msg = Message::new(i, vec![0u8; 64], MessageType::OneWay);
+            transport.send_blocking(&msg).unwrap();
+        }
+
+        let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+        let _ = transport.send_blocking(&shutdown);
         transport.close_blocking().unwrap();
         server_handle.join().unwrap();
     }
