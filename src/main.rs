@@ -1446,6 +1446,12 @@ fn run_standalone_client_blocking(
     if config.one_way {
         let mut metrics = MetricsCollector::new(None, config.percentiles.clone())?;
 
+        // Send canary to warm up the connection if first message excluded
+        if !config.include_first_message {
+            let canary = Message::new(u64::MAX, payload.clone(), MessageType::OneWay);
+            let _ = transport.send_blocking(&canary);
+        }
+
         let start = std::time::Instant::now();
         let count = if let Some(test_duration) = config.duration {
             info!(
@@ -1457,6 +1463,9 @@ fn run_standalone_client_blocking(
                 let msg = Message::new(c, payload.clone(), MessageType::OneWay);
                 transport.send_blocking(&msg)?;
                 metrics.record_message(config.message_size, None)?;
+                if let Some(delay) = config.send_delay {
+                    std::thread::sleep(delay);
+                }
                 c += 1;
             }
             c
@@ -1469,6 +1478,9 @@ fn run_standalone_client_blocking(
                 let msg = Message::new(i as u64, payload.clone(), MessageType::OneWay);
                 transport.send_blocking(&msg)?;
                 metrics.record_message(config.message_size, None)?;
+                if let Some(delay) = config.send_delay {
+                    std::thread::sleep(delay);
+                }
             }
             msg_count as u64
         };
@@ -1488,6 +1500,14 @@ fn run_standalone_client_blocking(
     if config.round_trip {
         let mut metrics =
             MetricsCollector::new(Some(LatencyType::RoundTrip), config.percentiles.clone())?;
+
+        // Send canary to warm up the connection if first message excluded
+        if !config.include_first_message {
+            let canary = Message::new(u64::MAX, payload.clone(), MessageType::Request);
+            if transport.send_blocking(&canary).is_ok() {
+                let _ = transport.receive_blocking();
+            }
+        }
 
         if let Some(test_duration) = config.duration {
             info!(
@@ -1513,6 +1533,9 @@ fn run_standalone_client_blocking(
                 );
                 let _ = results_manager.stream_latency_record(&record);
 
+                if let Some(delay) = config.send_delay {
+                    std::thread::sleep(delay);
+                }
                 i += 1;
             }
         } else {
@@ -1536,6 +1559,10 @@ fn run_standalone_client_blocking(
                     latency,
                 );
                 let _ = results_manager.stream_latency_record(&record);
+
+                if let Some(delay) = config.send_delay {
+                    std::thread::sleep(delay);
+                }
             }
         }
 
@@ -1631,6 +1658,12 @@ async fn run_standalone_client_async(
     if config.one_way {
         let mut metrics = MetricsCollector::new(None, config.percentiles.clone())?;
 
+        // Send canary to warm up the connection if first message excluded
+        if !config.include_first_message {
+            let canary = Message::new(u64::MAX, payload.clone(), MessageType::OneWay);
+            let _ = transport.send(&canary).await;
+        }
+
         let start = std::time::Instant::now();
         let count = if let Some(test_duration) = config.duration {
             info!(
@@ -1642,6 +1675,9 @@ async fn run_standalone_client_async(
                 let msg = Message::new(c, payload.clone(), MessageType::OneWay);
                 transport.send(&msg).await?;
                 metrics.record_message(config.message_size, None)?;
+                if let Some(delay) = config.send_delay {
+                    tokio::time::sleep(delay).await;
+                }
                 c += 1;
             }
             c
@@ -1654,6 +1690,9 @@ async fn run_standalone_client_async(
                 let msg = Message::new(i as u64, payload.clone(), MessageType::OneWay);
                 transport.send(&msg).await?;
                 metrics.record_message(config.message_size, None)?;
+                if let Some(delay) = config.send_delay {
+                    tokio::time::sleep(delay).await;
+                }
             }
             msg_count as u64
         };
@@ -1673,6 +1712,14 @@ async fn run_standalone_client_async(
     if config.round_trip {
         let mut metrics =
             MetricsCollector::new(Some(LatencyType::RoundTrip), config.percentiles.clone())?;
+
+        // Send canary to warm up the connection if first message excluded
+        if !config.include_first_message {
+            let canary = Message::new(u64::MAX, payload.clone(), MessageType::Request);
+            if transport.send(&canary).await.is_ok() {
+                let _ = transport.receive().await;
+            }
+        }
 
         if let Some(test_duration) = config.duration {
             info!(
@@ -1698,6 +1745,9 @@ async fn run_standalone_client_async(
                 );
                 let _ = results_manager.stream_latency_record(&record);
 
+                if let Some(delay) = config.send_delay {
+                    tokio::time::sleep(delay).await;
+                }
                 i += 1;
             }
         } else {
@@ -1721,6 +1771,10 @@ async fn run_standalone_client_async(
                     latency,
                 );
                 let _ = results_manager.stream_latency_record(&record);
+
+                if let Some(delay) = config.send_delay {
+                    tokio::time::sleep(delay).await;
+                }
             }
         }
 
