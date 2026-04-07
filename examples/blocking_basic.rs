@@ -102,6 +102,10 @@ fn main() -> Result<()> {
         buffer_size: None,
         pmq_priority: 0,
 
+        // Standalone mode flags
+        server: false,
+        client: false,
+
         // Internal flag (not for external use)
         internal_run_as_server: false,
 
