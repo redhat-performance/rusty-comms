@@ -82,6 +82,7 @@ const TIMING: &str = "Timing";
 const CONCURRENCY: &str = "Concurrency";
 const OUTPUT_AND_LOGGING: &str = "Output and Logging";
 const ADVANCED: &str = "Advanced";
+const STANDALONE: &str = "Standalone Mode";
 
 /// Returns the default IPC mechanism based on the target OS.
 ///
@@ -366,6 +367,74 @@ pub struct Args {
     #[arg(long, default_value_t = false, help_heading = ADVANCED)]
     pub shm_direct: bool,
 
+    /// Run in standalone server mode.
+    ///
+    /// Starts the process as a server that listens for incoming client
+    /// connections. The server waits indefinitely for a client to connect,
+    /// receives messages, and responds to round-trip requests.
+    ///
+    /// This enables running the server and client as independent processes,
+    /// potentially on different hosts or in different environments (e.g.,
+    /// host and container).
+    ///
+    /// Mutually exclusive with --client.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Terminal 1: start server
+    /// ipc-benchmark --server -m uds --blocking
+    ///
+    /// # Terminal 2: start client
+    /// ipc-benchmark --client -m uds --blocking -i 10000
+    /// ```
+    #[arg(long, conflicts_with = "client", help_heading = STANDALONE)]
+    pub server: bool,
+
+    /// Run in standalone client mode.
+    ///
+    /// Connects to an already-running server and executes the benchmark
+    /// workload. If the server is not yet available, the client retries
+    /// the connection with backoff for up to 30 seconds before failing.
+    ///
+    /// Mutually exclusive with --server.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Terminal 1: start server
+    /// ipc-benchmark --server -m tcp --blocking
+    ///
+    /// # Terminal 2: start client (retries until server is ready)
+    /// ipc-benchmark --client -m tcp --blocking -i 5000
+    /// ```
+    #[arg(long, conflicts_with = "server", help_heading = STANDALONE)]
+    pub client: bool,
+
+    /// Socket path for Unix Domain Sockets in standalone mode.
+    ///
+    /// Specifies the filesystem path for the UDS socket. Both server
+    /// and client must use the same path. If not specified, a default
+    /// path in the system temp directory is used.
+    #[arg(long, help_heading = STANDALONE)]
+    pub socket_path: Option<String>,
+
+    /// Shared memory segment name for standalone mode.
+    ///
+    /// Specifies the name of the POSIX shared memory segment. Both
+    /// server and client must use the same name. If not specified,
+    /// defaults to "ipc_benchmark_shm".
+    #[arg(long, help_heading = STANDALONE)]
+    pub shared_memory_name: Option<String>,
+
+    /// POSIX Message Queue name for standalone mode.
+    ///
+    /// Specifies the name of the message queue. Both server and client
+    /// must use the same name. If not specified, defaults to
+    /// "ipc_benchmark_pmq".
+    #[arg(long, help_heading = STANDALONE)]
+    pub message_queue_name: Option<String>,
+
     /// (Internal) Run the process in server-only mode.
     ///
     /// This is a hidden flag used by the benchmark runner to spawn a child
@@ -373,19 +442,6 @@ pub struct Args {
     /// use by users.
     #[arg(long, hide = true)]
     pub internal_run_as_server: bool,
-
-    // --- Transport-specific arguments for internal use ---
-    /// (Internal) Specifies the exact socket path for UDS.
-    #[arg(long, hide = true)]
-    pub socket_path: Option<String>,
-
-    /// (Internal) Specifies the exact name for Shared Memory.
-    #[arg(long, hide = true)]
-    pub shared_memory_name: Option<String>,
-
-    /// (Internal) Specifies the exact name for the POSIX Message Queue.
-    #[arg(long, hide = true)]
-    pub message_queue_name: Option<String>,
 
     /// (Internal) File path for server to write measured latencies.
     ///
@@ -992,5 +1048,59 @@ mod tests {
         assert!(args.blocking);
         assert_eq!(args.message_size, 1024);
         assert_eq!(args.msg_count, 1000);
+    }
+
+    #[test]
+    fn test_server_flag() {
+        let args = Args::parse_from(["ipc-benchmark", "--server", "-m", "tcp"]);
+        assert!(args.server);
+        assert!(!args.client);
+    }
+
+    #[test]
+    fn test_client_flag() {
+        let args = Args::parse_from(["ipc-benchmark", "--client", "-m", "tcp"]);
+        assert!(args.client);
+        assert!(!args.server);
+    }
+
+    #[test]
+    fn test_server_client_mutually_exclusive() {
+        let result = Args::try_parse_from(["ipc-benchmark", "--server", "--client", "-m", "tcp"]);
+        assert!(result.is_err(), "--server and --client should conflict");
+    }
+
+    #[test]
+    fn test_standalone_defaults() {
+        let args = Args::parse_from(["ipc-benchmark", "-m", "tcp"]);
+        assert!(!args.server);
+        assert!(!args.client);
+    }
+
+    #[test]
+    fn test_standalone_endpoint_flags() {
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "--server",
+            "-m",
+            "tcp",
+            "--socket-path",
+            "/tmp/test.sock",
+            "--shared-memory-name",
+            "my_shm",
+            "--message-queue-name",
+            "my_pmq",
+        ]);
+        assert!(args.server);
+        assert_eq!(args.socket_path, Some("/tmp/test.sock".to_string()));
+        assert_eq!(args.shared_memory_name, Some("my_shm".to_string()));
+        assert_eq!(args.message_queue_name, Some("my_pmq".to_string()));
+    }
+
+    #[test]
+    fn test_server_with_blocking() {
+        let args = Args::parse_from(["ipc-benchmark", "--server", "-m", "tcp", "--blocking"]);
+        assert!(args.server);
+        assert!(args.blocking);
     }
 }
