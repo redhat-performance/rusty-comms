@@ -1452,6 +1452,9 @@ fn run_standalone_client_blocking(
             let _ = transport.send_blocking(&canary);
         }
 
+        // Create message once, reuse across iterations to avoid per-message heap allocation
+        let mut msg = Message::new(0, payload.clone(), MessageType::OneWay);
+
         let start = std::time::Instant::now();
         let count = if let Some(test_duration) = config.duration {
             info!(
@@ -1460,7 +1463,8 @@ fn run_standalone_client_blocking(
             );
             let mut c = 0u64;
             while start.elapsed() < test_duration {
-                let msg = Message::new(c, payload.clone(), MessageType::OneWay);
+                msg.id = c;
+                msg.timestamp = get_monotonic_time_ns();
                 transport.send_blocking(&msg)?;
                 metrics.record_message(config.message_size, None)?;
                 if let Some(delay) = config.send_delay {
@@ -1475,7 +1479,8 @@ fn run_standalone_client_blocking(
                 msg_count
             );
             for i in 0..msg_count {
-                let msg = Message::new(i as u64, payload.clone(), MessageType::OneWay);
+                msg.id = i as u64;
+                msg.timestamp = get_monotonic_time_ns();
                 transport.send_blocking(&msg)?;
                 metrics.record_message(config.message_size, None)?;
                 if let Some(delay) = config.send_delay {
@@ -1509,6 +1514,9 @@ fn run_standalone_client_blocking(
             }
         }
 
+        // Create message once, reuse across iterations to avoid per-message heap allocation
+        let mut msg = Message::new(0, payload, MessageType::Request);
+
         if let Some(test_duration) = config.duration {
             info!(
                 "Running round-trip latency test (duration={:.2?})...",
@@ -1517,8 +1525,9 @@ fn run_standalone_client_blocking(
             let start = std::time::Instant::now();
             let mut i = 0u64;
             while start.elapsed() < test_duration {
+                msg.id = i;
+                msg.timestamp = get_monotonic_time_ns();
                 let send_time = std::time::Instant::now();
-                let msg = Message::new(i, payload.clone(), MessageType::Request);
                 transport.send_blocking(&msg)?;
                 let _response = transport.receive_blocking()?;
                 let latency = send_time.elapsed();
@@ -1544,8 +1553,9 @@ fn run_standalone_client_blocking(
                 msg_count
             );
             for i in 0..msg_count {
+                msg.id = i as u64;
+                msg.timestamp = get_monotonic_time_ns();
                 let send_time = std::time::Instant::now();
-                let msg = Message::new(i as u64, payload.clone(), MessageType::Request);
                 transport.send_blocking(&msg)?;
                 let _response = transport.receive_blocking()?;
                 let latency = send_time.elapsed();
@@ -1664,6 +1674,9 @@ async fn run_standalone_client_async(
             let _ = transport.send(&canary).await;
         }
 
+        // Create message once, reuse across iterations to avoid per-message heap allocation
+        let mut msg = Message::new(0, payload.clone(), MessageType::OneWay);
+
         let start = std::time::Instant::now();
         let count = if let Some(test_duration) = config.duration {
             info!(
@@ -1672,7 +1685,8 @@ async fn run_standalone_client_async(
             );
             let mut c = 0u64;
             while start.elapsed() < test_duration {
-                let msg = Message::new(c, payload.clone(), MessageType::OneWay);
+                msg.id = c;
+                msg.timestamp = get_monotonic_time_ns();
                 transport.send(&msg).await?;
                 metrics.record_message(config.message_size, None)?;
                 if let Some(delay) = config.send_delay {
@@ -1687,7 +1701,8 @@ async fn run_standalone_client_async(
                 msg_count
             );
             for i in 0..msg_count {
-                let msg = Message::new(i as u64, payload.clone(), MessageType::OneWay);
+                msg.id = i as u64;
+                msg.timestamp = get_monotonic_time_ns();
                 transport.send(&msg).await?;
                 metrics.record_message(config.message_size, None)?;
                 if let Some(delay) = config.send_delay {
@@ -1721,6 +1736,9 @@ async fn run_standalone_client_async(
             }
         }
 
+        // Create message once, reuse across iterations to avoid per-message heap allocation
+        let mut msg = Message::new(0, payload, MessageType::Request);
+
         if let Some(test_duration) = config.duration {
             info!(
                 "Running round-trip latency test (duration={:.2?})...",
@@ -1729,8 +1747,9 @@ async fn run_standalone_client_async(
             let start = std::time::Instant::now();
             let mut i = 0u64;
             while start.elapsed() < test_duration {
+                msg.id = i;
+                msg.timestamp = get_monotonic_time_ns();
                 let send_time = std::time::Instant::now();
-                let msg = Message::new(i, payload.clone(), MessageType::Request);
                 transport.send(&msg).await?;
                 let _response = transport.receive().await?;
                 let latency = send_time.elapsed();
@@ -1756,8 +1775,9 @@ async fn run_standalone_client_async(
                 msg_count
             );
             for i in 0..msg_count {
+                msg.id = i as u64;
+                msg.timestamp = get_monotonic_time_ns();
                 let send_time = std::time::Instant::now();
-                let msg = Message::new(i as u64, payload.clone(), MessageType::Request);
                 transport.send(&msg).await?;
                 let _response = transport.receive().await?;
                 let latency = send_time.elapsed();
