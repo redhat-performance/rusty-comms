@@ -1604,12 +1604,13 @@ async fn run_standalone_server_async_multi_accept_tcp(
                         }
 
                         let std_stream = stream.into_std()?;
+                        std_stream.set_nonblocking(false).context("Failed to set stream to blocking mode")?;
                         std_stream.set_nodelay(true).context("Failed to set TCP_NODELAY")?;
 
                         let metrics_clone = worker_metrics.clone();
                         let handler_config = config.clone();
 
-                        handles.spawn(tokio::task::spawn_blocking(move || {
+                        handles.spawn_blocking(move || {
                             let mut transport = BlockingTcpSocket::from_stream(std_stream);
                             match handle_client_connection(&mut transport, &handler_config) {
                                 Ok(collector) => {
@@ -1621,7 +1622,7 @@ async fn run_standalone_server_async_multi_accept_tcp(
                             }
                             let _ = transport.close_blocking();
                             info!("Client {} disconnected", peer_addr);
-                        }));
+                        });
                     }
                     Err(e) => {
                         debug!("Accept error: {}", e);
@@ -1695,11 +1696,12 @@ async fn run_standalone_server_async_multi_accept_uds(
                         }
 
                         let std_stream = stream.into_std()?;
+                        std_stream.set_nonblocking(false).context("Failed to set stream to blocking mode")?;
 
                         let metrics_clone = worker_metrics.clone();
                         let handler_config = config.clone();
 
-                        handles.spawn(tokio::task::spawn_blocking(move || {
+                        handles.spawn_blocking(move || {
                             let mut transport = BlockingUnixDomainSocket::from_stream(std_stream);
                             match handle_client_connection(&mut transport, &handler_config) {
                                 Ok(collector) => {
@@ -1711,7 +1713,7 @@ async fn run_standalone_server_async_multi_accept_uds(
                             }
                             let _ = transport.close_blocking();
                             info!("UDS client disconnected");
-                        }));
+                        });
                     }
                     Err(e) => {
                         debug!("Accept error: {}", e);
@@ -3534,6 +3536,83 @@ mod tests {
             h.join().unwrap();
         }
         server_handle.join().unwrap();
+    }
+
+    /// Integration test: async multi-accept TCP server handles 2 concurrent
+    /// Integration test: exercises the async server's core components
+    /// (tokio accept + spawn_blocking + handle_client_connection) with
+    /// 2 concurrent clients using a #[tokio::test] runtime.
+    /// Integration test: exercises the async server path (tokio accept +
+    /// spawn_blocking + from_stream + handle_client_connection) with
+    /// 2 concurrent clients.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_standalone_async_concurrent_tcp_round_trip() {
+        use ipc_benchmark::ipc::BlockingTcpSocket;
+
+        let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = std_listener.local_addr().unwrap().port();
+        std_listener.set_nonblocking(true).unwrap();
+        let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
+
+        let num_clients = 2usize;
+        let msgs_per_client = 5usize;
+
+        let mut server_handles = tokio::task::JoinSet::new();
+        let mut client_handles = Vec::new();
+
+        // Accept connections and spawn handlers + clients concurrently
+        for worker_id in 0..num_clients {
+            // Spawn client in std thread (blocking connect)
+            let config = TransportConfig {
+                host: "127.0.0.1".to_string(),
+                port,
+                ..Default::default()
+            };
+            let client_handle = std::thread::spawn(move || {
+                let mut transport =
+                    BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+                connect_blocking_with_retry(&mut transport, &config).unwrap();
+
+                for i in 0..msgs_per_client {
+                    let msg = Message::new(
+                        (worker_id * msgs_per_client + i) as u64,
+                        vec![0u8; 64],
+                        MessageType::Request,
+                    );
+                    transport.send_blocking(&msg).unwrap();
+                    let resp = transport.receive_blocking().unwrap();
+                    assert_eq!(resp.message_type, MessageType::Response);
+                }
+
+                let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+                let _ = transport.send_blocking(&shutdown);
+                transport.close_blocking().unwrap();
+            });
+            client_handles.push(client_handle);
+
+            // Accept this client via tokio and spawn blocking handler
+            let (stream, _) = listener.accept().await.unwrap();
+            let std_stream = stream.into_std().unwrap();
+            std_stream.set_nonblocking(false).unwrap();
+            std_stream.set_nodelay(true).unwrap();
+
+            let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+            let config = BenchmarkConfig::from_args(&args).unwrap();
+
+            server_handles.spawn_blocking(move || {
+                let mut transport = BlockingTcpSocket::from_stream(std_stream);
+                handle_client_connection(&mut transport, &config).unwrap();
+                let _ = transport.close_blocking();
+            });
+        }
+
+        // Wait for all handlers and clients
+        while let Some(result) = server_handles.join_next().await {
+            result.unwrap();
+        }
+        for h in client_handles {
+            h.join().unwrap();
+        }
     }
 
     // --- from_stream tests ---
