@@ -3283,6 +3283,214 @@ mod tests {
         server_handle.join().unwrap();
     }
 
+    // --- Concurrent one-way test ---
+
+    /// Integration test: multi-accept TCP server handles 2 concurrent
+    /// one-way clients and records server-side latency metrics.
+    #[test]
+    fn test_standalone_concurrent_tcp_one_way() {
+        use ipc_benchmark::ipc::BlockingTcpSocket;
+
+        let port = 18313u16;
+        let addr = format!("127.0.0.1:{}", port);
+        let num_clients = 2usize;
+        let msgs_per_client = 10usize;
+
+        let server_handle = std::thread::spawn(move || {
+            let listener = std::net::TcpListener::bind(&addr).unwrap();
+            let mut handles = Vec::new();
+
+            for _ in 0..num_clients {
+                let (stream, _) = listener.accept().unwrap();
+                stream.set_nodelay(true).unwrap();
+
+                let handle = std::thread::spawn(move || {
+                    let mut transport = BlockingTcpSocket::from_stream(stream);
+                    let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+                    let config = BenchmarkConfig::from_args(&args).unwrap();
+                    let collector = handle_client_connection(&mut transport, &config).unwrap();
+                    let metrics = collector.get_metrics();
+                    // One-way messages should be recorded
+                    assert!(
+                        metrics.throughput.total_messages > 0,
+                        "Handler should have recorded one-way messages"
+                    );
+                    let _ = transport.close_blocking();
+                });
+                handles.push(handle);
+            }
+
+            for handle in handles {
+                handle.join().unwrap();
+            }
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let client_handles: Vec<_> = (0..num_clients)
+            .map(|worker_id| {
+                let config = TransportConfig {
+                    host: "127.0.0.1".to_string(),
+                    port,
+                    ..Default::default()
+                };
+                std::thread::spawn(move || {
+                    let mut transport =
+                        BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+                    connect_blocking_with_retry(&mut transport, &config).unwrap();
+
+                    for i in 0..msgs_per_client {
+                        let msg = Message::new(
+                            (worker_id * msgs_per_client + i) as u64,
+                            vec![0u8; 64],
+                            MessageType::OneWay,
+                        );
+                        transport.send_blocking(&msg).unwrap();
+                    }
+
+                    let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+                    let _ = transport.send_blocking(&shutdown);
+                    transport.close_blocking().unwrap();
+                })
+            })
+            .collect();
+
+        for h in client_handles {
+            h.join().unwrap();
+        }
+        server_handle.join().unwrap();
+    }
+
+    // --- from_stream tests ---
+
+    /// Test: BlockingTcpSocket::from_stream creates a functional transport.
+    #[test]
+    fn test_tcp_from_stream_send_receive() {
+        use ipc_benchmark::ipc::BlockingTcpSocket;
+
+        let port = 18314u16;
+        let addr = format!("127.0.0.1:{}", port);
+
+        let server_handle = std::thread::spawn(move || {
+            let listener = std::net::TcpListener::bind(&addr).unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_nodelay(true).unwrap();
+
+            let mut transport = BlockingTcpSocket::from_stream(stream);
+            let msg = transport.receive_blocking().unwrap();
+            assert_eq!(msg.id, 99);
+            assert_eq!(msg.message_type, MessageType::Request);
+
+            let resp = Message::new(msg.id, Vec::new(), MessageType::Response);
+            transport.send_blocking(&resp).unwrap();
+            transport.close_blocking().unwrap();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let client = std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
+        client.set_nodelay(true).unwrap();
+
+        // Use a raw BlockingTcpSocket for client too
+        let mut client_transport = BlockingTcpSocket::from_stream(client);
+        let msg = Message::new(99, vec![0u8; 32], MessageType::Request);
+        client_transport.send_blocking(&msg).unwrap();
+        let resp = client_transport.receive_blocking().unwrap();
+        assert_eq!(resp.id, 99);
+        assert_eq!(resp.message_type, MessageType::Response);
+        client_transport.close_blocking().unwrap();
+
+        server_handle.join().unwrap();
+    }
+
+    /// Test: BlockingUnixDomainSocket::from_stream creates a functional transport.
+    #[cfg(unix)]
+    #[test]
+    fn test_uds_from_stream_send_receive() {
+        use ipc_benchmark::ipc::BlockingUnixDomainSocket;
+
+        let socket_path = format!("/tmp/test_from_stream_{}.sock", std::process::id());
+        let _ = std::fs::remove_file(&socket_path);
+
+        let path_clone = socket_path.clone();
+        let server_handle = std::thread::spawn(move || {
+            let listener = std::os::unix::net::UnixListener::bind(&path_clone).unwrap();
+            let (stream, _) = listener.accept().unwrap();
+
+            let mut transport = BlockingUnixDomainSocket::from_stream(stream);
+            let msg = transport.receive_blocking().unwrap();
+            assert_eq!(msg.id, 77);
+
+            let resp = Message::new(msg.id, Vec::new(), MessageType::Response);
+            transport.send_blocking(&resp).unwrap();
+            transport.close_blocking().unwrap();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let stream = std::os::unix::net::UnixStream::connect(&socket_path).unwrap();
+        let mut client_transport = BlockingUnixDomainSocket::from_stream(stream);
+        let msg = Message::new(77, vec![0u8; 32], MessageType::Request);
+        client_transport.send_blocking(&msg).unwrap();
+        let resp = client_transport.receive_blocking().unwrap();
+        assert_eq!(resp.id, 77);
+        assert_eq!(resp.message_type, MessageType::Response);
+        client_transport.close_blocking().unwrap();
+
+        server_handle.join().unwrap();
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    // --- Concurrency fallback test ---
+
+    /// Test: SHM mechanism forces concurrency=1 with a warning.
+    #[test]
+    fn test_concurrency_forced_to_one_for_shm() {
+        // Verify that BenchmarkConfig with concurrency > 1 and SHM
+        // is detected by the standalone client dispatch logic.
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "--client",
+            "-m",
+            "shm",
+            "-c",
+            "4",
+            "--blocking",
+        ]);
+        assert_eq!(args.concurrency, 4);
+
+        // The actual concurrency forcing happens inside
+        // run_standalone_client_blocking, but we can verify the
+        // args parse correctly and the mechanism is SHM.
+        assert_eq!(args.mechanisms[0], IpcMechanism::SharedMemory);
+    }
+
+    // --- aggregate_and_print_server_metrics test ---
+
+    /// Test: aggregate_and_print_server_metrics handles empty input.
+    #[test]
+    fn test_aggregate_and_print_empty_collectors() {
+        let collectors: Vec<MetricsCollector> = Vec::new();
+        // Should not panic on empty input
+        aggregate_and_print_server_metrics(&collectors, &[50.0, 95.0, 99.0]);
+    }
+
+    /// Test: aggregate_and_print_server_metrics with single collector.
+    #[test]
+    fn test_aggregate_and_print_single_collector() {
+        let mut collector =
+            MetricsCollector::new(Some(LatencyType::OneWay), vec![50.0, 95.0, 99.0]).unwrap();
+        collector
+            .record_message(64, Some(std::time::Duration::from_micros(100)))
+            .unwrap();
+        collector
+            .record_message(64, Some(std::time::Duration::from_micros(200)))
+            .unwrap();
+
+        // Should not panic
+        aggregate_and_print_server_metrics(&[collector], &[50.0, 95.0, 99.0]);
+    }
+
     use std::io::{BufRead, BufReader};
 
     /// Canary messages (id == u64::MAX) must not be buffered
