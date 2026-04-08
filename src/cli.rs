@@ -373,6 +373,11 @@ pub struct Args {
     /// connections. The server waits indefinitely for a client to connect,
     /// receives messages, and responds to round-trip requests.
     ///
+    /// For TCP and UDS, the server accepts multiple concurrent connections
+    /// (one handler thread per client). After the first client connects,
+    /// the server waits 2 seconds before checking if all clients have
+    /// disconnected. Additional clients should connect within this window.
+    ///
     /// This enables running the server and client as independent processes,
     /// potentially on different hosts or in different environments (e.g.,
     /// host and container).

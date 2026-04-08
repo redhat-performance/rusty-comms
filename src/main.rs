@@ -1009,6 +1009,13 @@ const CONNECT_RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 /// Interval between client connection retry attempts.
 const CONNECT_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
+/// Grace period after the first client connects before the multi-accept
+/// server checks if all clients have disconnected. This prevents premature
+/// server exit when a fast client finishes before slower clients connect.
+/// Clients that take longer than this to connect after the first one may
+/// be missed.
+const SERVER_ACCEPT_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(2);
+
 // --- Standalone helpers ---
 
 /// Determine the server's response to an incoming message.
@@ -1260,7 +1267,7 @@ fn run_standalone_server_blocking_multi_accept_tcp(
     // handlers are done. This prevents premature exit when a fast client
     // finishes before slower clients have connected.
     let mut first_client_time: Option<std::time::Instant> = None;
-    let accept_grace_period = std::time::Duration::from_secs(2);
+    let accept_grace_period = SERVER_ACCEPT_GRACE_PERIOD;
 
     loop {
         match listener.accept() {
@@ -1354,7 +1361,7 @@ fn run_standalone_server_blocking_multi_accept_uds(
     let worker_metrics: Arc<Mutex<Vec<MetricsCollector>>> = Arc::new(Mutex::new(Vec::new()));
     let mut handles = Vec::new();
     let mut first_client_time: Option<std::time::Instant> = None;
-    let accept_grace_period = std::time::Duration::from_secs(2);
+    let accept_grace_period = SERVER_ACCEPT_GRACE_PERIOD;
 
     loop {
         match listener.accept() {
@@ -1584,7 +1591,7 @@ async fn run_standalone_server_async_multi_accept_tcp(
     let worker_metrics: Arc<Mutex<Vec<MetricsCollector>>> = Arc::new(Mutex::new(Vec::new()));
     let mut handles = tokio::task::JoinSet::new();
     let mut first_client_time: Option<std::time::Instant> = None;
-    let accept_grace_period = std::time::Duration::from_secs(2);
+    let accept_grace_period = SERVER_ACCEPT_GRACE_PERIOD;
 
     loop {
         tokio::select! {
@@ -1675,7 +1682,7 @@ async fn run_standalone_server_async_multi_accept_uds(
     let worker_metrics: Arc<Mutex<Vec<MetricsCollector>>> = Arc::new(Mutex::new(Vec::new()));
     let mut handles = tokio::task::JoinSet::new();
     let mut first_client_time: Option<std::time::Instant> = None;
-    let accept_grace_period = std::time::Duration::from_secs(2);
+    let accept_grace_period = SERVER_ACCEPT_GRACE_PERIOD;
 
     loop {
         tokio::select! {
@@ -2893,6 +2900,12 @@ mod tests {
         assert_eq!(config.buffer_size, 8192);
     }
 
+    /// Get a free TCP port by binding to port 0 and extracting the assigned port.
+    fn get_free_port() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    }
+
     #[test]
     fn test_standalone_server_rejects_all_mechanism() {
         let args = Args::parse_from(["ipc-benchmark", "--server", "-m", "all"]);
@@ -2935,7 +2948,7 @@ mod tests {
     /// Integration test: blocking TCP round-trip with duration mode.
     #[test]
     fn test_standalone_blocking_tcp_duration_round_trip() {
-        let port = 18306u16;
+        let port = get_free_port();
         let transport_config = TransportConfig {
             host: "127.0.0.1".to_string(),
             port,
@@ -2993,7 +3006,7 @@ mod tests {
     /// Integration test: blocking TCP one-way with duration mode.
     #[test]
     fn test_standalone_blocking_tcp_duration_one_way() {
-        let port = 18307u16;
+        let port = get_free_port();
         let transport_config = TransportConfig {
             host: "127.0.0.1".to_string(),
             port,
@@ -3042,7 +3055,7 @@ mod tests {
     /// run_standalone_client_blocking round-trip path.
     #[test]
     fn test_standalone_blocking_tcp_round_trip() {
-        let port = 18301u16;
+        let port = get_free_port();
         let transport_config = TransportConfig {
             host: "127.0.0.1".to_string(),
             port,
@@ -3100,7 +3113,7 @@ mod tests {
     /// client sending fire-and-forget messages.
     #[test]
     fn test_standalone_blocking_tcp_one_way() {
-        let port = 18302u16;
+        let port = get_free_port();
         let transport_config = TransportConfig {
             host: "127.0.0.1".to_string(),
             port,
@@ -3144,7 +3157,7 @@ mod tests {
     /// Exercises the Ping message handling branch in the server loop.
     #[test]
     fn test_standalone_blocking_tcp_ping_pong() {
-        let port = 18303u16;
+        let port = get_free_port();
         let transport_config = TransportConfig {
             host: "127.0.0.1".to_string(),
             port,
@@ -3189,7 +3202,7 @@ mod tests {
     /// after client begins retrying.
     #[test]
     fn test_connect_blocking_with_retry_waits_for_server() {
-        let port = 18304u16;
+        let port = get_free_port();
         let transport_config = TransportConfig {
             host: "127.0.0.1".to_string(),
             port,
@@ -3224,7 +3237,7 @@ mod tests {
     /// Test: Shutdown message causes server to exit cleanly.
     #[test]
     fn test_standalone_server_shutdown_message() {
-        let port = 18305u16;
+        let port = get_free_port();
         let transport_config = TransportConfig {
             host: "127.0.0.1".to_string(),
             port,
@@ -3271,7 +3284,7 @@ mod tests {
         use ipc_benchmark::ipc::BlockingTcpSocket;
         use std::sync::{Arc, Mutex};
 
-        let port = 18310u16;
+        let port = get_free_port();
         let addr = format!("127.0.0.1:{}", port);
         let num_clients = 3usize;
         let msgs_per_client = 5usize;
@@ -3357,7 +3370,7 @@ mod tests {
     /// and returns metrics.
     #[test]
     fn test_handle_client_connection_round_trip() {
-        let port = 18311u16;
+        let port = get_free_port();
         let transport_config = TransportConfig {
             host: "127.0.0.1".to_string(),
             port,
@@ -3402,7 +3415,7 @@ mod tests {
     /// Test: handle_client_connection records one-way latency metrics.
     #[test]
     fn test_handle_client_connection_one_way_metrics() {
-        let port = 18312u16;
+        let port = get_free_port();
         let transport_config = TransportConfig {
             host: "127.0.0.1".to_string(),
             port,
@@ -3453,7 +3466,7 @@ mod tests {
     fn test_standalone_concurrent_tcp_one_way() {
         use ipc_benchmark::ipc::BlockingTcpSocket;
 
-        let port = 18313u16;
+        let port = get_free_port();
         let addr = format!("127.0.0.1:{}", port);
         let num_clients = 2usize;
         let msgs_per_client = 10usize;
@@ -3530,7 +3543,7 @@ mod tests {
     fn test_tcp_from_stream_send_receive() {
         use ipc_benchmark::ipc::BlockingTcpSocket;
 
-        let port = 18314u16;
+        let port = get_free_port();
         let addr = format!("127.0.0.1:{}", port);
 
         let server_handle = std::thread::spawn(move || {
