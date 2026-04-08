@@ -1104,7 +1104,7 @@ fn run_standalone_server(args: Args) -> Result<()> {
     if args.blocking {
         run_standalone_server_blocking(&args, mechanism, &transport_config, &config)
     } else {
-        run_standalone_server_async(args, mechanism, transport_config, &config)
+        run_standalone_server_async(mechanism, transport_config, &config)
     }
 }
 
@@ -1486,26 +1486,41 @@ fn print_server_one_way_latency(one_way_count: u64, one_way_metrics: &MetricsCol
 
 /// Async standalone server implementation.
 ///
-/// Collects one-way latency metrics for OneWay messages using the
-/// monotonic clock difference between send and receive timestamps.
-/// This is accurate when server and client share the same kernel
-/// clock (same host, container-to-host, container-to-container).
+/// For TCP and UDS, the server accepts multiple concurrent connections,
+/// spawning a tokio task per client. For SHM and PMQ, only a single
+/// connection is supported.
 #[tokio::main]
 async fn run_standalone_server_async(
-    _args: Args,
     mechanism: IpcMechanism,
     transport_config: TransportConfig,
     config: &BenchmarkConfig,
 ) -> Result<()> {
+    match mechanism {
+        IpcMechanism::TcpSocket => {
+            run_standalone_server_async_multi_accept_tcp(&transport_config, config).await
+        }
+        #[cfg(unix)]
+        IpcMechanism::UnixDomainSocket => {
+            run_standalone_server_async_multi_accept_uds(&transport_config, config).await
+        }
+        _ => run_standalone_server_async_single(mechanism, &transport_config, config).await,
+    }
+}
+
+/// Single-connection async server for SHM/PMQ mechanisms.
+async fn run_standalone_server_async_single(
+    mechanism: IpcMechanism,
+    transport_config: &TransportConfig,
+    config: &BenchmarkConfig,
+) -> Result<()> {
     let mut transport = TransportFactory::create(&mechanism)?;
     transport
-        .start_server(&transport_config)
+        .start_server(transport_config)
         .await
         .context("Server failed to start transport")?;
 
     info!("Server listening, waiting for client...");
 
-    // Collect one-way latency metrics on the server side
     let mut one_way_metrics =
         MetricsCollector::new(Some(LatencyType::OneWay), config.percentiles.clone())?;
     let mut one_way_count = 0u64;
@@ -1518,7 +1533,6 @@ async fn run_standalone_server_async(
                     break;
                 }
 
-                // Measure one-way latency for OneWay messages
                 if msg.message_type == MessageType::OneWay && msg.id != u64::MAX {
                     let receive_time_ns = get_monotonic_time_ns();
                     let latency_ns = receive_time_ns.saturating_sub(msg.timestamp);
@@ -1541,36 +1555,184 @@ async fn run_standalone_server_async(
         }
     }
 
-    // Print server-side one-way latency results
-    if one_way_count > 0 {
-        let metrics = one_way_metrics.get_metrics();
-        if let Some(ref latency) = metrics.latency {
-            info!(
-                "Server one-way latency ({} messages): \
-                 mean={:.2}us, P50={:.2}us, P95={:.2}us, P99={:.2}us, \
-                 min={:.2}us, max={:.2}us",
-                one_way_count,
-                latency.mean_ns / 1000.0,
-                latency.median_ns / 1000.0,
-                latency
-                    .percentiles
-                    .iter()
-                    .find(|p| (p.percentile - 95.0).abs() < 0.1)
-                    .map_or(0.0, |p| p.value_ns as f64)
-                    / 1000.0,
-                latency
-                    .percentiles
-                    .iter()
-                    .find(|p| (p.percentile - 99.0).abs() < 0.1)
-                    .map_or(0.0, |p| p.value_ns as f64)
-                    / 1000.0,
-                latency.min_ns as f64 / 1000.0,
-                latency.max_ns as f64 / 1000.0,
-            );
+    print_server_one_way_latency(one_way_count, &one_way_metrics);
+    let _ = transport.close().await;
+    info!("Standalone server exiting cleanly.");
+    Ok(())
+}
+
+/// Multi-accept async TCP server.
+///
+/// Binds a TCP listener and accepts connections in a loop, spawning
+/// a tokio task per client. Each handler uses blocking transport
+/// operations on a dedicated thread (via spawn_blocking) since
+/// the transport trait is not async-safe for concurrent use.
+async fn run_standalone_server_async_multi_accept_tcp(
+    transport_config: &TransportConfig,
+    config: &BenchmarkConfig,
+) -> Result<()> {
+    use ipc_benchmark::ipc::BlockingTcpSocket;
+    use std::sync::{Arc, Mutex};
+
+    let addr = format!("{}:{}", transport_config.host, transport_config.port);
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .with_context(|| format!("Failed to bind TCP socket to {}", addr))?;
+
+    info!("TCP server listening on {}, accepting connections...", addr);
+
+    let worker_metrics: Arc<Mutex<Vec<MetricsCollector>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut handles = tokio::task::JoinSet::new();
+    let mut first_client_time: Option<std::time::Instant> = None;
+    let accept_grace_period = std::time::Duration::from_secs(2);
+
+    loop {
+        tokio::select! {
+            result = listener.accept() => {
+                match result {
+                    Ok((stream, peer_addr)) => {
+                        info!("Accepted connection from {}", peer_addr);
+                        if first_client_time.is_none() {
+                            first_client_time = Some(std::time::Instant::now());
+                        }
+
+                        let std_stream = stream.into_std()?;
+                        std_stream.set_nodelay(true).context("Failed to set TCP_NODELAY")?;
+
+                        let metrics_clone = worker_metrics.clone();
+                        let handler_config = config.clone();
+
+                        handles.spawn(tokio::task::spawn_blocking(move || {
+                            let mut transport = BlockingTcpSocket::from_stream(std_stream);
+                            match handle_client_connection(&mut transport, &handler_config) {
+                                Ok(collector) => {
+                                    metrics_clone.lock().unwrap().push(collector);
+                                }
+                                Err(e) => {
+                                    warn!("Handler error: {}", e);
+                                }
+                            }
+                            let _ = transport.close_blocking();
+                            info!("Client {} disconnected", peer_addr);
+                        }));
+                    }
+                    Err(e) => {
+                        debug!("Accept error: {}", e);
+                        break;
+                    }
+                }
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+        }
+
+        // Check if all spawned tasks are done
+        // Drain completed tasks from the JoinSet
+        while let Ok(Some(_)) = handles.try_join_next().transpose() {}
+
+        let grace_elapsed = first_client_time.is_some_and(|t| t.elapsed() > accept_grace_period);
+        if grace_elapsed && handles.is_empty() {
+            debug!("All clients disconnected, shutting down");
+            break;
         }
     }
 
-    let _ = transport.close().await;
+    // Wait for any remaining handlers
+    while let Some(result) = handles.join_next().await {
+        let _ = result;
+    }
+
+    let collectors = worker_metrics.lock().unwrap();
+    aggregate_and_print_server_metrics(&collectors, &config.percentiles);
+
+    info!("Standalone server exiting cleanly.");
+    Ok(())
+}
+
+/// Multi-accept async UDS server.
+#[cfg(unix)]
+async fn run_standalone_server_async_multi_accept_uds(
+    transport_config: &TransportConfig,
+    config: &BenchmarkConfig,
+) -> Result<()> {
+    use ipc_benchmark::ipc::BlockingUnixDomainSocket;
+    use std::sync::{Arc, Mutex};
+
+    let _ = std::fs::remove_file(&transport_config.socket_path);
+
+    let listener =
+        tokio::net::UnixListener::bind(&transport_config.socket_path).with_context(|| {
+            format!(
+                "Failed to bind Unix domain socket at: {}",
+                transport_config.socket_path
+            )
+        })?;
+
+    info!(
+        "UDS server listening on {}, accepting connections...",
+        transport_config.socket_path
+    );
+
+    let worker_metrics: Arc<Mutex<Vec<MetricsCollector>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut handles = tokio::task::JoinSet::new();
+    let mut first_client_time: Option<std::time::Instant> = None;
+    let accept_grace_period = std::time::Duration::from_secs(2);
+
+    loop {
+        tokio::select! {
+            result = listener.accept() => {
+                match result {
+                    Ok((stream, peer_addr)) => {
+                        info!("Accepted UDS connection from {:?}", peer_addr);
+                        if first_client_time.is_none() {
+                            first_client_time = Some(std::time::Instant::now());
+                        }
+
+                        let std_stream = stream.into_std()?;
+
+                        let metrics_clone = worker_metrics.clone();
+                        let handler_config = config.clone();
+
+                        handles.spawn(tokio::task::spawn_blocking(move || {
+                            let mut transport = BlockingUnixDomainSocket::from_stream(std_stream);
+                            match handle_client_connection(&mut transport, &handler_config) {
+                                Ok(collector) => {
+                                    metrics_clone.lock().unwrap().push(collector);
+                                }
+                                Err(e) => {
+                                    warn!("Handler error: {}", e);
+                                }
+                            }
+                            let _ = transport.close_blocking();
+                            info!("UDS client disconnected");
+                        }));
+                    }
+                    Err(e) => {
+                        debug!("Accept error: {}", e);
+                        break;
+                    }
+                }
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+        }
+
+        // Drain completed tasks
+        while let Ok(Some(_)) = handles.try_join_next().transpose() {}
+
+        let grace_elapsed = first_client_time.is_some_and(|t| t.elapsed() > accept_grace_period);
+        if grace_elapsed && handles.is_empty() {
+            debug!("All clients disconnected, shutting down");
+            break;
+        }
+    }
+
+    while let Some(result) = handles.join_next().await {
+        let _ = result;
+    }
+
+    let collectors = worker_metrics.lock().unwrap();
+    aggregate_and_print_server_metrics(&collectors, &config.percentiles);
+
+    let _ = std::fs::remove_file(&transport_config.socket_path);
     info!("Standalone server exiting cleanly.");
     Ok(())
 }
