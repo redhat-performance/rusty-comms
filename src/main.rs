@@ -3784,6 +3784,209 @@ mod tests {
         aggregate_and_print_server_metrics(&[collector], &[50.0, 95.0, 99.0]);
     }
 
+    /// Test: aggregate_and_print_server_metrics with multiple collectors.
+    #[test]
+    fn test_aggregate_and_print_multiple_collectors() {
+        let mut c1 =
+            MetricsCollector::new(Some(LatencyType::OneWay), vec![50.0, 95.0, 99.0]).unwrap();
+        c1.record_message(64, Some(std::time::Duration::from_micros(100)))
+            .unwrap();
+        c1.record_message(64, Some(std::time::Duration::from_micros(150)))
+            .unwrap();
+
+        let mut c2 =
+            MetricsCollector::new(Some(LatencyType::OneWay), vec![50.0, 95.0, 99.0]).unwrap();
+        c2.record_message(64, Some(std::time::Duration::from_micros(200)))
+            .unwrap();
+        c2.record_message(64, Some(std::time::Duration::from_micros(300)))
+            .unwrap();
+
+        // Should aggregate across both collectors without panic
+        aggregate_and_print_server_metrics(&[c1, c2], &[50.0, 95.0, 99.0]);
+    }
+
+    /// Test: effective_concurrency covers UDS and PMQ mechanisms.
+    #[test]
+    fn test_effective_concurrency_all_mechanisms() {
+        // TCP always allows concurrency
+        assert_eq!(effective_concurrency(IpcMechanism::TcpSocket, 8), 8);
+
+        // UDS allows concurrency on unix
+        #[cfg(unix)]
+        assert_eq!(effective_concurrency(IpcMechanism::UnixDomainSocket, 4), 4);
+
+        // SHM forces to 1
+        assert_eq!(effective_concurrency(IpcMechanism::SharedMemory, 4), 1);
+
+        // PMQ forces to 1 (Linux only mechanism, but the check works on all platforms)
+        #[cfg(target_os = "linux")]
+        assert_eq!(effective_concurrency(IpcMechanism::PosixMessageQueue, 4), 1);
+
+        // Concurrency=1 always stays at 1 regardless of mechanism
+        assert_eq!(effective_concurrency(IpcMechanism::SharedMemory, 1), 1);
+        assert_eq!(effective_concurrency(IpcMechanism::TcpSocket, 1), 1);
+    }
+
+    /// Test: large payload round-trip preserves content integrity.
+    #[test]
+    fn test_standalone_large_payload_integrity() {
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+        let payload_size = 4096usize;
+
+        let server_config = transport_config.clone();
+        let server_handle = std::thread::spawn(move || {
+            let mut transport =
+                BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+            transport.start_server_blocking(&server_config).unwrap();
+
+            while let Ok(message) = transport.receive_blocking() {
+                if message.message_type == MessageType::Shutdown {
+                    break;
+                }
+                // Echo the payload back in the response
+                let resp = Message::new(message.id, message.payload.clone(), MessageType::Response);
+                if transport.send_blocking(&resp).is_err() {
+                    break;
+                }
+            }
+            transport.close_blocking().unwrap();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let mut transport =
+            BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+        connect_blocking_with_retry(&mut transport, &transport_config).unwrap();
+
+        // Create a payload with recognizable pattern
+        let payload: Vec<u8> = (0..payload_size).map(|i| (i % 256) as u8).collect();
+
+        for i in 0..5u64 {
+            let msg = Message::new(i, payload.clone(), MessageType::Request);
+            transport.send_blocking(&msg).unwrap();
+            let resp = transport.receive_blocking().unwrap();
+            assert_eq!(resp.id, i);
+            assert_eq!(resp.payload.len(), payload_size, "Payload size mismatch");
+            assert_eq!(resp.payload, payload, "Payload content corrupted");
+        }
+
+        let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+        let _ = transport.send_blocking(&shutdown);
+        transport.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
+
+    /// Test: handle_client_connection filters canary messages from metrics.
+    #[test]
+    fn test_handle_client_connection_filters_canary() {
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+
+        let server_config = transport_config.clone();
+        let server_handle = std::thread::spawn(move || {
+            let mut transport =
+                BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+            transport.start_server_blocking(&server_config).unwrap();
+
+            let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+            let config = BenchmarkConfig::from_args(&args).unwrap();
+            let collector = handle_client_connection(transport.as_mut(), &config).unwrap();
+            let metrics = collector.get_metrics();
+            // Should have recorded 3 real messages, not the 2 canaries
+            assert_eq!(
+                metrics.throughput.total_messages, 3,
+                "Canary messages (id=u64::MAX) should be filtered from metrics"
+            );
+            transport.close_blocking().unwrap();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let mut transport =
+            BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+        connect_blocking_with_retry(&mut transport, &transport_config).unwrap();
+
+        // Send canary (warmup), real messages, another canary, then shutdown
+        let canary = Message::new(u64::MAX, vec![0u8; 64], MessageType::OneWay);
+        transport.send_blocking(&canary).unwrap();
+
+        for i in 0..3u64 {
+            let msg = Message::new(i, vec![0u8; 64], MessageType::OneWay);
+            transport.send_blocking(&msg).unwrap();
+        }
+
+        // Second canary
+        transport.send_blocking(&canary).unwrap();
+
+        let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+        let _ = transport.send_blocking(&shutdown);
+        transport.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
+
+    /// Test: mixed message types on a single connection.
+    #[test]
+    fn test_handle_client_connection_mixed_message_types() {
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+
+        let server_config = transport_config.clone();
+        let server_handle = std::thread::spawn(move || {
+            let mut transport =
+                BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+            transport.start_server_blocking(&server_config).unwrap();
+
+            let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+            let config = BenchmarkConfig::from_args(&args).unwrap();
+            let collector = handle_client_connection(transport.as_mut(), &config).unwrap();
+            let metrics = collector.get_metrics();
+            // Only OneWay messages should be recorded (not Request/Ping)
+            assert_eq!(
+                metrics.throughput.total_messages, 3,
+                "Only OneWay messages should be recorded in one-way metrics"
+            );
+            transport.close_blocking().unwrap();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let mut transport =
+            BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+        connect_blocking_with_retry(&mut transport, &transport_config).unwrap();
+
+        // Interleave OneWay and Request messages
+        for i in 0..3u64 {
+            // OneWay (should be recorded)
+            let ow = Message::new(i * 2, vec![0u8; 64], MessageType::OneWay);
+            transport.send_blocking(&ow).unwrap();
+
+            // Request (should NOT be recorded as one-way, but should get a response)
+            let req = Message::new(i * 2 + 1, vec![0u8; 64], MessageType::Request);
+            transport.send_blocking(&req).unwrap();
+            let resp = transport.receive_blocking().unwrap();
+            assert_eq!(resp.id, i * 2 + 1);
+            assert_eq!(resp.message_type, MessageType::Response);
+        }
+
+        let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+        let _ = transport.send_blocking(&shutdown);
+        transport.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
+
     use std::io::{BufRead, BufReader};
 
     /// Canary messages (id == u64::MAX) must not be buffered
