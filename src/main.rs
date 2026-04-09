@@ -1018,6 +1018,27 @@ const SERVER_ACCEPT_GRACE_PERIOD: std::time::Duration = std::time::Duration::fro
 
 // --- Standalone helpers ---
 
+/// Determine the effective concurrency for a given mechanism.
+///
+/// Only TCP and UDS support concurrent connections (socket-based accept
+/// loop). SHM and PMQ are forced to concurrency=1 with a warning.
+fn effective_concurrency(mechanism: IpcMechanism, requested: usize) -> usize {
+    let mut supports_concurrency = mechanism == IpcMechanism::TcpSocket;
+    #[cfg(unix)]
+    {
+        supports_concurrency = supports_concurrency || mechanism == IpcMechanism::UnixDomainSocket;
+    }
+    if !supports_concurrency && requested > 1 {
+        warn!(
+            "{} does not support concurrency > 1. Forcing concurrency = 1.",
+            mechanism
+        );
+        1
+    } else {
+        requested
+    }
+}
+
 /// Determine the server's response to an incoming message.
 ///
 /// Returns `Some(response)` for Request (-> Response) and Ping (-> Pong).
@@ -1635,7 +1656,11 @@ async fn run_standalone_server_async_multi_accept_tcp(
 
         // Check if all spawned tasks are done
         // Drain completed tasks from the JoinSet
-        while let Ok(Some(_)) = handles.try_join_next().transpose() {}
+        while let Some(result) = handles.try_join_next() {
+            if let Err(e) = result {
+                warn!("Handler task panicked: {}", e);
+            }
+        }
 
         let grace_elapsed = first_client_time.is_some_and(|t| t.elapsed() > accept_grace_period);
         if grace_elapsed && handles.is_empty() {
@@ -1725,7 +1750,11 @@ async fn run_standalone_server_async_multi_accept_uds(
         }
 
         // Drain completed tasks
-        while let Ok(Some(_)) = handles.try_join_next().transpose() {}
+        while let Some(result) = handles.try_join_next() {
+            if let Err(e) = result {
+                warn!("Handler task panicked: {}", e);
+            }
+        }
 
         let grace_elapsed = first_client_time.is_some_and(|t| t.elapsed() > accept_grace_period);
         if grace_elapsed && handles.is_empty() {
@@ -1873,22 +1902,7 @@ fn run_standalone_client_blocking(
 ) -> Result<()> {
     let config = BenchmarkConfig::from_args(&args)?;
 
-    // Force concurrency=1 for mechanisms that don't support multiple connections.
-    // Only TCP and UDS support concurrent clients (socket-based accept loop).
-    let mut supports_concurrency = mechanism == IpcMechanism::TcpSocket;
-    #[cfg(unix)]
-    {
-        supports_concurrency = supports_concurrency || mechanism == IpcMechanism::UnixDomainSocket;
-    }
-    let concurrency = if !supports_concurrency && config.concurrency > 1 {
-        warn!(
-            "{} does not support concurrency > 1. Forcing concurrency = 1.",
-            mechanism
-        );
-        1
-    } else {
-        config.concurrency
-    };
+    let concurrency = effective_concurrency(mechanism, config.concurrency);
 
     if concurrency > 1 {
         run_standalone_client_blocking_concurrent(
@@ -2363,21 +2377,7 @@ async fn run_standalone_client_async(
 ) -> Result<()> {
     let config = BenchmarkConfig::from_args(&args)?;
 
-    // Force concurrency=1 for mechanisms that don't support multiple connections.
-    let mut supports_concurrency = mechanism == IpcMechanism::TcpSocket;
-    #[cfg(unix)]
-    {
-        supports_concurrency = supports_concurrency || mechanism == IpcMechanism::UnixDomainSocket;
-    }
-    let concurrency = if !supports_concurrency && config.concurrency > 1 {
-        warn!(
-            "{} does not support concurrency > 1. Forcing concurrency = 1.",
-            mechanism
-        );
-        1
-    } else {
-        config.concurrency
-    };
+    let concurrency = effective_concurrency(mechanism, config.concurrency);
 
     if concurrency > 1 {
         run_standalone_client_async_concurrent(
@@ -3579,12 +3579,8 @@ mod tests {
     }
 
     /// Integration test: async multi-accept TCP server handles 2 concurrent
-    /// Integration test: exercises the async server's core components
-    /// (tokio accept + spawn_blocking + handle_client_connection) with
-    /// 2 concurrent clients using a #[tokio::test] runtime.
-    /// Integration test: exercises the async server path (tokio accept +
-    /// spawn_blocking + from_stream + handle_client_connection) with
-    /// 2 concurrent clients.
+    /// round-trip clients. Exercises tokio accept + spawn_blocking +
+    /// from_stream + handle_client_connection path.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_standalone_async_concurrent_tcp_round_trip() {
         use ipc_benchmark::ipc::BlockingTcpSocket;
@@ -3740,30 +3736,26 @@ mod tests {
     /// Test: SHM mechanism forces concurrency=1 with a warning.
     #[test]
     fn test_concurrency_forced_to_one_for_shm() {
-        // Verify that the concurrency forcing logic works for SHM.
-        // SHM does not support concurrent connections, so concurrency
-        // should be capped at 1.
-        let mechanism = IpcMechanism::SharedMemory;
-        let concurrency: usize = 4;
-
-        let mut supports_concurrency = mechanism == IpcMechanism::TcpSocket;
-        #[cfg(unix)]
-        {
-            supports_concurrency =
-                supports_concurrency || mechanism == IpcMechanism::UnixDomainSocket;
-        }
-
-        let effective = if !supports_concurrency && concurrency > 1 {
-            1
-        } else {
-            concurrency
-        };
-
-        assert_eq!(effective, 1, "SHM should force concurrency to 1");
-
-        // TCP should allow concurrency > 1
-        let tcp_supports = IpcMechanism::TcpSocket == IpcMechanism::TcpSocket;
-        assert!(tcp_supports, "TCP should support concurrency");
+        assert_eq!(
+            effective_concurrency(IpcMechanism::SharedMemory, 4),
+            1,
+            "SHM should force concurrency to 1"
+        );
+        assert_eq!(
+            effective_concurrency(IpcMechanism::SharedMemory, 1),
+            1,
+            "SHM with concurrency=1 should stay at 1"
+        );
+        assert_eq!(
+            effective_concurrency(IpcMechanism::TcpSocket, 4),
+            4,
+            "TCP should allow concurrency > 1"
+        );
+        assert_eq!(
+            effective_concurrency(IpcMechanism::TcpSocket, 1),
+            1,
+            "TCP with concurrency=1 should stay at 1"
+        );
     }
 
     // --- aggregate_and_print_server_metrics test ---
