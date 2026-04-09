@@ -1297,6 +1297,11 @@ fn run_standalone_server_blocking_multi_accept_tcp(
                 if first_client_time.is_none() {
                     first_client_time = Some(std::time::Instant::now());
                 }
+                // Accepted streams inherit non-blocking from the listener;
+                // set back to blocking for the handler thread.
+                stream
+                    .set_nonblocking(false)
+                    .context("Failed to set stream to blocking mode")?;
                 stream
                     .set_nodelay(true)
                     .context("Failed to set TCP_NODELAY")?;
@@ -1391,6 +1396,11 @@ fn run_standalone_server_blocking_multi_accept_uds(
                 if first_client_time.is_none() {
                     first_client_time = Some(std::time::Instant::now());
                 }
+                // Accepted streams inherit non-blocking from the listener;
+                // set back to blocking for the handler thread.
+                stream
+                    .set_nonblocking(false)
+                    .context("Failed to set stream to blocking mode")?;
 
                 let metrics_clone = worker_metrics.clone();
                 let handler_config = config.clone();
