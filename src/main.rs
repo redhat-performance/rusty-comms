@@ -693,13 +693,13 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
                 // Calculate actual IPC latency: receive_time - send_time
                 // Use monotonic clock to avoid NTP adjustments affecting measurements
                 let receive_time_ns = get_monotonic_time_ns();
+                let wall_now_ns = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as u64;
                 let latency_ns = receive_time_ns.saturating_sub(message.timestamp);
 
                 if should_buffer_latency(latency_file_path.is_some(), message.id) {
-                    let wall_now_ns = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_nanos() as u64;
                     let wall_send_ns = wall_now_ns.saturating_sub(latency_ns);
                     latency_buffer.push((wall_send_ns, latency_ns));
                 }
@@ -898,13 +898,13 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
                 // Calculate actual IPC latency: receive_time - send_time
                 // Use monotonic clock to avoid NTP adjustments affecting measurements
                 let receive_time_ns = get_monotonic_time_ns();
+                let wall_now_ns = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as u64;
                 let latency_ns = receive_time_ns.saturating_sub(msg.timestamp);
 
                 if should_buffer_latency(latency_file_path.is_some(), msg.id) {
-                    let wall_now_ns = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_nanos() as u64;
                     let wall_send_ns = wall_now_ns.saturating_sub(latency_ns);
                     latency_buffer.push((wall_send_ns, latency_ns));
                 }
@@ -1016,10 +1016,7 @@ fn should_buffer_latency(latency_file_enabled: bool, message_id: u64) -> bool {
 /// # Errors
 ///
 /// Returns an error if the file cannot be created or written.
-fn write_latency_buffer(
-    path: &str,
-    buffer: &[(u64, u64)],
-) -> Result<()> {
+fn write_latency_buffer(path: &str, buffer: &[(u64, u64)]) -> Result<()> {
     debug!(
         "Writing {} buffered latencies to file: {}",
         buffer.len(),
@@ -1079,18 +1076,12 @@ mod tests {
             .to_string_lossy()
             .to_string();
 
-        let entries: Vec<(u64, u64)> = vec![
-            (1000, 100),
-            (2000, 200),
-            (3000, 999),
-            (0, 0),
-            (5000, 42),
-        ];
+        let entries: Vec<(u64, u64)> =
+            vec![(1000, 100), (2000, 200), (3000, 999), (0, 0), (5000, 42)];
         write_latency_buffer(&path, &entries).unwrap();
 
         let file = std::fs::File::open(&path).unwrap();
-        let lines: Vec<String> =
-            BufReader::new(file).lines().map(|l| l.unwrap()).collect();
+        let lines: Vec<String> = BufReader::new(file).lines().map(|l| l.unwrap()).collect();
 
         assert_eq!(lines.len(), 5);
         assert_eq!(lines[0], "1000,100");
@@ -1145,10 +1136,7 @@ mod tests {
         let file = std::fs::File::open(&path).unwrap();
         let parsed: Vec<(u64, u64)> = BufReader::new(file)
             .lines()
-            .filter_map(|l| {
-                l.ok()
-                    .and_then(|s| parse_latency_file_line(&s).ok())
-            })
+            .filter_map(|l| l.ok().and_then(|s| parse_latency_file_line(&s).ok()))
             .collect();
 
         assert_eq!(parsed, original);

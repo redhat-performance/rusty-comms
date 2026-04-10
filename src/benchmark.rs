@@ -246,6 +246,7 @@ pub struct BenchmarkConfig {
 /// Returns an error if the line does not contain exactly two
 /// comma-separated `u64` values.
 pub fn parse_latency_file_line(line: &str) -> anyhow::Result<(u64, u64)> {
+    let line = line.trim();
     let parts: Vec<&str> = line.splitn(2, ',').collect();
     if parts.len() != 2 {
         anyhow::bail!(
