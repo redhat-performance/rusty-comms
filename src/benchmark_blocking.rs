@@ -694,6 +694,10 @@ impl BlockingBenchmarkRunner {
     ///
     /// ## Test Execution Flow
     ///
+    /// Tests run **sequentially**, not simultaneously. Each test
+    /// spawns its own server process, runs to completion, and tears
+    /// down before the next test starts.
+    ///
     /// 1. **Validation**: Verify core availability and configuration
     /// 2. **Warmup Phase**: Run warmup iterations to stabilize performance
     /// 3. **One-way Testing**: Measure one-way latency if enabled
@@ -1121,16 +1125,14 @@ impl BlockingBenchmarkRunner {
 
         for (i, line) in reader.lines().enumerate() {
             let line = line.context("Failed to read line from latency file")?;
-            let latency_ns: u64 = line
-                .parse()
-                .with_context(|| format!("Failed to parse latency from line: {}", line))?;
+            // Parse "wall_send_ns,latency_ns" format written
+            // by the server process.
+            let (wall_send_ns, latency_ns) = crate::benchmark::parse_latency_file_line(&line)?;
 
             let latency = std::time::Duration::from_nanos(latency_ns);
 
-            // Record in metrics collector
             metrics_collector.record_message(self.config.message_size, Some(latency))?;
 
-            // Stream latency if enabled
             if let Some(ref mut manager) = results_manager {
                 let record = crate::results::MessageLatencyRecord::new(
                     i as u64,
@@ -1138,6 +1140,7 @@ impl BlockingBenchmarkRunner {
                     self.config.message_size,
                     crate::metrics::LatencyType::OneWay,
                     latency,
+                    wall_send_ns,
                 );
                 let _ = manager.stream_latency_record(&record);
             }
@@ -1226,6 +1229,9 @@ impl BlockingBenchmarkRunner {
             }
 
             while start_time.elapsed() < duration {
+                // Capture send timestamp for streaming record (wall clock)
+                let send_timestamp_ns =
+                    crate::results::MessageLatencyRecord::current_timestamp_ns();
                 let send_time = Instant::now();
                 let message = Message::new(i, payload.clone(), MessageType::Request);
 
@@ -1245,6 +1251,7 @@ impl BlockingBenchmarkRunner {
                                     self.config.message_size,
                                     crate::metrics::LatencyType::RoundTrip,
                                     latency,
+                                    send_timestamp_ns,
                                 );
                                 let _ = manager.stream_latency_record(&record);
                             }
@@ -1271,6 +1278,9 @@ impl BlockingBenchmarkRunner {
             }
 
             for i in 0..msg_count {
+                // Capture send timestamp for streaming record (wall clock)
+                let send_timestamp_ns =
+                    crate::results::MessageLatencyRecord::current_timestamp_ns();
                 let send_time = Instant::now();
                 let message = Message::new(i as u64, payload.clone(), MessageType::Request);
                 client_transport.send_blocking(&message)?;
@@ -1293,6 +1303,7 @@ impl BlockingBenchmarkRunner {
                             self.config.message_size,
                             crate::metrics::LatencyType::RoundTrip,
                             latency,
+                            send_timestamp_ns,
                         );
                         let _ = manager.stream_latency_record(&record);
                     }

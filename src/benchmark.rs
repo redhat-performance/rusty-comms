@@ -234,6 +234,36 @@ pub struct BenchmarkConfig {
     pub client_affinity: Option<usize>,
 }
 
+/// Parse a line from the server-written latency file.
+///
+/// The expected format is `"wall_send_ns,latency_ns"` where
+/// `wall_send_ns` is the approximate wall-clock time the message
+/// was sent (computed server-side as `wall_now - latency`) and
+/// `latency_ns` is the measured one-way IPC latency in nanoseconds.
+///
+/// # Errors
+///
+/// Returns an error if the line does not contain exactly two
+/// comma-separated `u64` values.
+pub fn parse_latency_file_line(line: &str) -> anyhow::Result<(u64, u64)> {
+    let line = line.trim();
+    let parts: Vec<&str> = line.splitn(2, ',').collect();
+    if parts.len() != 2 {
+        anyhow::bail!(
+            "Invalid latency file line (expected \
+             wall_send_ns,latency_ns): {}",
+            line
+        );
+    }
+    let wall_send_ns: u64 = parts[0]
+        .parse()
+        .with_context(|| format!("Failed to parse wall_send_ns from: {}", parts[0]))?;
+    let latency_ns: u64 = parts[1]
+        .parse()
+        .with_context(|| format!("Failed to parse latency_ns from: {}", parts[1]))?;
+    Ok((wall_send_ns, latency_ns))
+}
+
 impl BenchmarkConfig {
     /// Create benchmark configuration from CLI arguments
     ///
@@ -1117,16 +1147,14 @@ port={}",
             .await
             .context("Failed to read line from latency file")?
         {
-            let latency_ns: u64 = line
-                .parse()
-                .with_context(|| format!("Failed to parse latency from line: {}", line))?;
+            // Parse "wall_send_ns,latency_ns" format written
+            // by the server process.
+            let (wall_send_ns, latency_ns) = parse_latency_file_line(&line)?;
 
             let latency = Duration::from_nanos(latency_ns);
 
-            // Record in metrics collector
             metrics_collector.record_message(self.config.message_size, Some(latency))?;
 
-            // Stream latency if enabled
             if let Some(ref mut manager) = results_manager {
                 let record = crate::results::MessageLatencyRecord::new(
                     line_num,
@@ -1134,6 +1162,7 @@ port={}",
                     self.config.message_size,
                     crate::metrics::LatencyType::OneWay,
                     latency,
+                    wall_send_ns,
                 );
                 manager.stream_latency_record(&record).await?;
             }
@@ -1188,7 +1217,7 @@ port={}",
         let transport_config_clone = transport_config.clone();
 
         let client_future = async move {
-            let mut latencies = Vec::new();
+            let mut latencies: Vec<(Duration, u64)> = Vec::new();
             client_transport
                 .start_client(&transport_config_clone)
                 .await?;
@@ -1206,6 +1235,7 @@ port={}",
                 }
 
                 while start_time.elapsed() < duration {
+                    let wall_ts = crate::results::MessageLatencyRecord::current_timestamp_ns();
                     let send_time = Instant::now();
                     let message = Message::new(i, payload.clone(), MessageType::Request);
 
@@ -1227,7 +1257,7 @@ port={}",
                             .await
                             .is_ok()
                             {
-                                latencies.push(send_time.elapsed());
+                                latencies.push((send_time.elapsed(), wall_ts));
                             }
                         }
                         _ => {
@@ -1243,6 +1273,7 @@ port={}",
                     msg_count + 1
                 };
                 for i in 0..iterations {
+                    let wall_ts = crate::results::MessageLatencyRecord::current_timestamp_ns();
                     let send_time = Instant::now();
                     let message = Message::new(i as u64, payload.clone(), MessageType::Request);
                     client_transport.send(&message).await?;
@@ -1251,19 +1282,19 @@ port={}",
                     }
                     client_transport.receive().await?;
                     if i > 0 || client_config.include_first_message {
-                        latencies.push(send_time.elapsed());
+                        latencies.push((send_time.elapsed(), wall_ts));
                     }
                 }
             }
             client_transport.close().await?;
-            Ok::<Vec<Duration>, anyhow::Error>(latencies)
+            Ok::<Vec<(Duration, u64)>, anyhow::Error>(latencies)
         };
 
         // Execute client work with proper affinity using spawn_with_affinity
         let latencies =
             crate::utils::spawn_with_affinity(client_future, self.config.client_affinity).await?;
 
-        for (i, latency) in latencies.iter().enumerate() {
+        for (i, (latency, wall_ts)) in latencies.iter().enumerate() {
             metrics_collector.record_message(self.config.message_size, Some(*latency))?;
             if let Some(ref mut manager) = results_manager {
                 let record = crate::results::MessageLatencyRecord::new(
@@ -1272,6 +1303,7 @@ port={}",
                     self.config.message_size,
                     crate::metrics::LatencyType::RoundTrip,
                     *latency,
+                    *wall_ts,
                 );
                 manager.stream_latency_record(&record).await?;
             }
@@ -1502,8 +1534,8 @@ port={}",
         let transport_config_clone = transport_config.clone();
 
         let client_future = async move {
-            let mut one_way_latencies = Vec::new();
-            let mut round_trip_latencies = Vec::new();
+            let mut one_way_latencies: Vec<(Duration, u64)> = Vec::new();
+            let mut round_trip_latencies: Vec<Duration> = Vec::new();
             client_transport
                 .start_client(&transport_config_clone)
                 .await?;
@@ -1514,6 +1546,7 @@ port={}",
             if let Some(duration) = client_config.duration {
                 let mut i = 0u64;
                 while start_time.elapsed() < duration {
+                    let wall_ts = crate::results::MessageLatencyRecord::current_timestamp_ns();
                     let send_start = Instant::now();
                     let message = Message::new(i, payload.clone(), MessageType::Request);
 
@@ -1521,7 +1554,7 @@ port={}",
                         let one_way_latency = send_start.elapsed();
                         if client_transport.receive().await.is_ok() {
                             let round_trip_latency = send_start.elapsed();
-                            one_way_latencies.push(one_way_latency);
+                            one_way_latencies.push((one_way_latency, wall_ts));
                             round_trip_latencies.push(round_trip_latency);
                             i += 1;
                         } else {
@@ -1534,44 +1567,46 @@ port={}",
             } else {
                 let msg_count = client_config.msg_count.unwrap_or_default();
                 for i in 0..msg_count {
+                    let wall_ts = crate::results::MessageLatencyRecord::current_timestamp_ns();
                     let send_start = Instant::now();
                     let message = Message::new(i as u64, payload.clone(), MessageType::Request);
                     client_transport.send(&message).await?;
                     let one_way_latency = send_start.elapsed();
                     client_transport.receive().await?;
                     let round_trip_latency = send_start.elapsed();
-                    one_way_latencies.push(one_way_latency);
+                    one_way_latencies.push((one_way_latency, wall_ts));
                     round_trip_latencies.push(round_trip_latency);
                 }
             }
             client_transport.close().await?;
-            Ok::<(Vec<Duration>, Vec<Duration>), anyhow::Error>((
+            Ok::<(Vec<(Duration, u64)>, Vec<Duration>), anyhow::Error>((
                 one_way_latencies,
                 round_trip_latencies,
             ))
         };
 
-        // Execute client work with proper affinity using spawn_with_affinity
+        // Execute client work with proper affinity
         let (one_way_latencies, round_trip_latencies) =
             crate::utils::spawn_with_affinity(client_future, self.config.client_affinity).await?;
 
-        for (i, &one_way_latency) in one_way_latencies.iter().enumerate() {
-            one_way_metrics.record_message(self.config.message_size, Some(one_way_latency))?;
+        for (i, (one_way_latency, wall_ts)) in one_way_latencies.iter().enumerate() {
+            one_way_metrics.record_message(self.config.message_size, Some(*one_way_latency))?;
             if let Some(ref mut manager) = results_manager {
                 let record = crate::results::MessageLatencyRecord::new_combined(
                     i as u64,
                     self.mechanism,
                     self.config.message_size,
-                    one_way_latency,
+                    *one_way_latency,
                     round_trip_latencies[i],
+                    *wall_ts,
                 );
                 manager.write_streaming_record_direct(&record).await?;
             }
         }
 
-        for round_trip_latency in round_trip_latencies {
+        for round_trip_latency in &round_trip_latencies {
             round_trip_metrics
-                .record_message(self.config.message_size, Some(round_trip_latency))?;
+                .record_message(self.config.message_size, Some(*round_trip_latency))?;
         }
 
         // --- Cleanup ---
@@ -2617,6 +2652,228 @@ mod tests {
                 "Elapsed time {:?} exceeded relaxed macOS bound {:?}",
                 elapsed,
                 expected_max_duration
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_latency_file_line_valid() {
+        let (wall, lat) = super::parse_latency_file_line("1700000000000000000,42000").unwrap();
+        assert_eq!(wall, 1_700_000_000_000_000_000);
+        assert_eq!(lat, 42_000);
+    }
+
+    #[test]
+    fn test_parse_latency_file_line_zeros() {
+        let (wall, lat) = super::parse_latency_file_line("0,0").unwrap();
+        assert_eq!(wall, 0);
+        assert_eq!(lat, 0);
+    }
+
+    #[test]
+    fn test_parse_latency_file_line_missing_comma() {
+        let result = super::parse_latency_file_line("123456789");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("wall_send_ns,latency_ns"),
+            "Error should mention expected format, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_parse_latency_file_line_empty() {
+        assert!(super::parse_latency_file_line("").is_err());
+    }
+
+    #[test]
+    fn test_parse_latency_file_line_non_numeric_first() {
+        let result = super::parse_latency_file_line("abc,789");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("wall_send_ns"),
+            "Error should mention wall_send_ns, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_parse_latency_file_line_non_numeric_second() {
+        let result = super::parse_latency_file_line("123,xyz");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("latency_ns"),
+            "Error should mention latency_ns, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_parse_latency_file_line_extra_commas() {
+        // splitn(2, ',') treats "1,2,3" as ["1", "2,3"].
+        // "2,3" is not a valid u64, so this should fail.
+        let result = super::parse_latency_file_line("1,2,3");
+        assert!(result.is_err());
+    }
+
+    /// Exercises the one-way streaming path with per-message
+    /// streaming enabled (not combined mode), covering the
+    /// send_timestamp_ns capture in run_one_way_test.
+    #[tokio::test]
+    async fn test_one_way_streaming_captures_send_timestamp() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+
+        let args = Args {
+            mechanisms: vec![{
+                #[cfg(unix)]
+                {
+                    IpcMechanism::UnixDomainSocket
+                }
+                #[cfg(not(unix))]
+                {
+                    IpcMechanism::TcpSocket
+                }
+            }],
+            message_size: 64,
+            msg_count: 5,
+            duration: None,
+            concurrency: 1,
+            warmup_iterations: 0,
+            one_way: true,
+            round_trip: false,
+            include_first_message: true,
+            ..Default::default()
+        };
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let mechanism = args.mechanisms[0];
+        let runner = BenchmarkRunner::new(config, mechanism, args.clone());
+
+        let mut rm = crate::results::ResultsManager::new(None, None).unwrap();
+        rm.enable_per_message_streaming(&path).unwrap();
+
+        let before_ns = crate::results::MessageLatencyRecord::current_timestamp_ns();
+        let res = runner.run(Some(&mut rm)).await;
+        assert!(res.is_ok(), "one-way streaming run failed: {:?}", res.err());
+        let after_ns = crate::results::MessageLatencyRecord::current_timestamp_ns();
+        rm.finalize().await.unwrap();
+
+        let s = std::fs::read_to_string(&path).expect("read streaming file");
+        assert!(
+            s.contains("\"headings\""),
+            "Streaming output should have headings"
+        );
+        assert!(s.contains("\"data\""), "Streaming output should have data");
+
+        // Validate that recorded timestamps fall within the
+        // test execution window and are not all identical
+        // (which was the original bug).
+        let parsed: serde_json::Value = serde_json::from_str(&s).expect("valid JSON");
+        let data = parsed["data"].as_array().expect("data should be an array");
+        assert!(!data.is_empty(), "streaming output should contain records");
+        let timestamps: Vec<u64> = data
+            .iter()
+            .map(|row| row[0].as_u64().expect("timestamp_ns"))
+            .collect();
+        for &ts in &timestamps {
+            assert!(
+                ts >= before_ns && ts <= after_ns,
+                "timestamp {} outside test window [{}, {}]",
+                ts,
+                before_ns,
+                after_ns
+            );
+        }
+        if timestamps.len() > 1 {
+            let all_same = timestamps.windows(2).all(|w| w[0] == w[1]);
+            assert!(
+                !all_same,
+                "all timestamps are identical — \
+                 likely still capturing at record-creation time"
+            );
+        }
+    }
+
+    /// Exercises the round-trip streaming path with per-message
+    /// streaming enabled (not combined mode), covering the
+    /// send_timestamp_ns capture in run_round_trip_test.
+    #[tokio::test]
+    async fn test_round_trip_streaming_captures_send_timestamp() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+
+        let args = Args {
+            mechanisms: vec![{
+                #[cfg(unix)]
+                {
+                    IpcMechanism::UnixDomainSocket
+                }
+                #[cfg(not(unix))]
+                {
+                    IpcMechanism::TcpSocket
+                }
+            }],
+            message_size: 64,
+            msg_count: 5,
+            duration: None,
+            concurrency: 1,
+            warmup_iterations: 0,
+            one_way: false,
+            round_trip: true,
+            include_first_message: true,
+            ..Default::default()
+        };
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let mechanism = args.mechanisms[0];
+        let runner = BenchmarkRunner::new(config, mechanism, args.clone());
+
+        let mut rm = crate::results::ResultsManager::new(None, None).unwrap();
+        rm.enable_per_message_streaming(&path).unwrap();
+
+        let before_ns = crate::results::MessageLatencyRecord::current_timestamp_ns();
+        let res = runner.run(Some(&mut rm)).await;
+        assert!(
+            res.is_ok(),
+            "round-trip streaming run failed: {:?}",
+            res.err()
+        );
+        let after_ns = crate::results::MessageLatencyRecord::current_timestamp_ns();
+        rm.finalize().await.unwrap();
+
+        let s = std::fs::read_to_string(&path).expect("read streaming file");
+        assert!(
+            s.contains("\"headings\""),
+            "Streaming output should have headings"
+        );
+        assert!(s.contains("\"data\""), "Streaming output should have data");
+
+        // Validate that recorded timestamps fall within the
+        // test execution window and are not all identical.
+        let parsed: serde_json::Value = serde_json::from_str(&s).expect("valid JSON");
+        let data = parsed["data"].as_array().expect("data should be an array");
+        assert!(!data.is_empty(), "streaming output should contain records");
+        let timestamps: Vec<u64> = data
+            .iter()
+            .map(|row| row[0].as_u64().expect("timestamp_ns"))
+            .collect();
+        for &ts in &timestamps {
+            assert!(
+                ts >= before_ns && ts <= after_ns,
+                "timestamp {} outside test window [{}, {}]",
+                ts,
+                before_ns,
+                after_ns
+            );
+        }
+        if timestamps.len() > 1 {
+            let all_same = timestamps.windows(2).all(|w| w[0] == w[1]);
+            assert!(
+                !all_same,
+                "all timestamps are identical — \
+                 likely still capturing at record-creation time"
             );
         }
     }
