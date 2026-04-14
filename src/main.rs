@@ -1099,18 +1099,26 @@ fn run_standalone_server(args: Args) -> Result<()> {
         ));
     }
 
-    // Set up logging (simplified: stderr only for standalone server)
-    let log_level = match args.verbose {
-        0 => LevelFilter::INFO,
-        1 => LevelFilter::DEBUG,
-        _ => LevelFilter::TRACE,
-    };
+    // Defensive: --shm-direct requires --blocking (normally enforced by
+    // main() before this function is called, but guard here too).
+    if args.shm_direct && !args.blocking {
+        return Err(anyhow::anyhow!("--shm-direct requires --blocking mode"));
+    }
 
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_max_level(log_level)
-        .event_format(ColorizedFormatter)
-        .init();
+    // Set up logging (simplified: stderr only for standalone server)
+    if !args.quiet {
+        let log_level = match args.verbose {
+            0 => LevelFilter::INFO,
+            1 => LevelFilter::DEBUG,
+            _ => LevelFilter::TRACE,
+        };
+
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .with_max_level(log_level)
+            .event_format(ColorizedFormatter)
+            .init();
+    }
 
     // Set CPU affinity if specified
     if let Some(core) = args.server_affinity {
@@ -1294,9 +1302,9 @@ fn run_standalone_server_blocking_multi_accept_tcp(
         match listener.accept() {
             Ok((stream, peer_addr)) => {
                 info!("Accepted connection from {}", peer_addr);
-                if first_client_time.is_none() {
-                    first_client_time = Some(std::time::Instant::now());
-                }
+                // Reset grace timer on every new connection so multi-phase
+                // tests (one-way then round-trip) don't trigger premature exit.
+                first_client_time = Some(std::time::Instant::now());
                 // Accepted streams inherit non-blocking from the listener;
                 // set back to blocking for the handler thread.
                 stream
@@ -1313,7 +1321,10 @@ fn run_standalone_server_blocking_multi_accept_tcp(
                     let mut transport = BlockingTcpSocket::from_stream(stream);
                     match handle_client_connection(&mut transport, &handler_config) {
                         Ok(collector) => {
-                            metrics_clone.lock().unwrap().push(collector);
+                            metrics_clone
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .push(collector);
                         }
                         Err(e) => {
                             warn!("Handler error: {}", e);
@@ -1327,7 +1338,7 @@ fn run_standalone_server_blocking_multi_accept_tcp(
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 // No pending connection. Check if all handlers are done,
                 // but only after the grace period has elapsed since the
-                // first client connected.
+                // last client connected.
                 let grace_elapsed =
                     first_client_time.is_some_and(|t| t.elapsed() > accept_grace_period);
                 if grace_elapsed && !handles.is_empty() && handles.iter().all(|h| h.is_finished()) {
@@ -1347,7 +1358,7 @@ fn run_standalone_server_blocking_multi_accept_tcp(
         let _ = handle.join();
     }
 
-    let collectors = worker_metrics.lock().unwrap();
+    let collectors = worker_metrics.lock().unwrap_or_else(|e| e.into_inner());
     aggregate_and_print_server_metrics(&collectors, &config.percentiles);
 
     info!("Standalone server exiting cleanly.");
@@ -1393,9 +1404,9 @@ fn run_standalone_server_blocking_multi_accept_uds(
         match listener.accept() {
             Ok((stream, peer_addr)) => {
                 info!("Accepted UDS connection from {:?}", peer_addr);
-                if first_client_time.is_none() {
-                    first_client_time = Some(std::time::Instant::now());
-                }
+                // Reset grace timer on every new connection so multi-phase
+                // tests don't trigger premature exit.
+                first_client_time = Some(std::time::Instant::now());
                 // Accepted streams inherit non-blocking from the listener;
                 // set back to blocking for the handler thread.
                 stream
@@ -1409,7 +1420,10 @@ fn run_standalone_server_blocking_multi_accept_uds(
                     let mut transport = BlockingUnixDomainSocket::from_stream(stream);
                     match handle_client_connection(&mut transport, &handler_config) {
                         Ok(collector) => {
-                            metrics_clone.lock().unwrap().push(collector);
+                            metrics_clone
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .push(collector);
                         }
                         Err(e) => {
                             warn!("Handler error: {}", e);
@@ -1440,7 +1454,7 @@ fn run_standalone_server_blocking_multi_accept_uds(
         let _ = handle.join();
     }
 
-    let collectors = worker_metrics.lock().unwrap();
+    let collectors = worker_metrics.lock().unwrap_or_else(|e| e.into_inner());
     aggregate_and_print_server_metrics(&collectors, &config.percentiles);
 
     // Clean up socket file
@@ -1645,7 +1659,7 @@ async fn run_standalone_server_async_multi_accept_tcp(
                             let mut transport = BlockingTcpSocket::from_stream(std_stream);
                             match handle_client_connection(&mut transport, &handler_config) {
                                 Ok(collector) => {
-                                    metrics_clone.lock().unwrap().push(collector);
+                                    metrics_clone.lock().unwrap_or_else(|e| e.into_inner()).push(collector);
                                 }
                                 Err(e) => {
                                     warn!("Handler error: {}", e);
@@ -1684,7 +1698,7 @@ async fn run_standalone_server_async_multi_accept_tcp(
         let _ = result;
     }
 
-    let collectors = worker_metrics.lock().unwrap();
+    let collectors = worker_metrics.lock().unwrap_or_else(|e| e.into_inner());
     aggregate_and_print_server_metrics(&collectors, &config.percentiles);
 
     info!("Standalone server exiting cleanly.");
@@ -1740,7 +1754,7 @@ async fn run_standalone_server_async_multi_accept_uds(
                             let mut transport = BlockingUnixDomainSocket::from_stream(std_stream);
                             match handle_client_connection(&mut transport, &handler_config) {
                                 Ok(collector) => {
-                                    metrics_clone.lock().unwrap().push(collector);
+                                    metrics_clone.lock().unwrap_or_else(|e| e.into_inner()).push(collector);
                                 }
                                 Err(e) => {
                                     warn!("Handler error: {}", e);
@@ -1777,7 +1791,7 @@ async fn run_standalone_server_async_multi_accept_uds(
         let _ = result;
     }
 
-    let collectors = worker_metrics.lock().unwrap();
+    let collectors = worker_metrics.lock().unwrap_or_else(|e| e.into_inner());
     aggregate_and_print_server_metrics(&collectors, &config.percentiles);
 
     let _ = std::fs::remove_file(&transport_config.socket_path);
@@ -1803,18 +1817,26 @@ fn run_standalone_client(args: Args) -> Result<()> {
         ));
     }
 
-    // Set up logging
-    let log_level = match args.verbose {
-        0 => LevelFilter::INFO,
-        1 => LevelFilter::DEBUG,
-        _ => LevelFilter::TRACE,
-    };
+    // Defensive: --shm-direct requires --blocking (normally enforced by
+    // main() before this function is called, but guard here too).
+    if args.shm_direct && !args.blocking {
+        return Err(anyhow::anyhow!("--shm-direct requires --blocking mode"));
+    }
 
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_max_level(log_level)
-        .event_format(ColorizedFormatter)
-        .init();
+    // Set up logging
+    if !args.quiet {
+        let log_level = match args.verbose {
+            0 => LevelFilter::INFO,
+            1 => LevelFilter::DEBUG,
+            _ => LevelFilter::TRACE,
+        };
+
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .with_max_level(log_level)
+            .event_format(ColorizedFormatter)
+            .init();
+    }
 
     if let Some(core) = args.client_affinity {
         if let Err(e) = set_affinity(core) {
