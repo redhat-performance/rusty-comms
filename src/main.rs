@@ -1195,14 +1195,13 @@ fn run_standalone_server_blocking_single(
         MetricsCollector::new(Some(LatencyType::OneWay), config.percentiles.clone())?;
     let mut one_way_count = 0u64;
 
-    while let Ok(message) = transport.receive_blocking() {
+    while let Ok((message, receive_time_ns)) = transport.receive_blocking_timed() {
         if message.message_type == MessageType::Shutdown {
             debug!("Server received shutdown message, exiting");
             break;
         }
 
         if message.message_type == MessageType::OneWay && message.id != u64::MAX {
-            let receive_time_ns = get_monotonic_time_ns();
             let latency_ns = receive_time_ns.saturating_sub(message.timestamp);
             let latency = std::time::Duration::from_nanos(latency_ns);
             one_way_metrics.record_message(config.message_size, Some(latency))?;
@@ -1234,14 +1233,13 @@ fn handle_client_connection(
     let mut one_way_metrics =
         MetricsCollector::new(Some(LatencyType::OneWay), config.percentiles.clone())?;
 
-    while let Ok(message) = transport.receive_blocking() {
+    while let Ok((message, receive_time_ns)) = transport.receive_blocking_timed() {
         if message.message_type == MessageType::Shutdown {
             debug!("Handler received shutdown message");
             break;
         }
 
         if message.message_type == MessageType::OneWay && message.id != u64::MAX {
-            let receive_time_ns = get_monotonic_time_ns();
             let latency_ns = receive_time_ns.saturating_sub(message.timestamp);
             let latency = std::time::Duration::from_nanos(latency_ns);
             one_way_metrics.record_message(config.message_size, Some(latency))?;
