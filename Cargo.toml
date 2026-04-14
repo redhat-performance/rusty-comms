@@ -33,7 +33,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = ">=1.17, <1.21", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 num_cpus = "1.17"
-rand = "0.8"
+rand = "0.9"
 statistics = "0.4"
 hdrhistogram = "7.5"
 bincode = "1.3"
