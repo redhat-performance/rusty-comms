@@ -2100,6 +2100,10 @@ fn run_standalone_client_blocking_single(
             while start.elapsed() < test_duration {
                 msg.id = i;
                 msg.timestamp = get_monotonic_time_ns();
+                let send_wall_ns = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as u64;
                 let send_time = std::time::Instant::now();
                 transport.send_blocking(&msg)?;
                 let _response = transport.receive_blocking()?;
@@ -2112,6 +2116,7 @@ fn run_standalone_client_blocking_single(
                     config.message_size,
                     LatencyType::RoundTrip,
                     latency,
+                    send_wall_ns,
                 );
                 let _ = results_manager.stream_latency_record(&record);
 
@@ -2128,6 +2133,10 @@ fn run_standalone_client_blocking_single(
             for i in 0..msg_count {
                 msg.id = i as u64;
                 msg.timestamp = get_monotonic_time_ns();
+                let send_wall_ns = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as u64;
                 let send_time = std::time::Instant::now();
                 transport.send_blocking(&msg)?;
                 let _response = transport.receive_blocking()?;
@@ -2140,6 +2149,7 @@ fn run_standalone_client_blocking_single(
                     config.message_size,
                     LatencyType::RoundTrip,
                     latency,
+                    send_wall_ns,
                 );
                 let _ = results_manager.stream_latency_record(&record);
 
@@ -2583,6 +2593,10 @@ async fn run_standalone_client_async_single(
             while start.elapsed() < test_duration {
                 msg.id = i;
                 msg.timestamp = get_monotonic_time_ns();
+                let send_wall_ns = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as u64;
                 let send_time = std::time::Instant::now();
                 transport.send(&msg).await?;
                 let _response = transport.receive().await?;
@@ -2595,6 +2609,7 @@ async fn run_standalone_client_async_single(
                     config.message_size,
                     LatencyType::RoundTrip,
                     latency,
+                    send_wall_ns,
                 );
                 let _ = results_manager.stream_latency_record(&record);
 
@@ -2611,6 +2626,10 @@ async fn run_standalone_client_async_single(
             for i in 0..msg_count {
                 msg.id = i as u64;
                 msg.timestamp = get_monotonic_time_ns();
+                let send_wall_ns = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as u64;
                 let send_time = std::time::Instant::now();
                 transport.send(&msg).await?;
                 let _response = transport.receive().await?;
@@ -2623,6 +2642,7 @@ async fn run_standalone_client_async_single(
                     config.message_size,
                     LatencyType::RoundTrip,
                     latency,
+                    send_wall_ns,
                 );
                 let _ = results_manager.stream_latency_record(&record);
 
