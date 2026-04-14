@@ -1044,6 +1044,11 @@ fn effective_concurrency(mechanism: IpcMechanism, requested: usize) -> usize {
 /// Returns `Some(response)` for Request (-> Response) and Ping (-> Pong).
 /// Returns `None` for all other message types (OneWay, Shutdown, etc.),
 /// which the caller handles directly for control flow.
+///
+/// Response payloads are intentionally empty: the server echoes back only
+/// the message ID for correlation. This matches the existing benchmark
+/// runner's behavior and measures pure IPC round-trip latency without
+/// payload echo overhead.
 fn dispatch_server_message(msg: &Message) -> Option<Message> {
     match msg.message_type {
         MessageType::Request => Some(Message::new(msg.id, Vec::new(), MessageType::Response)),
@@ -1313,6 +1318,11 @@ fn run_standalone_server_blocking_multi_accept_tcp(
                 stream
                     .set_nodelay(true)
                     .context("Failed to set TCP_NODELAY")?;
+                // Apply socket buffer tuning to match normal transport behavior
+                let sock = socket2::Socket::from(stream);
+                let _ = sock.set_recv_buffer_size(transport_config.buffer_size);
+                let _ = sock.set_send_buffer_size(transport_config.buffer_size);
+                let stream: std::net::TcpStream = sock.into();
 
                 let metrics_clone = worker_metrics.clone();
                 let handler_config = config.clone();
@@ -1644,13 +1654,17 @@ async fn run_standalone_server_async_multi_accept_tcp(
                 match result {
                     Ok((stream, peer_addr)) => {
                         info!("Accepted connection from {}", peer_addr);
-                        if first_client_time.is_none() {
-                            first_client_time = Some(std::time::Instant::now());
-                        }
+                        // Reset grace timer on every new connection
+                        first_client_time = Some(std::time::Instant::now());
 
                         let std_stream = stream.into_std()?;
                         std_stream.set_nonblocking(false).context("Failed to set stream to blocking mode")?;
                         std_stream.set_nodelay(true).context("Failed to set TCP_NODELAY")?;
+                        // Apply socket buffer tuning to match normal transport behavior
+                        let sock = socket2::Socket::from(std_stream);
+                        let _ = sock.set_recv_buffer_size(transport_config.buffer_size);
+                        let _ = sock.set_send_buffer_size(transport_config.buffer_size);
+                        let std_stream: std::net::TcpStream = sock.into();
 
                         let metrics_clone = worker_metrics.clone();
                         let handler_config = config.clone();
@@ -1740,9 +1754,8 @@ async fn run_standalone_server_async_multi_accept_uds(
                 match result {
                     Ok((stream, peer_addr)) => {
                         info!("Accepted UDS connection from {:?}", peer_addr);
-                        if first_client_time.is_none() {
-                            first_client_time = Some(std::time::Instant::now());
-                        }
+                        // Reset grace timer on every new connection
+                        first_client_time = Some(std::time::Instant::now());
 
                         let std_stream = stream.into_std()?;
                         std_stream.set_nonblocking(false).context("Failed to set stream to blocking mode")?;
@@ -2172,11 +2185,12 @@ fn run_standalone_client_blocking_concurrent(
     let msg_count = config
         .msg_count
         .unwrap_or(ipc_benchmark::defaults::MSG_COUNT);
-    let messages_per_worker = msg_count / concurrency;
+    let base_messages_per_worker = msg_count / concurrency;
+    let remainder_messages = msg_count % concurrency;
 
     info!(
-        "Starting {} concurrent workers ({} messages each)...",
-        concurrency, messages_per_worker
+        "Starting {} concurrent workers (~{} messages each)...",
+        concurrency, base_messages_per_worker
     );
 
     let total_start = std::time::Instant::now();
@@ -2193,6 +2207,13 @@ fn run_standalone_client_blocking_concurrent(
                 let include_first = config.include_first_message;
                 let shm_direct = args.shm_direct;
                 let mech = mechanism;
+                // Last worker gets any remainder messages
+                let worker_msg_count = base_messages_per_worker
+                    + if worker_id == concurrency - 1 {
+                        remainder_messages
+                    } else {
+                        0
+                    };
 
                 std::thread::spawn(move || -> Result<PerformanceMetrics> {
                     let mut transport = BlockingTransportFactory::create(&mech, shm_direct)?;
@@ -2223,8 +2244,8 @@ fn run_standalone_client_blocking_concurrent(
                             c += 1;
                         }
                     } else {
-                        for i in 0..messages_per_worker {
-                            msg.id = (worker_id * messages_per_worker + i) as u64;
+                        for i in 0..worker_msg_count {
+                            msg.id = (worker_id * base_messages_per_worker + i) as u64;
                             msg.timestamp = get_monotonic_time_ns();
                             transport.send_blocking(&msg)?;
                             metrics.record_message(message_size, None)?;
@@ -2269,6 +2290,12 @@ fn run_standalone_client_blocking_concurrent(
                 let include_first = config.include_first_message;
                 let shm_direct = args.shm_direct;
                 let mech = mechanism;
+                let worker_msg_count = base_messages_per_worker
+                    + if worker_id == concurrency - 1 {
+                        remainder_messages
+                    } else {
+                        0
+                    };
 
                 std::thread::spawn(move || -> Result<PerformanceMetrics> {
                     let mut transport = BlockingTransportFactory::create(&mech, shm_direct)?;
@@ -2305,8 +2332,8 @@ fn run_standalone_client_blocking_concurrent(
                             i += 1;
                         }
                     } else {
-                        for i in 0..messages_per_worker {
-                            msg.id = (worker_id * messages_per_worker + i) as u64;
+                        for i in 0..worker_msg_count {
+                            msg.id = (worker_id * base_messages_per_worker + i) as u64;
                             msg.timestamp = get_monotonic_time_ns();
                             let send_time = std::time::Instant::now();
                             transport.send_blocking(&msg)?;
@@ -2639,11 +2666,12 @@ async fn run_standalone_client_async_concurrent(
     let msg_count = config
         .msg_count
         .unwrap_or(ipc_benchmark::defaults::MSG_COUNT);
-    let messages_per_worker = msg_count / concurrency;
+    let base_messages_per_worker = msg_count / concurrency;
+    let remainder_messages = msg_count % concurrency;
 
     info!(
-        "Starting {} concurrent async workers ({} messages each)...",
-        concurrency, messages_per_worker
+        "Starting {} concurrent async workers (~{} messages each)...",
+        concurrency, base_messages_per_worker
     );
 
     let total_start = std::time::Instant::now();
@@ -2659,6 +2687,12 @@ async fn run_standalone_client_async_concurrent(
             let send_delay = config.send_delay;
             let include_first = config.include_first_message;
             let mech = mechanism;
+            let worker_msg_count = base_messages_per_worker
+                + if worker_id == concurrency - 1 {
+                    remainder_messages
+                } else {
+                    0
+                };
 
             join_set.spawn(async move {
                 let mut transport = TransportFactory::create(&mech)?;
@@ -2689,8 +2723,8 @@ async fn run_standalone_client_async_concurrent(
                         c += 1;
                     }
                 } else {
-                    for i in 0..messages_per_worker {
-                        msg.id = (worker_id * messages_per_worker + i) as u64;
+                    for i in 0..worker_msg_count {
+                        msg.id = (worker_id * base_messages_per_worker + i) as u64;
                         msg.timestamp = get_monotonic_time_ns();
                         transport.send(&msg).await?;
                         metrics.record_message(message_size, None)?;
@@ -2728,6 +2762,12 @@ async fn run_standalone_client_async_concurrent(
             let send_delay = config.send_delay;
             let include_first = config.include_first_message;
             let mech = mechanism;
+            let worker_msg_count = base_messages_per_worker
+                + if worker_id == concurrency - 1 {
+                    remainder_messages
+                } else {
+                    0
+                };
 
             join_set.spawn(async move {
                 let mut transport = TransportFactory::create(&mech)?;
@@ -2763,8 +2803,8 @@ async fn run_standalone_client_async_concurrent(
                         i += 1;
                     }
                 } else {
-                    for i in 0..messages_per_worker {
-                        msg.id = (worker_id * messages_per_worker + i) as u64;
+                    for i in 0..worker_msg_count {
+                        msg.id = (worker_id * base_messages_per_worker + i) as u64;
                         msg.timestamp = get_monotonic_time_ns();
                         let send_time = std::time::Instant::now();
                         transport.send(&msg).await?;
