@@ -61,11 +61,15 @@ pub fn run_standalone_client(args: Args) -> Result<()> {
             _ => LevelFilter::TRACE,
         };
 
-        tracing_subscriber::fmt()
+        if tracing_subscriber::fmt()
             .with_writer(std::io::stderr)
             .with_max_level(log_level)
             .event_format(ColorizedFormatter)
-            .init();
+            .try_init()
+            .is_err()
+        {
+            eprintln!("Note: tracing subscriber already initialized, using existing configuration");
+        }
     }
 
     if let Some(core) = args.client_affinity {
@@ -1108,7 +1112,8 @@ pub async fn run_standalone_client_async_concurrent(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ipc::BlockingTransportFactory;
+    use crate::ipc::{BlockingTransport, BlockingTransportFactory};
+    use clap::Parser;
 
     /// Get a free TCP port by binding to port 0 and extracting the assigned port.
     fn get_free_port() -> u16 {
@@ -1150,5 +1155,1302 @@ mod tests {
         server_transport.close_blocking().unwrap();
 
         client_handle.join().unwrap();
+    }
+
+    /// Integration test: blocking TCP round-trip through client paths.
+    /// Exercises run_standalone_client_blocking_single round-trip loop.
+    #[test]
+    fn test_client_blocking_tcp_round_trip() {
+        use crate::ipc::BlockingTcpSocket;
+        use crate::standalone_server::handle_client_connection;
+
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+
+        let server_handle = std::thread::spawn(move || {
+            let listener = std::net::TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_nodelay(true).unwrap();
+            let mut transport = BlockingTcpSocket::from_stream(stream);
+            let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+            let config = BenchmarkConfig::from_args(&args).unwrap();
+            let _ = handle_client_connection(&mut transport, &config);
+            let _ = transport.close_blocking();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "--client",
+            "-m",
+            "tcp",
+            "--blocking",
+            "-i",
+            "100",
+            "-w",
+            "10",
+            "--round-trip",
+            "--port",
+            &port.to_string(),
+        ]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let mut results_manager =
+            crate::results_blocking::BlockingResultsManager::new(None, None).unwrap();
+
+        run_standalone_client_blocking_single(
+            args,
+            IpcMechanism::TcpSocket,
+            transport_config,
+            &mut results_manager,
+            &config,
+        )
+        .unwrap();
+
+        server_handle.join().unwrap();
+    }
+
+    /// Integration test: blocking TCP one-way through client paths.
+    #[test]
+    fn test_client_blocking_tcp_one_way() {
+        use crate::ipc::BlockingTcpSocket;
+        use crate::standalone_server::handle_client_connection;
+
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+
+        let server_handle = std::thread::spawn(move || {
+            let listener = std::net::TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_nodelay(true).unwrap();
+            let mut transport = BlockingTcpSocket::from_stream(stream);
+            let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+            let config = BenchmarkConfig::from_args(&args).unwrap();
+            let _ = handle_client_connection(&mut transport, &config);
+            let _ = transport.close_blocking();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "--client",
+            "-m",
+            "tcp",
+            "--blocking",
+            "-i",
+            "100",
+            "-w",
+            "10",
+            "--one-way",
+            "--port",
+            &port.to_string(),
+        ]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let mut results_manager =
+            crate::results_blocking::BlockingResultsManager::new(None, None).unwrap();
+
+        run_standalone_client_blocking_single(
+            args,
+            IpcMechanism::TcpSocket,
+            transport_config,
+            &mut results_manager,
+            &config,
+        )
+        .unwrap();
+
+        server_handle.join().unwrap();
+    }
+
+    /// Integration test: blocking TCP duration mode round-trip.
+    #[test]
+    fn test_client_blocking_tcp_duration_round_trip() {
+        use crate::ipc::BlockingTcpSocket;
+        use crate::standalone_server::handle_client_connection;
+
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+
+        let server_handle = std::thread::spawn(move || {
+            let listener = std::net::TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_nodelay(true).unwrap();
+            let mut transport = BlockingTcpSocket::from_stream(stream);
+            let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+            let config = BenchmarkConfig::from_args(&args).unwrap();
+            let _ = handle_client_connection(&mut transport, &config);
+            let _ = transport.close_blocking();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "--client",
+            "-m",
+            "tcp",
+            "--blocking",
+            "-d",
+            "200ms",
+            "-w",
+            "5",
+            "--round-trip",
+            "--port",
+            &port.to_string(),
+        ]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let mut results_manager =
+            crate::results_blocking::BlockingResultsManager::new(None, None).unwrap();
+
+        run_standalone_client_blocking_single(
+            args,
+            IpcMechanism::TcpSocket,
+            transport_config,
+            &mut results_manager,
+            &config,
+        )
+        .unwrap();
+
+        server_handle.join().unwrap();
+    }
+
+    /// Integration test: blocking TCP concurrent round-trip.
+    #[test]
+    fn test_client_blocking_tcp_concurrent_round_trip() {
+        use crate::ipc::BlockingTcpSocket;
+        use crate::standalone_server::handle_client_connection;
+
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+        let num_clients = 2usize;
+
+        let server_handle = std::thread::spawn(move || {
+            let listener = std::net::TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
+            let mut handles = Vec::new();
+            for _ in 0..num_clients {
+                let (stream, _) = listener.accept().unwrap();
+                stream.set_nodelay(true).unwrap();
+                let handle = std::thread::spawn(move || {
+                    let mut transport = BlockingTcpSocket::from_stream(stream);
+                    let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+                    let config = BenchmarkConfig::from_args(&args).unwrap();
+                    let _ = handle_client_connection(&mut transport, &config);
+                    let _ = transport.close_blocking();
+                });
+                handles.push(handle);
+            }
+            for h in handles {
+                h.join().unwrap();
+            }
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "--client",
+            "-m",
+            "tcp",
+            "--blocking",
+            "-i",
+            "100",
+            "-w",
+            "5",
+            "--round-trip",
+            "-c",
+            "2",
+            "--port",
+            &port.to_string(),
+        ]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let mut results_manager =
+            crate::results_blocking::BlockingResultsManager::new(None, None).unwrap();
+
+        run_standalone_client_blocking_concurrent(
+            args,
+            IpcMechanism::TcpSocket,
+            transport_config,
+            &mut results_manager,
+            &config,
+            num_clients,
+        )
+        .unwrap();
+
+        server_handle.join().unwrap();
+    }
+
+    /// Test: effective_concurrency forces SHM to 1 (via client dispatch).
+    #[test]
+    fn test_client_concurrency_dispatch() {
+        use crate::standalone_server::effective_concurrency;
+
+        assert_eq!(effective_concurrency(IpcMechanism::TcpSocket, 4), 4);
+        assert_eq!(effective_concurrency(IpcMechanism::SharedMemory, 4), 1);
+    }
+
+    /// Test: connect_async_with_retry succeeds when server is available.
+    #[tokio::test]
+    async fn test_connect_async_with_retry_succeeds() {
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+
+        // Start server first
+        let server_handle = std::thread::spawn(move || {
+            let mut transport =
+                BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+            let config = TransportConfig {
+                host: "127.0.0.1".to_string(),
+                port,
+                ..Default::default()
+            };
+            transport.start_server_blocking(&config).unwrap();
+            let _ = transport.receive_blocking();
+            transport.close_blocking().unwrap();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let mut transport = crate::ipc::TransportFactory::create(&IpcMechanism::TcpSocket).unwrap();
+        connect_async_with_retry(&mut transport, &transport_config)
+            .await
+            .unwrap();
+        let _ = transport.close().await;
+
+        server_handle.join().unwrap();
+    }
+
+    /// Test: async client single round-trip path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_client_async_single_round_trip() {
+        use crate::ipc::BlockingTcpSocket;
+        use crate::standalone_server::handle_client_connection;
+
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+
+        let server_handle = std::thread::spawn(move || {
+            let listener = std::net::TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_nodelay(true).unwrap();
+            let mut transport = BlockingTcpSocket::from_stream(stream);
+            let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+            let config = BenchmarkConfig::from_args(&args).unwrap();
+            let _ = handle_client_connection(&mut transport, &config);
+            let _ = transport.close_blocking();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "--client",
+            "-m",
+            "tcp",
+            "-i",
+            "50",
+            "-w",
+            "5",
+            "--round-trip",
+            "--port",
+            &port.to_string(),
+        ]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let mut results_manager =
+            crate::results_blocking::BlockingResultsManager::new(None, None).unwrap();
+
+        run_standalone_client_async_single(
+            IpcMechanism::TcpSocket,
+            transport_config,
+            &mut results_manager,
+            &config,
+        )
+        .await
+        .unwrap();
+
+        server_handle.join().unwrap();
+    }
+
+    /// Test: async client single one-way path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_client_async_single_one_way() {
+        use crate::ipc::BlockingTcpSocket;
+        use crate::standalone_server::handle_client_connection;
+
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+
+        let server_handle = std::thread::spawn(move || {
+            let listener = std::net::TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_nodelay(true).unwrap();
+            let mut transport = BlockingTcpSocket::from_stream(stream);
+            let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+            let config = BenchmarkConfig::from_args(&args).unwrap();
+            let _ = handle_client_connection(&mut transport, &config);
+            let _ = transport.close_blocking();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "--client",
+            "-m",
+            "tcp",
+            "-i",
+            "50",
+            "-w",
+            "5",
+            "--one-way",
+            "--port",
+            &port.to_string(),
+        ]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let mut results_manager =
+            crate::results_blocking::BlockingResultsManager::new(None, None).unwrap();
+
+        run_standalone_client_async_single(
+            IpcMechanism::TcpSocket,
+            transport_config,
+            &mut results_manager,
+            &config,
+        )
+        .await
+        .unwrap();
+
+        server_handle.join().unwrap();
+    }
+
+    /// Test: async client concurrent round-trip path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_client_async_concurrent_round_trip() {
+        use crate::ipc::BlockingTcpSocket;
+        use crate::standalone_server::handle_client_connection;
+
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+        let num_clients = 2usize;
+
+        let server_handle = std::thread::spawn(move || {
+            let listener = std::net::TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
+            let mut handles = Vec::new();
+            for _ in 0..num_clients {
+                let (stream, _) = listener.accept().unwrap();
+                stream.set_nodelay(true).unwrap();
+                let handle = std::thread::spawn(move || {
+                    let mut transport = BlockingTcpSocket::from_stream(stream);
+                    let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+                    let config = BenchmarkConfig::from_args(&args).unwrap();
+                    let _ = handle_client_connection(&mut transport, &config);
+                    let _ = transport.close_blocking();
+                });
+                handles.push(handle);
+            }
+            for h in handles {
+                h.join().unwrap();
+            }
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "--client",
+            "-m",
+            "tcp",
+            "-i",
+            "50",
+            "-w",
+            "5",
+            "--round-trip",
+            "--port",
+            &port.to_string(),
+        ]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let mut results_manager =
+            crate::results_blocking::BlockingResultsManager::new(None, None).unwrap();
+
+        run_standalone_client_async_concurrent(
+            IpcMechanism::TcpSocket,
+            transport_config,
+            &mut results_manager,
+            &config,
+            num_clients,
+        )
+        .await
+        .unwrap();
+
+        server_handle.join().unwrap();
+    }
+
+    /// Test: blocking client duration mode one-way.
+    #[test]
+    fn test_client_blocking_tcp_duration_one_way() {
+        use crate::ipc::BlockingTcpSocket;
+        use crate::standalone_server::handle_client_connection;
+
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+
+        let server_handle = std::thread::spawn(move || {
+            let listener = std::net::TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_nodelay(true).unwrap();
+            let mut transport = BlockingTcpSocket::from_stream(stream);
+            let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+            let config = BenchmarkConfig::from_args(&args).unwrap();
+            let _ = handle_client_connection(&mut transport, &config);
+            let _ = transport.close_blocking();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "--client",
+            "-m",
+            "tcp",
+            "--blocking",
+            "-d",
+            "200ms",
+            "-w",
+            "5",
+            "--one-way",
+            "--port",
+            &port.to_string(),
+        ]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let mut results_manager =
+            crate::results_blocking::BlockingResultsManager::new(None, None).unwrap();
+
+        run_standalone_client_blocking_single(
+            args,
+            IpcMechanism::TcpSocket,
+            transport_config,
+            &mut results_manager,
+            &config,
+        )
+        .unwrap();
+
+        server_handle.join().unwrap();
+    }
+
+    /// Test: blocking concurrent one-way.
+    #[test]
+    fn test_client_blocking_tcp_concurrent_one_way() {
+        use crate::ipc::BlockingTcpSocket;
+        use crate::standalone_server::handle_client_connection;
+
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+        let num_clients = 2usize;
+
+        let server_handle = std::thread::spawn(move || {
+            let listener = std::net::TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
+            let mut handles = Vec::new();
+            for _ in 0..num_clients {
+                let (stream, _) = listener.accept().unwrap();
+                stream.set_nodelay(true).unwrap();
+                let handle = std::thread::spawn(move || {
+                    let mut transport = BlockingTcpSocket::from_stream(stream);
+                    let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+                    let config = BenchmarkConfig::from_args(&args).unwrap();
+                    let _ = handle_client_connection(&mut transport, &config);
+                    let _ = transport.close_blocking();
+                });
+                handles.push(handle);
+            }
+            for h in handles {
+                h.join().unwrap();
+            }
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "--client",
+            "-m",
+            "tcp",
+            "--blocking",
+            "-i",
+            "100",
+            "-w",
+            "5",
+            "--one-way",
+            "-c",
+            "2",
+            "--port",
+            &port.to_string(),
+        ]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let mut results_manager =
+            crate::results_blocking::BlockingResultsManager::new(None, None).unwrap();
+
+        run_standalone_client_blocking_concurrent(
+            args,
+            IpcMechanism::TcpSocket,
+            transport_config,
+            &mut results_manager,
+            &config,
+            num_clients,
+        )
+        .unwrap();
+
+        server_handle.join().unwrap();
+    }
+
+    /// Test: async client duration round-trip.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_client_async_duration_round_trip() {
+        use crate::ipc::BlockingTcpSocket;
+        use crate::standalone_server::handle_client_connection;
+
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+
+        let server_handle = std::thread::spawn(move || {
+            let listener = std::net::TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_nodelay(true).unwrap();
+            let mut transport = BlockingTcpSocket::from_stream(stream);
+            let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+            let config = BenchmarkConfig::from_args(&args).unwrap();
+            let _ = handle_client_connection(&mut transport, &config);
+            let _ = transport.close_blocking();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "--client",
+            "-m",
+            "tcp",
+            "-d",
+            "200ms",
+            "-w",
+            "5",
+            "--round-trip",
+            "--port",
+            &port.to_string(),
+        ]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let mut results_manager =
+            crate::results_blocking::BlockingResultsManager::new(None, None).unwrap();
+
+        run_standalone_client_async_single(
+            IpcMechanism::TcpSocket,
+            transport_config,
+            &mut results_manager,
+            &config,
+        )
+        .await
+        .unwrap();
+
+        server_handle.join().unwrap();
+    }
+
+    /// Test: async client duration one-way.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_client_async_duration_one_way() {
+        use crate::ipc::BlockingTcpSocket;
+        use crate::standalone_server::handle_client_connection;
+
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+
+        let server_handle = std::thread::spawn(move || {
+            let listener = std::net::TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_nodelay(true).unwrap();
+            let mut transport = BlockingTcpSocket::from_stream(stream);
+            let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+            let config = BenchmarkConfig::from_args(&args).unwrap();
+            let _ = handle_client_connection(&mut transport, &config);
+            let _ = transport.close_blocking();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "--client",
+            "-m",
+            "tcp",
+            "-d",
+            "200ms",
+            "-w",
+            "5",
+            "--one-way",
+            "--port",
+            &port.to_string(),
+        ]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let mut results_manager =
+            crate::results_blocking::BlockingResultsManager::new(None, None).unwrap();
+
+        run_standalone_client_async_single(
+            IpcMechanism::TcpSocket,
+            transport_config,
+            &mut results_manager,
+            &config,
+        )
+        .await
+        .unwrap();
+
+        server_handle.join().unwrap();
+    }
+
+    /// Test: async concurrent one-way.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_client_async_concurrent_one_way() {
+        use crate::ipc::BlockingTcpSocket;
+        use crate::standalone_server::handle_client_connection;
+
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+        let num_clients = 2usize;
+
+        let server_handle = std::thread::spawn(move || {
+            let listener = std::net::TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
+            let mut handles = Vec::new();
+            for _ in 0..num_clients {
+                let (stream, _) = listener.accept().unwrap();
+                stream.set_nodelay(true).unwrap();
+                let handle = std::thread::spawn(move || {
+                    let mut transport = BlockingTcpSocket::from_stream(stream);
+                    let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+                    let config = BenchmarkConfig::from_args(&args).unwrap();
+                    let _ = handle_client_connection(&mut transport, &config);
+                    let _ = transport.close_blocking();
+                });
+                handles.push(handle);
+            }
+            for h in handles {
+                h.join().unwrap();
+            }
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "--client",
+            "-m",
+            "tcp",
+            "-i",
+            "50",
+            "-w",
+            "5",
+            "--one-way",
+            "--port",
+            &port.to_string(),
+        ]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let mut results_manager =
+            crate::results_blocking::BlockingResultsManager::new(None, None).unwrap();
+
+        run_standalone_client_async_concurrent(
+            IpcMechanism::TcpSocket,
+            transport_config,
+            &mut results_manager,
+            &config,
+            num_clients,
+        )
+        .await
+        .unwrap();
+
+        server_handle.join().unwrap();
+    }
+
+    /// Test: run_standalone_client top-level dispatch (TCP blocking).
+    /// Exercises the full entry point including logging init, affinity
+    /// check, shm-direct guard, ResultsManager setup, and dispatch.
+    #[test]
+    fn test_run_standalone_client_full_dispatch() {
+        use crate::ipc::BlockingTcpSocket;
+        use crate::standalone_server::handle_client_connection;
+
+        let port = get_free_port();
+
+        let server_handle = std::thread::spawn(move || {
+            let listener = std::net::TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_nodelay(true).unwrap();
+            let mut transport = BlockingTcpSocket::from_stream(stream);
+            let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+            let config = BenchmarkConfig::from_args(&args).unwrap();
+            let _ = handle_client_connection(&mut transport, &config);
+            let _ = transport.close_blocking();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "--client",
+            "-m",
+            "tcp",
+            "--blocking",
+            "-i",
+            "50",
+            "-w",
+            "5",
+            "--round-trip",
+            "--port",
+            &port.to_string(),
+        ]);
+        run_standalone_client(args).unwrap();
+
+        server_handle.join().unwrap();
+    }
+
+    /// Test: blocking client with --send-delay exercises delay branches.
+    #[test]
+    fn test_client_blocking_with_send_delay() {
+        use crate::ipc::BlockingTcpSocket;
+        use crate::standalone_server::handle_client_connection;
+
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+
+        let server_handle = std::thread::spawn(move || {
+            let listener = std::net::TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_nodelay(true).unwrap();
+            let mut transport = BlockingTcpSocket::from_stream(stream);
+            let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+            let config = BenchmarkConfig::from_args(&args).unwrap();
+            let _ = handle_client_connection(&mut transport, &config);
+            let _ = transport.close_blocking();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "--client",
+            "-m",
+            "tcp",
+            "--blocking",
+            "-i",
+            "5",
+            "-w",
+            "2",
+            "--round-trip",
+            "--send-delay",
+            "1ms",
+            "--port",
+            &port.to_string(),
+        ]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let mut results_manager =
+            crate::results_blocking::BlockingResultsManager::new(None, None).unwrap();
+
+        run_standalone_client_blocking_single(
+            args,
+            IpcMechanism::TcpSocket,
+            transport_config,
+            &mut results_manager,
+            &config,
+        )
+        .unwrap();
+
+        server_handle.join().unwrap();
+    }
+
+    /// Test: blocking client with streaming JSON output enabled.
+    #[test]
+    fn test_client_blocking_with_streaming_output() {
+        use crate::ipc::BlockingTcpSocket;
+        use crate::standalone_server::handle_client_connection;
+
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+
+        let server_handle = std::thread::spawn(move || {
+            let listener = std::net::TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_nodelay(true).unwrap();
+            let mut transport = BlockingTcpSocket::from_stream(stream);
+            let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+            let config = BenchmarkConfig::from_args(&args).unwrap();
+            let _ = handle_client_connection(&mut transport, &config);
+            let _ = transport.close_blocking();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let streaming_path =
+            std::env::temp_dir().join(format!("test_streaming_{}.json", std::process::id()));
+
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "--client",
+            "-m",
+            "tcp",
+            "--blocking",
+            "-i",
+            "10",
+            "-w",
+            "2",
+            "--round-trip",
+            "--port",
+            &port.to_string(),
+        ]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let mut results_manager =
+            crate::results_blocking::BlockingResultsManager::new(None, None).unwrap();
+
+        // Enable streaming
+        results_manager
+            .enable_per_message_streaming(&streaming_path)
+            .unwrap();
+
+        run_standalone_client_blocking_single(
+            args,
+            IpcMechanism::TcpSocket,
+            transport_config,
+            &mut results_manager,
+            &config,
+        )
+        .unwrap();
+
+        results_manager.finalize().unwrap();
+
+        // Verify streaming file was created and has content
+        let contents = std::fs::read_to_string(&streaming_path).unwrap();
+        assert!(!contents.is_empty(), "Streaming file should have content");
+        assert!(
+            contents.contains("round_trip_latency_ns"),
+            "Streaming file should contain latency data"
+        );
+
+        let _ = std::fs::remove_file(&streaming_path);
+        server_handle.join().unwrap();
+    }
+
+    /// Test: blocking concurrent duration-mode one-way.
+    #[test]
+    fn test_client_blocking_concurrent_duration_one_way() {
+        use crate::ipc::BlockingTcpSocket;
+        use crate::standalone_server::handle_client_connection;
+
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+        let num_clients = 2usize;
+
+        let server_handle = std::thread::spawn(move || {
+            let listener = std::net::TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
+            let mut handles = Vec::new();
+            for _ in 0..num_clients {
+                let (stream, _) = listener.accept().unwrap();
+                stream.set_nodelay(true).unwrap();
+                let handle = std::thread::spawn(move || {
+                    let mut transport = BlockingTcpSocket::from_stream(stream);
+                    let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+                    let config = BenchmarkConfig::from_args(&args).unwrap();
+                    let _ = handle_client_connection(&mut transport, &config);
+                    let _ = transport.close_blocking();
+                });
+                handles.push(handle);
+            }
+            for h in handles {
+                h.join().unwrap();
+            }
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "--client",
+            "-m",
+            "tcp",
+            "--blocking",
+            "-d",
+            "200ms",
+            "-w",
+            "2",
+            "--one-way",
+            "-c",
+            "2",
+            "--port",
+            &port.to_string(),
+        ]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let mut results_manager =
+            crate::results_blocking::BlockingResultsManager::new(None, None).unwrap();
+
+        run_standalone_client_blocking_concurrent(
+            args,
+            IpcMechanism::TcpSocket,
+            transport_config,
+            &mut results_manager,
+            &config,
+            num_clients,
+        )
+        .unwrap();
+
+        server_handle.join().unwrap();
+    }
+
+    /// Test: async concurrent duration-mode one-way.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_client_async_concurrent_duration_one_way() {
+        use crate::ipc::BlockingTcpSocket;
+        use crate::standalone_server::handle_client_connection;
+
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+        let num_clients = 2usize;
+
+        let server_handle = std::thread::spawn(move || {
+            let listener = std::net::TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
+            let mut handles = Vec::new();
+            for _ in 0..num_clients {
+                let (stream, _) = listener.accept().unwrap();
+                stream.set_nodelay(true).unwrap();
+                let handle = std::thread::spawn(move || {
+                    let mut transport = BlockingTcpSocket::from_stream(stream);
+                    let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+                    let config = BenchmarkConfig::from_args(&args).unwrap();
+                    let _ = handle_client_connection(&mut transport, &config);
+                    let _ = transport.close_blocking();
+                });
+                handles.push(handle);
+            }
+            for h in handles {
+                h.join().unwrap();
+            }
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "--client",
+            "-m",
+            "tcp",
+            "-d",
+            "200ms",
+            "-w",
+            "2",
+            "--one-way",
+            "--port",
+            &port.to_string(),
+        ]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let mut results_manager =
+            crate::results_blocking::BlockingResultsManager::new(None, None).unwrap();
+
+        run_standalone_client_async_concurrent(
+            IpcMechanism::TcpSocket,
+            transport_config,
+            &mut results_manager,
+            &config,
+            num_clients,
+        )
+        .await
+        .unwrap();
+
+        server_handle.join().unwrap();
+    }
+
+    /// Test: run_standalone_client rejects 'all' mechanism.
+    #[test]
+    fn test_run_standalone_client_rejects_all_via_dispatch() {
+        let args = Args::parse_from(["ipc-benchmark", "--client", "-m", "all"]);
+        let result = run_standalone_client(args);
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("Cannot use 'all'"),
+            "Should reject 'all' mechanism"
+        );
+    }
+
+    /// Test: run_standalone_client rejects --shm-direct without --blocking.
+    #[test]
+    fn test_run_standalone_client_rejects_shm_direct() {
+        let args = Args::parse_from(["ipc-benchmark", "--client", "-m", "shm", "--shm-direct"]);
+        let result = run_standalone_client(args);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("--shm-direct requires --blocking"),
+            "Should reject shm-direct without blocking"
+        );
+    }
+
+    /// Test: blocking client with send_delay on one-way path.
+    #[test]
+    fn test_client_blocking_one_way_with_send_delay() {
+        use crate::ipc::BlockingTcpSocket;
+        use crate::standalone_server::handle_client_connection;
+
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+
+        let server_handle = std::thread::spawn(move || {
+            let listener = std::net::TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_nodelay(true).unwrap();
+            let mut transport = BlockingTcpSocket::from_stream(stream);
+            let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+            let config = BenchmarkConfig::from_args(&args).unwrap();
+            let _ = handle_client_connection(&mut transport, &config);
+            let _ = transport.close_blocking();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "--client",
+            "-m",
+            "tcp",
+            "--blocking",
+            "-i",
+            "5",
+            "-w",
+            "2",
+            "--one-way",
+            "--send-delay",
+            "1ms",
+            "--port",
+            &port.to_string(),
+        ]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let mut results_manager =
+            crate::results_blocking::BlockingResultsManager::new(None, None).unwrap();
+
+        run_standalone_client_blocking_single(
+            args,
+            IpcMechanism::TcpSocket,
+            transport_config,
+            &mut results_manager,
+            &config,
+        )
+        .unwrap();
+
+        server_handle.join().unwrap();
+    }
+
+    /// Test: blocking client with combined streaming (both one-way and round-trip).
+    #[test]
+    fn test_client_blocking_combined_streaming() {
+        use crate::ipc::BlockingTcpSocket;
+        use crate::standalone_server::handle_client_connection;
+
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+
+        let server_handle = std::thread::spawn(move || {
+            let listener = std::net::TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_nodelay(true).unwrap();
+            let mut transport = BlockingTcpSocket::from_stream(stream);
+            let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+            let config = BenchmarkConfig::from_args(&args).unwrap();
+            let _ = handle_client_connection(&mut transport, &config);
+            let _ = transport.close_blocking();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let streaming_path = std::env::temp_dir().join(format!(
+            "test_combined_streaming_{}.json",
+            std::process::id()
+        ));
+
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "--client",
+            "-m",
+            "tcp",
+            "--blocking",
+            "-i",
+            "10",
+            "-w",
+            "2",
+            "--port",
+            &port.to_string(),
+        ]);
+        // Default: both one-way and round-trip enabled
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        assert!(
+            config.one_way && config.round_trip,
+            "Both modes should be enabled by default"
+        );
+
+        let mut results_manager =
+            crate::results_blocking::BlockingResultsManager::new(None, None).unwrap();
+        results_manager
+            .enable_combined_streaming(&streaming_path, true)
+            .unwrap();
+
+        // Only run round-trip since server expects request/response
+        // (Combined streaming setup is what we're testing)
+        run_standalone_client_blocking_single(
+            args,
+            IpcMechanism::TcpSocket,
+            transport_config,
+            &mut results_manager,
+            &config,
+        )
+        .unwrap();
+
+        results_manager.finalize().unwrap();
+
+        let _ = std::fs::remove_file(&streaming_path);
+        server_handle.join().unwrap();
+    }
+
+    /// Test: blocking client with CSV streaming output.
+    #[test]
+    fn test_client_blocking_csv_streaming() {
+        use crate::ipc::BlockingTcpSocket;
+        use crate::standalone_server::handle_client_connection;
+
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+
+        let server_handle = std::thread::spawn(move || {
+            let listener = std::net::TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_nodelay(true).unwrap();
+            let mut transport = BlockingTcpSocket::from_stream(stream);
+            let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+            let config = BenchmarkConfig::from_args(&args).unwrap();
+            let _ = handle_client_connection(&mut transport, &config);
+            let _ = transport.close_blocking();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let csv_path =
+            std::env::temp_dir().join(format!("test_csv_streaming_{}.csv", std::process::id()));
+
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "--client",
+            "-m",
+            "tcp",
+            "--blocking",
+            "-i",
+            "10",
+            "-w",
+            "2",
+            "--round-trip",
+            "--port",
+            &port.to_string(),
+        ]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+        let mut results_manager =
+            crate::results_blocking::BlockingResultsManager::new(None, None).unwrap();
+        results_manager.enable_csv_streaming(&csv_path).unwrap();
+
+        run_standalone_client_blocking_single(
+            args,
+            IpcMechanism::TcpSocket,
+            transport_config,
+            &mut results_manager,
+            &config,
+        )
+        .unwrap();
+
+        results_manager.finalize().unwrap();
+
+        let contents = std::fs::read_to_string(&csv_path).unwrap();
+        assert!(
+            contents.contains("round_trip_latency_ns"),
+            "CSV should have latency column"
+        );
+
+        let _ = std::fs::remove_file(&csv_path);
+        server_handle.join().unwrap();
     }
 }

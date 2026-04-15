@@ -168,11 +168,15 @@ pub fn run_standalone_server(args: Args) -> Result<()> {
             _ => LevelFilter::TRACE,
         };
 
-        tracing_subscriber::fmt()
+        if tracing_subscriber::fmt()
             .with_writer(std::io::stderr)
             .with_max_level(log_level)
             .event_format(ColorizedFormatter)
-            .init();
+            .try_init()
+            .is_err()
+        {
+            eprintln!("Note: tracing subscriber already initialized, using existing configuration");
+        }
     }
 
     // Set CPU affinity if specified
@@ -2004,6 +2008,1019 @@ mod tests {
             assert_eq!(resp.id, i * 2 + 1);
             assert_eq!(resp.message_type, MessageType::Response);
         }
+
+        let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+        let _ = transport.send_blocking(&shutdown);
+        transport.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
+
+    /// Test: run_standalone_server_blocking_multi_accept_tcp accepts
+    /// multiple clients and aggregates metrics.
+    #[test]
+    fn test_multi_accept_tcp_server_direct() {
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+        let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+
+        let tc = transport_config.clone();
+        let cfg = config.clone();
+        let server_handle = std::thread::spawn(move || {
+            run_standalone_server_blocking_multi_accept_tcp(&tc, &cfg).unwrap();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        // Connect 2 clients, send messages, shutdown
+        let mut handles = Vec::new();
+        for worker in 0..2u64 {
+            let tc = transport_config.clone();
+            let h = std::thread::spawn(move || {
+                let mut transport =
+                    BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+                crate::standalone_server::connect_blocking_with_retry(&mut transport, &tc).unwrap();
+                for i in 0..5u64 {
+                    let msg = Message::new(worker * 100 + i, vec![0u8; 64], MessageType::Request);
+                    transport.send_blocking(&msg).unwrap();
+                    let resp = transport.receive_blocking().unwrap();
+                    assert_eq!(resp.message_type, MessageType::Response);
+                }
+                let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+                let _ = transport.send_blocking(&shutdown);
+                transport.close_blocking().unwrap();
+            });
+            handles.push(h);
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+        server_handle.join().unwrap();
+    }
+
+    /// Test: run_standalone_server_blocking_single handles single client.
+    #[test]
+    fn test_single_server_direct() {
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+        let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64", "--blocking"]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+
+        let tc = transport_config.clone();
+        let cfg = config.clone();
+        let a = args.clone();
+        let server_handle = std::thread::spawn(move || {
+            run_standalone_server_blocking_single(&a, IpcMechanism::TcpSocket, &tc, &cfg).unwrap();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        let mut transport =
+            BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+        connect_blocking_with_retry(&mut transport, &transport_config).unwrap();
+
+        for i in 0..5u64 {
+            let msg = Message::new(i, vec![0u8; 64], MessageType::OneWay);
+            transport.send_blocking(&msg).unwrap();
+        }
+
+        let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+        let _ = transport.send_blocking(&shutdown);
+        transport.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
+
+    /// Test: run_standalone_server_blocking dispatches correctly.
+    #[test]
+    fn test_server_blocking_dispatch() {
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "-m",
+            "tcp",
+            "-s",
+            "64",
+            "--blocking",
+            "--port",
+            &port.to_string(),
+        ]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+
+        let a = args.clone();
+        let tc = transport_config.clone();
+        let cfg = config.clone();
+        let server_handle = std::thread::spawn(move || {
+            run_standalone_server_blocking(&a, IpcMechanism::TcpSocket, &tc, &cfg).unwrap();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        let mut transport =
+            BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+        connect_blocking_with_retry(&mut transport, &transport_config).unwrap();
+
+        let msg = Message::new(0, vec![0u8; 64], MessageType::Request);
+        transport.send_blocking(&msg).unwrap();
+        let resp = transport.receive_blocking().unwrap();
+        assert_eq!(resp.message_type, MessageType::Response);
+
+        let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+        let _ = transport.send_blocking(&shutdown);
+        transport.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
+
+    /// Test: aggregate_and_print_server_metrics with real handler data.
+    #[test]
+    fn test_aggregate_server_metrics_from_handlers() {
+        let mut c1 = MetricsCollector::new(
+            Some(crate::metrics::LatencyType::OneWay),
+            vec![50.0, 95.0, 99.0],
+        )
+        .unwrap();
+        for _ in 0..10 {
+            c1.record_message(64, Some(std::time::Duration::from_micros(50)))
+                .unwrap();
+        }
+
+        let mut c2 = MetricsCollector::new(
+            Some(crate::metrics::LatencyType::OneWay),
+            vec![50.0, 95.0, 99.0],
+        )
+        .unwrap();
+        for _ in 0..10 {
+            c2.record_message(64, Some(std::time::Duration::from_micros(100)))
+                .unwrap();
+        }
+
+        // Should aggregate 20 total messages across 2 collectors
+        aggregate_and_print_server_metrics(&[c1, c2], &[50.0, 95.0, 99.0]);
+    }
+
+    /// Test: print_server_one_way_latency with data.
+    #[test]
+    fn test_print_server_one_way_latency_with_data() {
+        let mut metrics = MetricsCollector::new(
+            Some(crate::metrics::LatencyType::OneWay),
+            vec![50.0, 95.0, 99.0],
+        )
+        .unwrap();
+        for _ in 0..5 {
+            metrics
+                .record_message(64, Some(std::time::Duration::from_micros(75)))
+                .unwrap();
+        }
+        // Should print without panic
+        print_server_one_way_latency(5, &metrics);
+    }
+
+    /// Test: print_server_one_way_latency with zero count.
+    #[test]
+    fn test_print_server_one_way_latency_zero() {
+        let metrics = MetricsCollector::new(
+            Some(crate::metrics::LatencyType::OneWay),
+            vec![50.0, 95.0, 99.0],
+        )
+        .unwrap();
+        // Should not panic with zero count
+        print_server_one_way_latency(0, &metrics);
+    }
+
+    /// Test: async multi-accept TCP server handles clients via
+    /// run_standalone_server_async_multi_accept_tcp directly.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_async_multi_accept_tcp_server_direct() {
+        use crate::ipc::BlockingTcpSocket;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+
+        // We can't call run_standalone_server_async_multi_accept_tcp directly
+        // because it binds its own listener. Instead, exercise the async path
+        // components: tokio accept + spawn_blocking + handle_client_connection.
+        let mut join_set = tokio::task::JoinSet::new();
+        let num_clients = 2usize;
+
+        // Spawn clients in blocking threads
+        for worker_id in 0..num_clients {
+            let tc = TransportConfig {
+                host: "127.0.0.1".to_string(),
+                port,
+                ..Default::default()
+            };
+            join_set.spawn_blocking(move || {
+                let mut transport =
+                    BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+                connect_blocking_with_retry(&mut transport, &tc).unwrap();
+                for i in 0..5u64 {
+                    let msg = Message::new(
+                        worker_id as u64 * 100 + i,
+                        vec![0u8; 64],
+                        MessageType::Request,
+                    );
+                    transport.send_blocking(&msg).unwrap();
+                    let resp = transport.receive_blocking().unwrap();
+                    assert_eq!(resp.message_type, MessageType::Response);
+                }
+                let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+                let _ = transport.send_blocking(&shutdown);
+                transport.close_blocking().unwrap();
+            });
+        }
+
+        // Accept and handle with async pattern
+        for _ in 0..num_clients {
+            let (stream, _) = listener.accept().await.unwrap();
+            let std_stream = stream.into_std().unwrap();
+            std_stream.set_nonblocking(false).unwrap();
+            std_stream.set_nodelay(true).unwrap();
+
+            let cfg = config.clone();
+            join_set.spawn_blocking(move || {
+                let mut transport = BlockingTcpSocket::from_stream(std_stream);
+                handle_client_connection(&mut transport, &cfg).unwrap();
+                let _ = transport.close_blocking();
+            });
+        }
+
+        while let Some(result) = join_set.join_next().await {
+            result.unwrap();
+        }
+    }
+
+    /// Test: async single-client server path.
+    #[tokio::test]
+    async fn test_async_single_server_path() {
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+        let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+
+        let tc = transport_config.clone();
+        let cfg = config.clone();
+
+        // Start async server in a task
+        let server_handle = tokio::spawn(async move {
+            run_standalone_server_async_single(IpcMechanism::TcpSocket, &tc, &cfg)
+                .await
+                .unwrap();
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Connect blocking client from a blocking thread
+        let client_tc = transport_config.clone();
+        let client_handle = tokio::task::spawn_blocking(move || {
+            let mut transport =
+                BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+            connect_blocking_with_retry(&mut transport, &client_tc).unwrap();
+
+            for i in 0..5u64 {
+                let msg = Message::new(i, vec![0u8; 64], MessageType::OneWay);
+                transport.send_blocking(&msg).unwrap();
+            }
+
+            let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+            let _ = transport.send_blocking(&shutdown);
+            transport.close_blocking().unwrap();
+        });
+
+        client_handle.await.unwrap();
+        server_handle.await.unwrap();
+    }
+
+    /// Test: UDS multi-accept server handles multiple clients.
+    #[cfg(unix)]
+    #[test]
+    fn test_multi_accept_uds_server_direct() {
+        use crate::ipc::BlockingUnixDomainSocket;
+
+        let socket_path = format!("/tmp/test_multi_accept_{}.sock", std::process::id());
+        let _ = std::fs::remove_file(&socket_path);
+
+        let transport_config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+        let args = Args::parse_from(["ipc-benchmark", "-m", "uds", "-s", "64"]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+
+        let tc = transport_config.clone();
+        let cfg = config.clone();
+        let server_handle = std::thread::spawn(move || {
+            run_standalone_server_blocking_multi_accept_uds(&tc, &cfg).unwrap();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        let mut handles = Vec::new();
+        for worker in 0..2u64 {
+            let sp = socket_path.clone();
+            let h = std::thread::spawn(move || {
+                let stream = std::os::unix::net::UnixStream::connect(&sp).unwrap();
+                let mut transport = BlockingUnixDomainSocket::from_stream(stream);
+                for i in 0..5u64 {
+                    let msg = Message::new(worker * 100 + i, vec![0u8; 64], MessageType::Request);
+                    transport.send_blocking(&msg).unwrap();
+                    let resp = transport.receive_blocking().unwrap();
+                    assert_eq!(resp.message_type, MessageType::Response);
+                }
+                let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+                let _ = transport.send_blocking(&shutdown);
+                transport.close_blocking().unwrap();
+            });
+            handles.push(h);
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+        server_handle.join().unwrap();
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    /// Test: async multi-accept TCP server function directly.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_async_multi_accept_tcp_full() {
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+        let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+
+        let tc = transport_config.clone();
+        let cfg = config.clone();
+        let server_handle = tokio::spawn(async move {
+            run_standalone_server_async_multi_accept_tcp(&tc, &cfg)
+                .await
+                .unwrap();
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Connect 2 clients from blocking threads
+        let mut client_handles = Vec::new();
+        for worker in 0..2u64 {
+            let tc = transport_config.clone();
+            let h = tokio::task::spawn_blocking(move || {
+                let mut transport =
+                    BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+                connect_blocking_with_retry(&mut transport, &tc).unwrap();
+                for i in 0..5u64 {
+                    let msg = Message::new(worker * 100 + i, vec![0u8; 64], MessageType::Request);
+                    transport.send_blocking(&msg).unwrap();
+                    let resp = transport.receive_blocking().unwrap();
+                    assert_eq!(resp.message_type, MessageType::Response);
+                }
+                let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+                let _ = transport.send_blocking(&shutdown);
+                transport.close_blocking().unwrap();
+            });
+            client_handles.push(h);
+        }
+
+        for h in client_handles {
+            h.await.unwrap();
+        }
+        server_handle.await.unwrap();
+    }
+
+    /// Test: async single-server with one-way messages records latency.
+    #[tokio::test]
+    async fn test_async_single_server_one_way_metrics() {
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+        let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+
+        let tc = transport_config.clone();
+        let cfg = config.clone();
+        let server_handle = tokio::spawn(async move {
+            run_standalone_server_async_single(IpcMechanism::TcpSocket, &tc, &cfg)
+                .await
+                .unwrap();
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let client_tc = transport_config.clone();
+        let client_handle = tokio::task::spawn_blocking(move || {
+            let mut transport =
+                BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+            connect_blocking_with_retry(&mut transport, &client_tc).unwrap();
+
+            // Send one-way messages
+            for i in 0..10u64 {
+                let msg = Message::new(i, vec![0u8; 64], MessageType::OneWay);
+                transport.send_blocking(&msg).unwrap();
+            }
+
+            let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+            let _ = transport.send_blocking(&shutdown);
+            transport.close_blocking().unwrap();
+        });
+
+        client_handle.await.unwrap();
+        server_handle.await.unwrap();
+    }
+
+    /// Test: connect_blocking_with_retry retry path (server not ready).
+    #[test]
+    fn test_connect_blocking_retry_path() {
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+
+        // Start client retry in background (server not yet up)
+        let client_tc = transport_config.clone();
+        let client_handle = std::thread::spawn(move || {
+            let mut transport =
+                BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+            connect_blocking_with_retry(&mut transport, &client_tc).unwrap();
+            transport.close_blocking().unwrap();
+        });
+
+        // Delay server start to exercise retry path
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        let mut server_transport =
+            BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+        server_transport
+            .start_server_blocking(&transport_config)
+            .unwrap();
+        // Accept and close
+        let _ = server_transport.receive_blocking();
+        server_transport.close_blocking().unwrap();
+
+        client_handle.join().unwrap();
+    }
+
+    /// Test: run_standalone_server_blocking UDS dispatch.
+    #[cfg(unix)]
+    #[test]
+    fn test_server_blocking_dispatch_uds() {
+        use crate::ipc::BlockingUnixDomainSocket;
+
+        let socket_path = format!("/tmp/test_dispatch_uds_{}.sock", std::process::id());
+        let _ = std::fs::remove_file(&socket_path);
+
+        let transport_config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+        let args = Args::parse_from([
+            "ipc-benchmark",
+            "-m",
+            "uds",
+            "-s",
+            "64",
+            "--blocking",
+            "--socket-path",
+            &socket_path,
+        ]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+
+        let a = args.clone();
+        let tc = transport_config.clone();
+        let cfg = config.clone();
+        let server_handle = std::thread::spawn(move || {
+            run_standalone_server_blocking(&a, IpcMechanism::UnixDomainSocket, &tc, &cfg).unwrap();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        let stream = std::os::unix::net::UnixStream::connect(&socket_path).unwrap();
+        let mut transport = BlockingUnixDomainSocket::from_stream(stream);
+
+        let msg = Message::new(0, vec![0u8; 64], MessageType::Request);
+        transport.send_blocking(&msg).unwrap();
+        let resp = transport.receive_blocking().unwrap();
+        assert_eq!(resp.message_type, MessageType::Response);
+
+        let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+        let _ = transport.send_blocking(&shutdown);
+        transport.close_blocking().unwrap();
+        server_handle.join().unwrap();
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    /// Test: async UDS multi-accept server directly.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_async_multi_accept_uds_full() {
+        use crate::ipc::BlockingUnixDomainSocket;
+
+        let socket_path = format!("/tmp/test_async_uds_multi_{}.sock", std::process::id());
+        let _ = std::fs::remove_file(&socket_path);
+
+        let transport_config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+        let args = Args::parse_from(["ipc-benchmark", "-m", "uds", "-s", "64"]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+
+        let tc = transport_config.clone();
+        let cfg = config.clone();
+        let server_handle = tokio::spawn(async move {
+            run_standalone_server_async_multi_accept_uds(&tc, &cfg)
+                .await
+                .unwrap();
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let mut client_handles = Vec::new();
+        for worker in 0..2u64 {
+            let sp = socket_path.clone();
+            let h = tokio::task::spawn_blocking(move || {
+                let stream = std::os::unix::net::UnixStream::connect(&sp).unwrap();
+                let mut transport = BlockingUnixDomainSocket::from_stream(stream);
+                for i in 0..5u64 {
+                    let msg = Message::new(worker * 100 + i, vec![0u8; 64], MessageType::Request);
+                    transport.send_blocking(&msg).unwrap();
+                    let resp = transport.receive_blocking().unwrap();
+                    assert_eq!(resp.message_type, MessageType::Response);
+                }
+                let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+                let _ = transport.send_blocking(&shutdown);
+                transport.close_blocking().unwrap();
+            });
+            client_handles.push(h);
+        }
+
+        for h in client_handles {
+            h.await.unwrap();
+        }
+        server_handle.await.unwrap();
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    /// Test: run_standalone_server top-level dispatch (TCP blocking).
+    /// Exercises the full entry point including logging init, affinity
+    /// check, shm-direct guard, and dispatch to blocking server.
+    #[test]
+    fn test_run_standalone_server_full_dispatch() {
+        let port = get_free_port();
+
+        let server_handle = std::thread::spawn(move || {
+            let args = Args::parse_from([
+                "ipc-benchmark",
+                "--server",
+                "-m",
+                "tcp",
+                "--blocking",
+                "--port",
+                &port.to_string(),
+            ]);
+            run_standalone_server(args).unwrap();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        let tc = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+        let mut transport =
+            BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+        connect_blocking_with_retry(&mut transport, &tc).unwrap();
+
+        let msg = Message::new(0, vec![0u8; 64], MessageType::Request);
+        transport.send_blocking(&msg).unwrap();
+        let resp = transport.receive_blocking().unwrap();
+        assert_eq!(resp.message_type, MessageType::Response);
+
+        let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+        let _ = transport.send_blocking(&shutdown);
+        transport.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
+
+    /// Test: server send failure when client disconnects mid-conversation.
+    /// Exercises the send_blocking error path in handle_client_connection.
+    #[test]
+    fn test_handle_client_connection_send_failure() {
+        let port = get_free_port();
+
+        let server_handle = std::thread::spawn(move || {
+            let mut transport =
+                BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+            let config = TransportConfig {
+                host: "127.0.0.1".to_string(),
+                port,
+                ..Default::default()
+            };
+            transport.start_server_blocking(&config).unwrap();
+
+            let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+            let cfg = BenchmarkConfig::from_args(&args).unwrap();
+            // This should handle the send failure gracefully (client drops)
+            let result = handle_client_connection(transport.as_mut(), &cfg);
+            // Should succeed (handler exits cleanly on send error)
+            assert!(result.is_ok());
+            transport.close_blocking().unwrap();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // Client: send a Request but close immediately without reading response
+        let mut stream = std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
+        // Send a valid Request message
+        let msg = Message::new(1, vec![0u8; 64], MessageType::Request);
+        let data = bincode::serialize(&msg).unwrap();
+        use std::io::Write;
+        let len = (data.len() as u32).to_le_bytes();
+        stream.write_all(&len).unwrap();
+        stream.write_all(&data).unwrap();
+        // Close immediately without reading the response
+        drop(stream);
+
+        server_handle.join().unwrap();
+    }
+
+    /// Test: server single-client send failure path.
+    /// Exercises the send error branch in run_standalone_server_blocking_single.
+    #[test]
+    fn test_single_server_client_disconnect() {
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+
+        let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64", "--blocking"]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+
+        let a = args.clone();
+        let tc = transport_config.clone();
+        let cfg = config.clone();
+        let server_handle = std::thread::spawn(move || {
+            // Should handle client disconnect gracefully
+            let result =
+                run_standalone_server_blocking_single(&a, IpcMechanism::TcpSocket, &tc, &cfg);
+            assert!(result.is_ok());
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        // Connect and send Request then drop (triggers send error on server)
+        let mut stream = std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
+        let msg = Message::new(1, vec![0u8; 64], MessageType::Request);
+        let data = bincode::serialize(&msg).unwrap();
+        use std::io::Write;
+        let len = (data.len() as u32).to_le_bytes();
+        stream.write_all(&len).unwrap();
+        stream.write_all(&data).unwrap();
+        drop(stream);
+
+        server_handle.join().unwrap();
+    }
+
+    /// Test: multi-accept server handles a bad client gracefully and
+    /// continues serving good clients. First client sends garbage bytes
+    /// that cause a deserialization error in the handler, exercising
+    /// the handler error path. Second client connects normally.
+    #[test]
+    fn test_multi_accept_server_survives_bad_client() {
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+        let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+
+        let tc = transport_config.clone();
+        let cfg = config.clone();
+        let server_handle = std::thread::spawn(move || {
+            run_standalone_server_blocking_multi_accept_tcp(&tc, &cfg).unwrap();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        // Bad client: connect and send garbage bytes
+        let bad_client = std::thread::spawn(move || {
+            use std::io::Write;
+            let mut stream = std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
+            // Send a valid length prefix but garbage payload
+            let len: u32 = 100;
+            stream.write_all(&len.to_le_bytes()).unwrap();
+            stream.write_all(&[0xFFu8; 100]).unwrap();
+            // Close immediately
+            drop(stream);
+        });
+
+        bad_client.join().unwrap();
+
+        // Give server a moment to process the bad client
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // Good client: should still be able to connect and work
+        let tc = transport_config.clone();
+        let good_client = std::thread::spawn(move || {
+            let mut transport =
+                BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+            connect_blocking_with_retry(&mut transport, &tc).unwrap();
+
+            let msg = Message::new(42, vec![0u8; 64], MessageType::Request);
+            transport.send_blocking(&msg).unwrap();
+            let resp = transport.receive_blocking().unwrap();
+            assert_eq!(resp.id, 42);
+            assert_eq!(resp.message_type, MessageType::Response);
+
+            let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+            let _ = transport.send_blocking(&shutdown);
+            transport.close_blocking().unwrap();
+        });
+
+        good_client.join().unwrap();
+        server_handle.join().unwrap();
+    }
+
+    /// Test: handle_client_connection returns Ok even when client sends
+    /// garbage, because the receive error causes a clean exit from the
+    /// message loop (not a panic).
+    #[test]
+    fn test_handle_client_connection_garbage_input() {
+        let port = get_free_port();
+
+        let server_handle = std::thread::spawn(move || {
+            let mut transport =
+                BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+            let config = TransportConfig {
+                host: "127.0.0.1".to_string(),
+                port,
+                ..Default::default()
+            };
+            transport.start_server_blocking(&config).unwrap();
+
+            let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+            let cfg = BenchmarkConfig::from_args(&args).unwrap();
+            // Should return an error (deserialization failure) but not panic
+            let result = handle_client_connection(transport.as_mut(), &cfg);
+            // The receive loop exits on error, returning the collector
+            // (which may have 0 messages recorded)
+            assert!(result.is_ok());
+            transport.close_blocking().unwrap();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // Send garbage
+        use std::io::Write;
+        let mut stream = std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
+        let len: u32 = 50;
+        stream.write_all(&len.to_le_bytes()).unwrap();
+        stream.write_all(&[0xDEu8; 50]).unwrap();
+        drop(stream);
+
+        server_handle.join().unwrap();
+    }
+
+    /// Test: multi-accept server handles clients sending with delay.
+    /// Verifies server doesn't timeout or misbehave with slow senders.
+    #[test]
+    fn test_multi_accept_server_with_delayed_client() {
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+        let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+
+        let tc = transport_config.clone();
+        let cfg = config.clone();
+        let server_handle = std::thread::spawn(move || {
+            run_standalone_server_blocking_multi_accept_tcp(&tc, &cfg).unwrap();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        let tc = transport_config.clone();
+        let client_handle = std::thread::spawn(move || {
+            let mut transport =
+                BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+            connect_blocking_with_retry(&mut transport, &tc).unwrap();
+
+            // Send messages with 10ms delay between each
+            for i in 0..5u64 {
+                let msg = Message::new(i, vec![0u8; 64], MessageType::Request);
+                transport.send_blocking(&msg).unwrap();
+                let resp = transport.receive_blocking().unwrap();
+                assert_eq!(resp.message_type, MessageType::Response);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+
+            let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+            let _ = transport.send_blocking(&shutdown);
+            transport.close_blocking().unwrap();
+        });
+
+        client_handle.join().unwrap();
+        server_handle.join().unwrap();
+    }
+
+    /// Test: multi-accept TCP server with duration-mode one-way clients.
+    /// Exercises the grace timer with longer-running duration-based clients.
+    #[test]
+    fn test_multi_accept_server_duration_one_way() {
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+        let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+
+        let tc = transport_config.clone();
+        let cfg = config.clone();
+        let server_handle = std::thread::spawn(move || {
+            run_standalone_server_blocking_multi_accept_tcp(&tc, &cfg).unwrap();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        // Two clients each sending one-way for 200ms
+        let mut handles = Vec::new();
+        for worker in 0..2u64 {
+            let tc = transport_config.clone();
+            let h = std::thread::spawn(move || {
+                let mut transport =
+                    BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+                connect_blocking_with_retry(&mut transport, &tc).unwrap();
+
+                let start = std::time::Instant::now();
+                let duration = std::time::Duration::from_millis(200);
+                let mut count = 0u64;
+                while start.elapsed() < duration {
+                    let msg =
+                        Message::new(worker * 10000 + count, vec![0u8; 64], MessageType::OneWay);
+                    transport.send_blocking(&msg).unwrap();
+                    count += 1;
+                }
+                assert!(count > 0, "Should have sent messages during duration");
+
+                let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+                let _ = transport.send_blocking(&shutdown);
+                transport.close_blocking().unwrap();
+            });
+            handles.push(h);
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+        server_handle.join().unwrap();
+    }
+
+    /// Test: async multi-accept TCP server with duration-mode one-way clients.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_async_multi_accept_server_duration_one_way() {
+        let port = get_free_port();
+        let transport_config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+        let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
+        let config = BenchmarkConfig::from_args(&args).unwrap();
+
+        let tc = transport_config.clone();
+        let cfg = config.clone();
+        let server_handle = tokio::spawn(async move {
+            run_standalone_server_async_multi_accept_tcp(&tc, &cfg)
+                .await
+                .unwrap();
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let mut client_handles = Vec::new();
+        for worker in 0..2u64 {
+            let tc = transport_config.clone();
+            let h = tokio::task::spawn_blocking(move || {
+                let mut transport =
+                    BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+                connect_blocking_with_retry(&mut transport, &tc).unwrap();
+
+                let start = std::time::Instant::now();
+                let duration = std::time::Duration::from_millis(200);
+                let mut count = 0u64;
+                while start.elapsed() < duration {
+                    let msg =
+                        Message::new(worker * 10000 + count, vec![0u8; 64], MessageType::OneWay);
+                    transport.send_blocking(&msg).unwrap();
+                    count += 1;
+                }
+                assert!(count > 0, "Should have sent messages during duration");
+
+                let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+                let _ = transport.send_blocking(&shutdown);
+                transport.close_blocking().unwrap();
+            });
+            client_handles.push(h);
+        }
+
+        for h in client_handles {
+            h.await.unwrap();
+        }
+        server_handle.await.unwrap();
+    }
+
+    /// Test: run_standalone_server rejects 'all' mechanism.
+    #[test]
+    fn test_run_standalone_server_rejects_all_via_dispatch() {
+        let args = Args::parse_from(["ipc-benchmark", "--server", "-m", "all"]);
+        let result = run_standalone_server(args);
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("Cannot use 'all'"),
+            "Should reject 'all' mechanism"
+        );
+    }
+
+    /// Test: run_standalone_server rejects --shm-direct without --blocking.
+    #[test]
+    fn test_run_standalone_server_rejects_shm_direct() {
+        let args = Args::parse_from(["ipc-benchmark", "--server", "-m", "shm", "--shm-direct"]);
+        let result = run_standalone_server(args);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("--shm-direct requires --blocking"),
+            "Should reject shm-direct without blocking"
+        );
+    }
+
+    /// Test: run_standalone_server with verbose logging (-vv).
+    #[test]
+    fn test_run_standalone_server_verbose() {
+        let port = get_free_port();
+
+        let server_handle = std::thread::spawn(move || {
+            let args = Args::parse_from([
+                "ipc-benchmark",
+                "--server",
+                "-m",
+                "tcp",
+                "--blocking",
+                "-vv",
+                "--port",
+                &port.to_string(),
+            ]);
+            run_standalone_server(args).unwrap();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        let tc = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+        let mut transport =
+            BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+        connect_blocking_with_retry(&mut transport, &tc).unwrap();
 
         let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
         let _ = transport.send_blocking(&shutdown);
