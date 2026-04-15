@@ -360,12 +360,15 @@ pub fn run_standalone_server_blocking_multi_accept_tcp(
                 first_client_time = Some(std::time::Instant::now());
                 // Accepted streams inherit non-blocking from the listener;
                 // set back to blocking for the handler thread.
-                stream
-                    .set_nonblocking(false)
-                    .context("Failed to set stream to blocking mode")?;
-                stream
-                    .set_nodelay(true)
-                    .context("Failed to set TCP_NODELAY")?;
+                // Skip bad connections rather than crashing the server.
+                if let Err(e) = stream.set_nonblocking(false) {
+                    warn!("Failed to configure stream from {}: {}", peer_addr, e);
+                    continue;
+                }
+                if let Err(e) = stream.set_nodelay(true) {
+                    warn!("Failed to set TCP_NODELAY for {}: {}", peer_addr, e);
+                    continue;
+                }
                 // Apply socket buffer tuning to match normal transport behavior
                 let sock = socket2::Socket::from(stream);
                 let _ = sock.set_recv_buffer_size(transport_config.buffer_size);
@@ -413,7 +416,9 @@ pub fn run_standalone_server_blocking_multi_accept_tcp(
     }
 
     for handle in handles {
-        let _ = handle.join();
+        if let Err(e) = handle.join() {
+            warn!("Handler thread panicked: {:?}", e);
+        }
     }
 
     let collectors = worker_metrics.lock().unwrap_or_else(|e| e.into_inner());
@@ -467,9 +472,10 @@ pub fn run_standalone_server_blocking_multi_accept_uds(
                 first_client_time = Some(std::time::Instant::now());
                 // Accepted streams inherit non-blocking from the listener;
                 // set back to blocking for the handler thread.
-                stream
-                    .set_nonblocking(false)
-                    .context("Failed to set stream to blocking mode")?;
+                if let Err(e) = stream.set_nonblocking(false) {
+                    warn!("Failed to configure UDS stream from {:?}: {}", peer_addr, e);
+                    continue;
+                }
 
                 let metrics_clone = worker_metrics.clone();
                 let handler_config = config.clone();
@@ -509,7 +515,9 @@ pub fn run_standalone_server_blocking_multi_accept_uds(
     }
 
     for handle in handles {
-        let _ = handle.join();
+        if let Err(e) = handle.join() {
+            warn!("Handler thread panicked: {:?}", e);
+        }
     }
 
     let collectors = worker_metrics.lock().unwrap_or_else(|e| e.into_inner());
@@ -705,9 +713,21 @@ pub async fn run_standalone_server_async_multi_accept_tcp(
                         // Reset grace timer on every new connection
                         first_client_time = Some(std::time::Instant::now());
 
-                        let std_stream = stream.into_std()?;
-                        std_stream.set_nonblocking(false).context("Failed to set stream to blocking mode")?;
-                        std_stream.set_nodelay(true).context("Failed to set TCP_NODELAY")?;
+                        let std_stream = match stream.into_std() {
+                            Ok(s) => s,
+                            Err(e) => {
+                                warn!("Failed to convert stream from {}: {}", peer_addr, e);
+                                continue;
+                            }
+                        };
+                        if let Err(e) = std_stream.set_nonblocking(false) {
+                            warn!("Failed to configure stream from {}: {}", peer_addr, e);
+                            continue;
+                        }
+                        if let Err(e) = std_stream.set_nodelay(true) {
+                            warn!("Failed to set TCP_NODELAY for {}: {}", peer_addr, e);
+                            continue;
+                        }
                         // Apply socket buffer tuning to match normal transport behavior
                         let sock = socket2::Socket::from(std_stream);
                         let _ = sock.set_recv_buffer_size(transport_config.buffer_size);
@@ -805,8 +825,17 @@ pub async fn run_standalone_server_async_multi_accept_uds(
                         // Reset grace timer on every new connection
                         first_client_time = Some(std::time::Instant::now());
 
-                        let std_stream = stream.into_std()?;
-                        std_stream.set_nonblocking(false).context("Failed to set stream to blocking mode")?;
+                        let std_stream = match stream.into_std() {
+                            Ok(s) => s,
+                            Err(e) => {
+                                warn!("Failed to convert UDS stream from {:?}: {}", peer_addr, e);
+                                continue;
+                            }
+                        };
+                        if let Err(e) = std_stream.set_nonblocking(false) {
+                            warn!("Failed to configure UDS stream from {:?}: {}", peer_addr, e);
+                            continue;
+                        }
 
                         let metrics_clone = worker_metrics.clone();
                         let handler_config = config.clone();
@@ -1350,7 +1379,9 @@ mod tests {
             }
 
             for handle in handles {
-                let _ = handle.join();
+                if let Err(e) = handle.join() {
+                    warn!("Handler thread panicked: {:?}", e);
+                }
             }
 
             let collectors = metrics.lock().unwrap();

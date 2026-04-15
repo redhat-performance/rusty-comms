@@ -335,7 +335,9 @@ pub fn run_standalone_client_blocking_single(
                     latency,
                     send_wall_ns,
                 );
-                let _ = results_manager.stream_latency_record(&record);
+                if let Err(e) = results_manager.stream_latency_record(&record) {
+                    debug!("Streaming latency record failed: {}", e);
+                }
 
                 if let Some(delay) = config.send_delay {
                     std::thread::sleep(delay);
@@ -368,7 +370,9 @@ pub fn run_standalone_client_blocking_single(
                     latency,
                     send_wall_ns,
                 );
-                let _ = results_manager.stream_latency_record(&record);
+                if let Err(e) = results_manager.stream_latency_record(&record) {
+                    debug!("Streaming latency record failed: {}", e);
+                }
 
                 if let Some(delay) = config.send_delay {
                     std::thread::sleep(delay);
@@ -824,7 +828,9 @@ pub async fn run_standalone_client_async_single(
                     latency,
                     send_wall_ns,
                 );
-                let _ = results_manager.stream_latency_record(&record);
+                if let Err(e) = results_manager.stream_latency_record(&record) {
+                    debug!("Streaming latency record failed: {}", e);
+                }
 
                 if let Some(delay) = config.send_delay {
                     tokio::time::sleep(delay).await;
@@ -857,7 +863,9 @@ pub async fn run_standalone_client_async_single(
                     latency,
                     send_wall_ns,
                 );
-                let _ = results_manager.stream_latency_record(&record);
+                if let Err(e) = results_manager.stream_latency_record(&record) {
+                    debug!("Streaming latency record failed: {}", e);
+                }
 
                 if let Some(delay) = config.send_delay {
                     tokio::time::sleep(delay).await;
