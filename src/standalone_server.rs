@@ -339,8 +339,7 @@ pub fn run_standalone_server_blocking_multi_accept_tcp(
         .listen(128)
         .context("Failed to listen on TCP socket")?;
     let listener: std::net::TcpListener = socket.into();
-    // Non-blocking so we can periodically check if all handler threads
-    // have finished (i.e. all clients disconnected).
+    const ACCEPT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
     listener
         .set_nonblocking(true)
         .context("Failed to set listener to non-blocking")?;
@@ -364,7 +363,6 @@ pub fn run_standalone_server_blocking_multi_accept_tcp(
                 first_client_time = Some(std::time::Instant::now());
                 // Accepted streams inherit non-blocking from the listener;
                 // set back to blocking for the handler thread.
-                // Skip bad connections rather than crashing the server.
                 if let Err(e) = stream.set_nonblocking(false) {
                     warn!("Failed to configure stream from {}: {}", peer_addr, e);
                     continue;
@@ -410,7 +408,7 @@ pub fn run_standalone_server_blocking_multi_accept_tcp(
                     debug!("All clients disconnected, shutting down");
                     break;
                 }
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                std::thread::sleep(ACCEPT_POLL_INTERVAL);
             }
             Err(e) => {
                 debug!("Accept error: {}", e);
@@ -453,6 +451,7 @@ pub fn run_standalone_server_blocking_multi_accept_uds(
                 transport_config.socket_path
             )
         })?;
+    const ACCEPT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
     listener
         .set_nonblocking(true)
         .context("Failed to set UDS listener to non-blocking")?;
@@ -509,7 +508,7 @@ pub fn run_standalone_server_blocking_multi_accept_uds(
                     debug!("All clients disconnected, shutting down");
                     break;
                 }
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                std::thread::sleep(ACCEPT_POLL_INTERVAL);
             }
             Err(e) => {
                 debug!("Accept error: {}", e);
