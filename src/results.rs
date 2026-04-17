@@ -368,11 +368,11 @@ pub struct BenchmarkSummary {
     /// Total number of bytes transferred during all tests
     pub total_bytes_transferred: usize,
 
-    /// Average throughput across all tests in megabits per second
-    pub average_throughput_mbps: f64,
+    /// Average throughput across all tests in megabytes per second (MB/s)
+    pub average_throughput_mb_s: f64,
 
-    /// Peak throughput observed in any single test in megabits per second
-    pub peak_throughput_mbps: f64,
+    /// Peak throughput observed in any single test in megabytes per second (MB/s)
+    pub peak_throughput_mb_s: f64,
 
     /// Average latency across all latency measurements (if any)
     pub average_latency_ns: Option<f64>,
@@ -1133,7 +1133,7 @@ impl ResultsManager {
                 result.mechanism.to_string(),
                 MechanismSummary {
                     mechanism: result.mechanism,
-                    average_throughput_mbps: result.summary.average_throughput_mbps,
+                    average_throughput_mb_s: result.summary.average_throughput_mb_s,
                     p95_latency_ns: result.summary.p95_latency_ns,
                     p99_latency_ns: result.summary.p99_latency_ns,
                     total_messages: result.summary.total_messages_sent,
@@ -1163,7 +1163,7 @@ impl ResultsManager {
     ///
     /// ## Comparison Method
     ///
-    /// Comparison is based on average throughput in megabits per second,
+    /// Comparison is based on average throughput in megabytes per second,
     /// which provides a consistent measure across different message sizes
     /// and test configurations.
     fn find_fastest_mechanism(&self) -> Option<String> {
@@ -1171,8 +1171,8 @@ impl ResultsManager {
             .iter()
             .max_by(|a, b| {
                 a.summary
-                    .average_throughput_mbps
-                    .partial_cmp(&b.summary.average_throughput_mbps)
+                    .average_throughput_mb_s
+                    .partial_cmp(&b.summary.average_throughput_mb_s)
                     .unwrap()
             })
             .map(|result| result.mechanism.to_string())
@@ -1380,11 +1380,9 @@ impl ResultsManager {
         let summary = &result.summary;
 
         println!("{}Throughput:", indent);
-        // Note: The summary field is named _mbps, but the calculation in update_summary
-        // produces MB/s (Megabytes per second). The label reflects the calculation.
         println!(
             "{}{:<8} Average: {:.2} MB/s, Peak: {:.2} MB/s",
-            indent, "  ", summary.average_throughput_mbps, summary.peak_throughput_mbps
+            indent, "  ", summary.average_throughput_mb_s, summary.peak_throughput_mb_s
         );
 
         println!("{}Totals:", indent);
@@ -1525,8 +1523,8 @@ pub struct MechanismSummary {
     /// The IPC mechanism this summary describes
     pub mechanism: IpcMechanism,
 
-    /// Average throughput performance in megabits per second
-    pub average_throughput_mbps: f64,
+    /// Average throughput performance in megabytes per second (MB/s)
+    pub average_throughput_mb_s: f64,
 
     /// 95th percentile latency (if latency was measured)
     pub p95_latency_ns: Option<u64>,
@@ -1691,9 +1689,9 @@ impl BenchmarkResults {
         }
 
         // Calculate summary metrics
-        let average_throughput_mbps =
+        let average_throughput_mb_s =
             throughput_values.iter().sum::<f64>() / throughput_values.len() as f64 / 1_000_000.0;
-        let peak_throughput_mbps =
+        let peak_throughput_mb_s =
             throughput_values.iter().cloned().fold(0.0, f64::max) / 1_000_000.0;
 
         // Calculate properly weighted average latency across all test types
@@ -1705,8 +1703,8 @@ impl BenchmarkResults {
         self.summary = BenchmarkSummary {
             total_messages_sent: total_messages,
             total_bytes_transferred: total_bytes,
-            average_throughput_mbps,
-            peak_throughput_mbps,
+            average_throughput_mb_s,
+            peak_throughput_mb_s,
             average_latency_ns,
             min_latency_ns,
             max_latency_ns,
@@ -1851,8 +1849,8 @@ impl Default for BenchmarkSummary {
         Self {
             total_messages_sent: 0,
             total_bytes_transferred: 0,
-            average_throughput_mbps: 0.0,
-            peak_throughput_mbps: 0.0,
+            average_throughput_mb_s: 0.0,
+            peak_throughput_mb_s: 0.0,
             average_latency_ns: None,
             min_latency_ns: None,
             max_latency_ns: None,
