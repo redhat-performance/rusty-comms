@@ -2736,8 +2736,6 @@ mod tests {
     /// Test: canary send failure logs warning (connection closed before canary).
     #[test]
     fn test_client_canary_failure_does_not_panic() {
-        use crate::ipc::BlockingTcpSocket;
-
         let port = get_free_port();
         let transport_config = TransportConfig {
             host: "127.0.0.1".to_string(),
