@@ -10,6 +10,8 @@
 //! up logging, CPU affinity, and dispatches to the appropriate blocking
 //! or async implementation based on CLI flags.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use anyhow::{Context, Result};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::filter::LevelFilter;
@@ -22,6 +24,14 @@ use crate::ipc::{
 };
 use crate::logging::ColorizedFormatter;
 use crate::metrics::{LatencyType, MetricsCollector};
+
+// --- Shutdown flag ---
+
+static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+fn is_shutdown_requested() -> bool {
+    SHUTDOWN_REQUESTED.load(Ordering::Relaxed)
+}
 
 // --- Standalone constants ---
 
@@ -37,6 +47,10 @@ pub const CONNECT_RETRY_INTERVAL: std::time::Duration = std::time::Duration::fro
 /// Clients that take longer than this to connect after the first one may
 /// be missed.
 pub const SERVER_ACCEPT_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Maximum time the server will wait for the first client to connect
+/// before exiting. Prevents indefinite hangs when no client appears.
+pub const SERVER_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 // --- Standalone helpers ---
 
@@ -154,8 +168,14 @@ pub fn run_standalone_server(args: Args) -> Result<()> {
         ));
     }
 
-    // Defensive: --shm-direct requires --blocking (normally enforced by
-    // main() before this function is called, but guard here too).
+    if args.mechanisms.len() > 1 {
+        return Err(anyhow::anyhow!(
+            "Standalone server mode supports only one mechanism, \
+             but {} were specified. Use a single -m flag (e.g., -m tcp)",
+            args.mechanisms.len()
+        ));
+    }
+
     if args.shm_direct && !args.blocking {
         return Err(anyhow::anyhow!("--shm-direct requires --blocking mode"));
     }
@@ -190,6 +210,16 @@ pub fn run_standalone_server(args: Args) -> Result<()> {
 
     let transport_config = build_standalone_transport_config(&args);
     let config = BenchmarkConfig::from_args(&args)?;
+
+    // Install signal handler for graceful shutdown.
+    // set_handler fails if already installed (e.g., in tests), which is safe to ignore.
+    let _ = ctrlc::set_handler(move || {
+        if SHUTDOWN_REQUESTED.swap(true, Ordering::SeqCst) {
+            eprintln!("\nForced shutdown.");
+            std::process::exit(1);
+        }
+        eprintln!("\nShutdown signal received, exiting gracefully (Ctrl+C again to force)...");
+    });
 
     info!(
         "Starting standalone server: mechanism={}, blocking={}",
@@ -249,22 +279,34 @@ pub fn run_standalone_server_blocking_single(
         MetricsCollector::new(Some(LatencyType::OneWay), config.percentiles.clone())?;
     let mut one_way_count = 0u64;
 
-    while let Ok((message, receive_time_ns)) = transport.receive_blocking_timed() {
-        if message.message_type == MessageType::Shutdown {
-            debug!("Server received shutdown message, exiting");
+    loop {
+        if is_shutdown_requested() {
+            info!("Shutdown signal received, exiting");
             break;
         }
+        match transport.receive_blocking_timed() {
+            Ok((message, receive_time_ns)) => {
+                if message.message_type == MessageType::Shutdown {
+                    debug!("Server received shutdown message, exiting");
+                    break;
+                }
 
-        if message.message_type == MessageType::OneWay && message.id != u64::MAX {
-            let latency_ns = receive_time_ns.saturating_sub(message.timestamp);
-            let latency = std::time::Duration::from_nanos(latency_ns);
-            one_way_metrics.record_message(config.message_size, Some(latency))?;
-            one_way_count += 1;
-        }
+                if message.message_type == MessageType::OneWay && message.id != u64::MAX {
+                    let latency_ns = receive_time_ns.saturating_sub(message.timestamp);
+                    let latency = std::time::Duration::from_nanos(latency_ns);
+                    one_way_metrics.record_message(config.message_size, Some(latency))?;
+                    one_way_count += 1;
+                }
 
-        if let Some(response) = dispatch_server_message(&message) {
-            if let Err(e) = transport.send_blocking(&response) {
-                warn!("Server failed to send response: {}", e);
+                if let Some(response) = dispatch_server_message(&message) {
+                    if let Err(e) = transport.send_blocking(&response) {
+                        warn!("Server failed to send response: {}", e);
+                        break;
+                    }
+                }
+            }
+            Err(e) => {
+                debug!("Server receive ended: {}", e);
                 break;
             }
         }
@@ -287,21 +329,33 @@ pub fn handle_client_connection(
     let mut one_way_metrics =
         MetricsCollector::new(Some(LatencyType::OneWay), config.percentiles.clone())?;
 
-    while let Ok((message, receive_time_ns)) = transport.receive_blocking_timed() {
-        if message.message_type == MessageType::Shutdown {
-            debug!("Handler received shutdown message");
+    loop {
+        if is_shutdown_requested() {
+            debug!("Handler exiting due to shutdown signal");
             break;
         }
+        match transport.receive_blocking_timed() {
+            Ok((message, receive_time_ns)) => {
+                if message.message_type == MessageType::Shutdown {
+                    debug!("Handler received shutdown message");
+                    break;
+                }
 
-        if message.message_type == MessageType::OneWay && message.id != u64::MAX {
-            let latency_ns = receive_time_ns.saturating_sub(message.timestamp);
-            let latency = std::time::Duration::from_nanos(latency_ns);
-            one_way_metrics.record_message(config.message_size, Some(latency))?;
-        }
+                if message.message_type == MessageType::OneWay && message.id != u64::MAX {
+                    let latency_ns = receive_time_ns.saturating_sub(message.timestamp);
+                    let latency = std::time::Duration::from_nanos(latency_ns);
+                    one_way_metrics.record_message(config.message_size, Some(latency))?;
+                }
 
-        if let Some(response) = dispatch_server_message(&message) {
-            if let Err(e) = transport.send_blocking(&response) {
-                warn!("Handler failed to send response: {}", e);
+                if let Some(response) = dispatch_server_message(&message) {
+                    if let Err(e) = transport.send_blocking(&response) {
+                        warn!("Handler failed to send response: {}", e);
+                        break;
+                    }
+                }
+            }
+            Err(e) => {
+                debug!("Handler receive ended: {}", e);
                 break;
             }
         }
@@ -348,9 +402,7 @@ pub fn run_standalone_server_blocking_multi_accept_tcp(
 
     let worker_metrics: Arc<Mutex<Vec<MetricsCollector>>> = Arc::new(Mutex::new(Vec::new()));
     let mut handles = Vec::new();
-    // Grace period after first client connects before we check if all
-    // handlers are done. This prevents premature exit when a fast client
-    // finishes before slower clients have connected.
+    let server_start = std::time::Instant::now();
     let mut first_client_time: Option<std::time::Instant> = None;
     let accept_grace_period = SERVER_ACCEPT_GRACE_PERIOD;
 
@@ -358,8 +410,6 @@ pub fn run_standalone_server_blocking_multi_accept_tcp(
         match listener.accept() {
             Ok((stream, peer_addr)) => {
                 info!("Accepted connection from {}", peer_addr);
-                // Reset grace timer on every new connection so multi-phase
-                // tests (one-way then round-trip) don't trigger premature exit.
                 first_client_time = Some(std::time::Instant::now());
                 // Accepted streams inherit non-blocking from the listener;
                 // set back to blocking for the handler thread.
@@ -399,9 +449,17 @@ pub fn run_standalone_server_blocking_multi_accept_tcp(
                 handles.push(handle);
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                // No pending connection. Check if all handlers are done,
-                // but only after the grace period has elapsed since the
-                // last client connected.
+                if is_shutdown_requested() {
+                    info!("Shutdown signal received, stopping accept loop");
+                    break;
+                }
+                if first_client_time.is_none() && server_start.elapsed() > SERVER_IDLE_TIMEOUT {
+                    warn!(
+                        "No client connected within {}s, shutting down",
+                        SERVER_IDLE_TIMEOUT.as_secs()
+                    );
+                    break;
+                }
                 let grace_elapsed =
                     first_client_time.is_some_and(|t| t.elapsed() > accept_grace_period);
                 if grace_elapsed && !handles.is_empty() && handles.iter().all(|h| h.is_finished()) {
@@ -463,6 +521,7 @@ pub fn run_standalone_server_blocking_multi_accept_uds(
 
     let worker_metrics: Arc<Mutex<Vec<MetricsCollector>>> = Arc::new(Mutex::new(Vec::new()));
     let mut handles = Vec::new();
+    let server_start = std::time::Instant::now();
     let mut first_client_time: Option<std::time::Instant> = None;
     let accept_grace_period = SERVER_ACCEPT_GRACE_PERIOD;
 
@@ -470,8 +529,6 @@ pub fn run_standalone_server_blocking_multi_accept_uds(
         match listener.accept() {
             Ok((stream, peer_addr)) => {
                 info!("Accepted UDS connection from {:?}", peer_addr);
-                // Reset grace timer on every new connection so multi-phase
-                // tests don't trigger premature exit.
                 first_client_time = Some(std::time::Instant::now());
                 // Accepted streams inherit non-blocking from the listener;
                 // set back to blocking for the handler thread.
@@ -502,6 +559,17 @@ pub fn run_standalone_server_blocking_multi_accept_uds(
                 handles.push(handle);
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if is_shutdown_requested() {
+                    info!("Shutdown signal received, stopping accept loop");
+                    break;
+                }
+                if first_client_time.is_none() && server_start.elapsed() > SERVER_IDLE_TIMEOUT {
+                    warn!(
+                        "No client connected within {}s, shutting down",
+                        SERVER_IDLE_TIMEOUT.as_secs()
+                    );
+                    break;
+                }
                 let grace_elapsed =
                     first_client_time.is_some_and(|t| t.elapsed() > accept_grace_period);
                 if grace_elapsed && !handles.is_empty() && handles.iter().all(|h| h.is_finished()) {
@@ -647,6 +715,10 @@ pub async fn run_standalone_server_async_single(
     let mut one_way_count = 0u64;
 
     loop {
+        if is_shutdown_requested() {
+            info!("Shutdown signal received, exiting");
+            break;
+        }
         match transport.receive().await {
             Ok(msg) => {
                 if msg.message_type == MessageType::Shutdown {
@@ -704,6 +776,7 @@ pub async fn run_standalone_server_async_multi_accept_tcp(
 
     let worker_metrics: Arc<Mutex<Vec<MetricsCollector>>> = Arc::new(Mutex::new(Vec::new()));
     let mut handles = tokio::task::JoinSet::new();
+    let server_start = std::time::Instant::now();
     let mut first_client_time: Option<std::time::Instant> = None;
     let accept_grace_period = SERVER_ACCEPT_GRACE_PERIOD;
 
@@ -713,7 +786,6 @@ pub async fn run_standalone_server_async_multi_accept_tcp(
                 match result {
                     Ok((stream, peer_addr)) => {
                         info!("Accepted connection from {}", peer_addr);
-                        // Reset grace timer on every new connection
                         first_client_time = Some(std::time::Instant::now());
 
                         let std_stream = match stream.into_std() {
@@ -731,7 +803,6 @@ pub async fn run_standalone_server_async_multi_accept_tcp(
                             warn!("Failed to set TCP_NODELAY for {}: {}", peer_addr, e);
                             continue;
                         }
-                        // Apply socket buffer tuning to match normal transport behavior
                         let sock = socket2::Socket::from(std_stream);
                         let _ = sock.set_recv_buffer_size(transport_config.buffer_size);
                         let _ = sock.set_send_buffer_size(transport_config.buffer_size);
@@ -763,14 +834,23 @@ pub async fn run_standalone_server_async_multi_accept_tcp(
             _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
         }
 
-        // Check if all spawned tasks are done
-        // Drain completed tasks from the JoinSet
         while let Some(result) = handles.try_join_next() {
             if let Err(e) = result {
                 warn!("Handler task panicked: {}", e);
             }
         }
 
+        if is_shutdown_requested() {
+            info!("Shutdown signal received, stopping accept loop");
+            break;
+        }
+        if first_client_time.is_none() && server_start.elapsed() > SERVER_IDLE_TIMEOUT {
+            warn!(
+                "No client connected within {}s, shutting down",
+                SERVER_IDLE_TIMEOUT.as_secs()
+            );
+            break;
+        }
         let grace_elapsed = first_client_time.is_some_and(|t| t.elapsed() > accept_grace_period);
         if grace_elapsed && handles.is_empty() {
             debug!("All clients disconnected, shutting down");
@@ -778,7 +858,6 @@ pub async fn run_standalone_server_async_multi_accept_tcp(
         }
     }
 
-    // Wait for any remaining handlers
     while let Some(result) = handles.join_next().await {
         let _ = result;
     }
@@ -816,6 +895,7 @@ pub async fn run_standalone_server_async_multi_accept_uds(
 
     let worker_metrics: Arc<Mutex<Vec<MetricsCollector>>> = Arc::new(Mutex::new(Vec::new()));
     let mut handles = tokio::task::JoinSet::new();
+    let server_start = std::time::Instant::now();
     let mut first_client_time: Option<std::time::Instant> = None;
     let accept_grace_period = SERVER_ACCEPT_GRACE_PERIOD;
 
@@ -825,7 +905,6 @@ pub async fn run_standalone_server_async_multi_accept_uds(
                 match result {
                     Ok((stream, peer_addr)) => {
                         info!("Accepted UDS connection from {:?}", peer_addr);
-                        // Reset grace timer on every new connection
                         first_client_time = Some(std::time::Instant::now());
 
                         let std_stream = match stream.into_std() {
@@ -866,13 +945,23 @@ pub async fn run_standalone_server_async_multi_accept_uds(
             _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
         }
 
-        // Drain completed tasks
         while let Some(result) = handles.try_join_next() {
             if let Err(e) = result {
                 warn!("Handler task panicked: {}", e);
             }
         }
 
+        if is_shutdown_requested() {
+            info!("Shutdown signal received, stopping accept loop");
+            break;
+        }
+        if first_client_time.is_none() && server_start.elapsed() > SERVER_IDLE_TIMEOUT {
+            warn!(
+                "No client connected within {}s, shutting down",
+                SERVER_IDLE_TIMEOUT.as_secs()
+            );
+            break;
+        }
         let grace_elapsed = first_client_time.is_some_and(|t| t.elapsed() > accept_grace_period);
         if grace_elapsed && handles.is_empty() {
             debug!("All clients disconnected, shutting down");
@@ -2790,10 +2879,9 @@ mod tests {
 
             let args = Args::parse_from(["ipc-benchmark", "-m", "tcp", "-s", "64"]);
             let cfg = BenchmarkConfig::from_args(&args).unwrap();
-            // Should return an error (deserialization failure) but not panic
+            // Receive loop exits on error and returns Ok(collector) with
+            // 0 messages recorded -- it should not panic on garbage input
             let result = handle_client_connection(transport.as_mut(), &cfg);
-            // The receive loop exits on error, returning the collector
-            // (which may have 0 messages recorded)
             assert!(result.is_ok());
             transport.close_blocking().unwrap();
         });
@@ -3025,5 +3113,20 @@ mod tests {
         let _ = transport.send_blocking(&shutdown);
         transport.close_blocking().unwrap();
         server_handle.join().unwrap();
+    }
+
+    /// Test: run_standalone_server rejects multiple mechanisms.
+    #[test]
+    fn test_run_standalone_server_rejects_multiple_mechanisms() {
+        let args = Args::parse_from(["ipc-benchmark", "--server", "-m", "tcp", "uds"]);
+        let result = run_standalone_server(args);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("supports only one mechanism"),
+            "Should reject multiple mechanisms"
+        );
     }
 }
