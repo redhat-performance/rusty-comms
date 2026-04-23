@@ -3118,7 +3118,7 @@ mod tests {
     /// Test: run_standalone_server rejects multiple mechanisms.
     #[test]
     fn test_run_standalone_server_rejects_multiple_mechanisms() {
-        let args = Args::parse_from(["ipc-benchmark", "--server", "-m", "tcp", "uds"]);
+        let args = Args::parse_from(["ipc-benchmark", "--server", "-m", "tcp", "shm"]);
         let result = run_standalone_server(args);
         assert!(result.is_err());
         assert!(

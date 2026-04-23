@@ -2633,7 +2633,7 @@ mod tests {
     /// Test: run_standalone_client rejects multiple mechanisms.
     #[test]
     fn test_run_standalone_client_rejects_multiple_mechanisms() {
-        let args = Args::parse_from(["ipc-benchmark", "--client", "-m", "tcp", "uds"]);
+        let args = Args::parse_from(["ipc-benchmark", "--client", "-m", "tcp", "shm"]);
         let result = run_standalone_client(args);
         assert!(result.is_err());
         assert!(
