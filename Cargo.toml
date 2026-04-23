@@ -53,8 +53,8 @@ thiserror = "2.0.16"
 tokio-macros = "=2.5.0"  # tokio-macros 2.6.0+ requires Rust 1.71+
 mio = "=1.0.4"  # mio 1.1.0+ requires Rust 1.71+
 core_affinity = "0.8.3"
-# MSRV: ctrlc "termination" feature requires Rust 1.75+ (nix static zeroed)
-ctrlc = "3.5"
+# MSRV: ctrlc 3.5+ uses zeroed() in statics (requires Rust 1.75+)
+ctrlc = "=3.4.5"
 os_pipe = "1.1.5"
 # MSRV: zmij 1.0.20+ requires Rust 1.71+
 zmij = "=1.0.19"
