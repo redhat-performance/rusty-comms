@@ -301,7 +301,10 @@ fn standalone_tcp_blocking_duration_mode() {
 #[test]
 fn standalone_tcp_blocking_output_file() {
     let port = get_free_port().to_string();
-    let output = format!("/tmp/ipc_test_output_{}.json", std::process::id());
+    let output = std::env::temp_dir()
+        .join(format!("ipc_test_output_{}.json", std::process::id()))
+        .to_string_lossy()
+        .to_string();
     run_standalone_pair(
         &["--server", "-m", "tcp", "--blocking", "--port", &port],
         &[
