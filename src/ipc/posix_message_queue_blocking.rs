@@ -471,6 +471,44 @@ impl BlockingTransport for BlockingPosixMessageQueue {
         Ok(message)
     }
 
+    fn receive_blocking_timed(&mut self) -> Result<(Message, u64)> {
+        trace!("Waiting to receive timed message via blocking POSIX message queue");
+
+        let fd = self.recv_fd.as_ref().ok_or_else(|| {
+            anyhow!(
+                "Cannot receive: message queue not initialized. \
+                 Call start_server_blocking() or start_client_blocking() first."
+            )
+        })?;
+
+        let mut buffer = vec![0u8; self.max_msg_size];
+
+        let data = loop {
+            let mut priority = 0u32;
+            match mq_receive(fd, &mut buffer, &mut priority) {
+                Ok(size) => {
+                    buffer.truncate(size);
+                    break buffer;
+                }
+                Err(Errno::EAGAIN) => {
+                    std::thread::yield_now();
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => {
+                    return Err(anyhow!("Failed to receive message: {}", e));
+                }
+            }
+        };
+
+        let receive_time_ns = crate::ipc::get_monotonic_time_ns();
+
+        let message: Message =
+            bincode::deserialize(&data).context("Failed to deserialize message")?;
+
+        trace!("Received message ID {}", message.id);
+        Ok((message, receive_time_ns))
+    }
+
     fn close_blocking(&mut self) -> Result<()> {
         debug!("Closing blocking POSIX message queue transport");
         self.cleanup_queues();

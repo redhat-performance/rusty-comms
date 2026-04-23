@@ -53,6 +53,7 @@ thiserror = "2.0.16"
 tokio-macros = "=2.5.0"  # tokio-macros 2.6.0+ requires Rust 1.71+
 mio = "=1.0.4"  # mio 1.1.0+ requires Rust 1.71+
 core_affinity = "0.8.3"
+ctrlc = { version = "3.5", features = ["termination"] }
 os_pipe = "1.1.5"
 # MSRV: zmij 1.0.20+ requires Rust 1.71+
 zmij = "=1.0.19"
