@@ -490,7 +490,10 @@ pub fn run_standalone_server_blocking_multi_accept_tcp(
 
     if let Some(e) = accept_error {
         if !had_any_client {
-            return Err(anyhow::anyhow!("Accept failed before any client connected: {}", e));
+            return Err(anyhow::anyhow!(
+                "Accept failed before any client connected: {}",
+                e
+            ));
         }
     }
 
@@ -613,7 +616,10 @@ pub fn run_standalone_server_blocking_multi_accept_uds(
 
     if let Some(e) = accept_error {
         if !had_any_client {
-            return Err(anyhow::anyhow!("Accept failed before any client connected: {}", e));
+            return Err(anyhow::anyhow!(
+                "Accept failed before any client connected: {}",
+                e
+            ));
         }
     }
 
@@ -892,7 +898,10 @@ pub async fn run_standalone_server_async_multi_accept_tcp(
 
     if let Some(e) = accept_error {
         if !had_any_client {
-            return Err(anyhow::anyhow!("Accept failed before any client connected: {}", e));
+            return Err(anyhow::anyhow!(
+                "Accept failed before any client connected: {}",
+                e
+            ));
         }
     }
 
@@ -1015,7 +1024,10 @@ pub async fn run_standalone_server_async_multi_accept_uds(
 
     if let Some(e) = accept_error {
         if !had_any_client {
-            return Err(anyhow::anyhow!("Accept failed before any client connected: {}", e));
+            return Err(anyhow::anyhow!(
+                "Accept failed before any client connected: {}",
+                e
+            ));
         }
     }
 
