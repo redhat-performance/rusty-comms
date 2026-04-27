@@ -455,6 +455,21 @@ pub fn run_standalone_client_blocking_concurrent(
 
     let total_start = std::time::Instant::now();
 
+    // When both test phases are enabled, keep a sentinel connection open to prevent
+    // the server from exiting between one-way and round-trip phases. Without this,
+    // the server sees all handlers finished after one-way workers disconnect and
+    // exits before round-trip workers connect.
+    let sentinel: Option<Box<dyn crate::ipc::BlockingTransport>> =
+        if config.one_way && config.round_trip {
+            let mut transport =
+                BlockingTransportFactory::create(&mechanism, args.shm_direct)?;
+            connect_blocking_with_retry(&mut transport, &transport_config)?;
+            debug!("Sentinel connection established to keep server alive across phases");
+            Some(transport)
+        } else {
+            None
+        };
+
     // Spawn worker threads for one-way test
     let one_way_results: Option<Vec<PerformanceMetrics>> = if config.one_way {
         let handles: Vec<_> = (0..concurrency)
@@ -711,6 +726,17 @@ pub fn run_standalone_client_blocking_concurrent(
         let aggregated =
             MetricsCollector::aggregate_worker_metrics(round_trip, &config.percentiles)?;
         results.add_round_trip_results(aggregated);
+    }
+
+    if let Some(mut sentinel_transport) = sentinel {
+        let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+        if let Err(e) = sentinel_transport.send_blocking(&shutdown) {
+            debug!("Sentinel shutdown send failed: {}", e);
+        }
+        if let Err(e) = sentinel_transport.close_blocking() {
+            debug!("Sentinel close failed: {}", e);
+        }
+        debug!("Sentinel connection closed");
     }
 
     results.test_duration = total_start.elapsed();
@@ -1026,6 +1052,18 @@ pub async fn run_standalone_client_async_concurrent(
 
     let total_start = std::time::Instant::now();
 
+    // When both test phases are enabled, keep a sentinel connection open to prevent
+    // the server from exiting between one-way and round-trip phases.
+    let sentinel: Option<Box<dyn crate::ipc::IpcTransport>> =
+        if config.one_way && config.round_trip {
+            let mut transport = crate::ipc::TransportFactory::create(&mechanism)?;
+            connect_async_with_retry(&mut transport, &transport_config).await?;
+            debug!("Sentinel connection established to keep server alive across phases");
+            Some(transport)
+        } else {
+            None
+        };
+
     // One-way test
     let one_way_results: Option<Vec<PerformanceMetrics>> = if config.one_way {
         let mut join_set: JoinSet<Result<PerformanceMetrics>> = JoinSet::new();
@@ -1273,6 +1311,17 @@ pub async fn run_standalone_client_async_concurrent(
         let aggregated =
             MetricsCollector::aggregate_worker_metrics(round_trip, &config.percentiles)?;
         results.add_round_trip_results(aggregated);
+    }
+
+    if let Some(mut sentinel_transport) = sentinel {
+        let shutdown = Message::new(u64::MAX, Vec::new(), MessageType::Shutdown);
+        if let Err(e) = sentinel_transport.send(&shutdown).await {
+            debug!("Sentinel shutdown send failed: {}", e);
+        }
+        if let Err(e) = sentinel_transport.close().await {
+            debug!("Sentinel close failed: {}", e);
+        }
+        debug!("Sentinel connection closed");
     }
 
     results.test_duration = total_start.elapsed();

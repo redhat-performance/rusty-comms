@@ -988,7 +988,7 @@ fn write_latency_buffer(path: &str, buffer: &[(u64, u64)]) -> Result<()> {
     let mut file = std::fs::File::create(path)
         .with_context(|| format!("Failed to create latency file: {}", path))?;
     for &(wall_send_ns, latency_ns) in buffer {
-        writeln!(file, "{},{}", wall_send_ns, latency_ns).ok();
+        writeln!(file, "{},{}", wall_send_ns, latency_ns)?;
     }
     debug!("Finished writing latencies to file");
     Ok(())
