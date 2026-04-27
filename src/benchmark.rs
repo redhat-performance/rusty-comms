@@ -768,7 +768,7 @@ impl BenchmarkRunner {
         cmd.arg("-s").arg(self.config.message_size.to_string());
 
         if let Some(duration) = self.config.duration {
-            cmd.arg("-d").arg(format!("{}s", duration.as_secs()));
+            cmd.arg("-d").arg(format!("{}s", duration.as_secs_f64()));
         } else if let Some(count) = self.config.msg_count {
             cmd.arg("-i").arg(count.to_string());
         }

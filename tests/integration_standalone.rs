@@ -332,3 +332,57 @@ fn standalone_tcp_blocking_output_file() {
     );
     let _ = std::fs::remove_file(&output);
 }
+
+// --- Concurrent both-tests (sentinel connection) ---
+
+#[test]
+fn standalone_tcp_blocking_concurrent_both_tests() {
+    let port = get_free_port().to_string();
+    run_standalone_pair(
+        &[
+            "--server",
+            "-m",
+            "tcp",
+            "--blocking",
+            "--port",
+            &port,
+            "-c",
+            "2",
+        ],
+        &[
+            "--client",
+            "-m",
+            "tcp",
+            "--blocking",
+            "--port",
+            &port,
+            "-i",
+            "100",
+            "--one-way",
+            "--round-trip",
+            "-c",
+            "2",
+        ],
+    );
+}
+
+#[test]
+fn standalone_tcp_async_concurrent_both_tests() {
+    let port = get_free_port().to_string();
+    run_standalone_pair(
+        &["--server", "-m", "tcp", "--port", &port, "-c", "2"],
+        &[
+            "--client",
+            "-m",
+            "tcp",
+            "--port",
+            &port,
+            "-i",
+            "100",
+            "--one-way",
+            "--round-trip",
+            "-c",
+            "2",
+        ],
+    );
+}

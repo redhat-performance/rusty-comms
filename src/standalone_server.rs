@@ -405,12 +405,15 @@ pub fn run_standalone_server_blocking_multi_accept_tcp(
     let server_start = std::time::Instant::now();
     let mut first_client_time: Option<std::time::Instant> = None;
     let accept_grace_period = SERVER_ACCEPT_GRACE_PERIOD;
+    let mut had_any_client = false;
+    let mut accept_error: Option<std::io::Error> = None;
 
     loop {
         match listener.accept() {
             Ok((stream, peer_addr)) => {
                 info!("Accepted connection from {}", peer_addr);
                 first_client_time = Some(std::time::Instant::now());
+                had_any_client = true;
                 // Accepted streams inherit non-blocking from the listener;
                 // set back to blocking for the handler thread.
                 if let Err(e) = stream.set_nonblocking(false) {
@@ -469,7 +472,8 @@ pub fn run_standalone_server_blocking_multi_accept_tcp(
                 std::thread::sleep(ACCEPT_POLL_INTERVAL);
             }
             Err(e) => {
-                debug!("Accept error: {}", e);
+                warn!("Accept error: {}", e);
+                accept_error = Some(e);
                 break;
             }
         }
@@ -483,6 +487,12 @@ pub fn run_standalone_server_blocking_multi_accept_tcp(
 
     let collectors = worker_metrics.lock().unwrap_or_else(|e| e.into_inner());
     aggregate_and_print_server_metrics(&collectors, &config.percentiles);
+
+    if let Some(e) = accept_error {
+        if !had_any_client {
+            return Err(anyhow::anyhow!("Accept failed before any client connected: {}", e));
+        }
+    }
 
     info!("Standalone server exiting cleanly.");
     Ok(())
@@ -524,12 +534,15 @@ pub fn run_standalone_server_blocking_multi_accept_uds(
     let server_start = std::time::Instant::now();
     let mut first_client_time: Option<std::time::Instant> = None;
     let accept_grace_period = SERVER_ACCEPT_GRACE_PERIOD;
+    let mut had_any_client = false;
+    let mut accept_error: Option<std::io::Error> = None;
 
     loop {
         match listener.accept() {
             Ok((stream, peer_addr)) => {
                 info!("Accepted UDS connection from {:?}", peer_addr);
                 first_client_time = Some(std::time::Instant::now());
+                had_any_client = true;
                 // Accepted streams inherit non-blocking from the listener;
                 // set back to blocking for the handler thread.
                 if let Err(e) = stream.set_nonblocking(false) {
@@ -579,7 +592,8 @@ pub fn run_standalone_server_blocking_multi_accept_uds(
                 std::thread::sleep(ACCEPT_POLL_INTERVAL);
             }
             Err(e) => {
-                debug!("Accept error: {}", e);
+                warn!("Accept error: {}", e);
+                accept_error = Some(e);
                 break;
             }
         }
@@ -596,6 +610,13 @@ pub fn run_standalone_server_blocking_multi_accept_uds(
 
     // Clean up socket file
     let _ = std::fs::remove_file(&transport_config.socket_path);
+
+    if let Some(e) = accept_error {
+        if !had_any_client {
+            return Err(anyhow::anyhow!("Accept failed before any client connected: {}", e));
+        }
+    }
+
     info!("Standalone server exiting cleanly.");
     Ok(())
 }
@@ -779,6 +800,8 @@ pub async fn run_standalone_server_async_multi_accept_tcp(
     let server_start = std::time::Instant::now();
     let mut first_client_time: Option<std::time::Instant> = None;
     let accept_grace_period = SERVER_ACCEPT_GRACE_PERIOD;
+    let mut had_any_client = false;
+    let mut accept_error: Option<std::io::Error> = None;
 
     loop {
         tokio::select! {
@@ -787,6 +810,7 @@ pub async fn run_standalone_server_async_multi_accept_tcp(
                     Ok((stream, peer_addr)) => {
                         info!("Accepted connection from {}", peer_addr);
                         first_client_time = Some(std::time::Instant::now());
+                        had_any_client = true;
 
                         let std_stream = match stream.into_std() {
                             Ok(s) => s,
@@ -826,7 +850,8 @@ pub async fn run_standalone_server_async_multi_accept_tcp(
                         });
                     }
                     Err(e) => {
-                        debug!("Accept error: {}", e);
+                        warn!("Accept error: {}", e);
+                        accept_error = Some(e);
                         break;
                     }
                 }
@@ -864,6 +889,12 @@ pub async fn run_standalone_server_async_multi_accept_tcp(
 
     let collectors = worker_metrics.lock().unwrap_or_else(|e| e.into_inner());
     aggregate_and_print_server_metrics(&collectors, &config.percentiles);
+
+    if let Some(e) = accept_error {
+        if !had_any_client {
+            return Err(anyhow::anyhow!("Accept failed before any client connected: {}", e));
+        }
+    }
 
     info!("Standalone server exiting cleanly.");
     Ok(())
@@ -898,6 +929,8 @@ pub async fn run_standalone_server_async_multi_accept_uds(
     let server_start = std::time::Instant::now();
     let mut first_client_time: Option<std::time::Instant> = None;
     let accept_grace_period = SERVER_ACCEPT_GRACE_PERIOD;
+    let mut had_any_client = false;
+    let mut accept_error: Option<std::io::Error> = None;
 
     loop {
         tokio::select! {
@@ -906,6 +939,7 @@ pub async fn run_standalone_server_async_multi_accept_uds(
                     Ok((stream, peer_addr)) => {
                         info!("Accepted UDS connection from {:?}", peer_addr);
                         first_client_time = Some(std::time::Instant::now());
+                        had_any_client = true;
 
                         let std_stream = match stream.into_std() {
                             Ok(s) => s,
@@ -937,7 +971,8 @@ pub async fn run_standalone_server_async_multi_accept_uds(
                         });
                     }
                     Err(e) => {
-                        debug!("Accept error: {}", e);
+                        warn!("Accept error: {}", e);
+                        accept_error = Some(e);
                         break;
                     }
                 }
@@ -977,6 +1012,13 @@ pub async fn run_standalone_server_async_multi_accept_uds(
     aggregate_and_print_server_metrics(&collectors, &config.percentiles);
 
     let _ = std::fs::remove_file(&transport_config.socket_path);
+
+    if let Some(e) = accept_error {
+        if !had_any_client {
+            return Err(anyhow::anyhow!("Accept failed before any client connected: {}", e));
+        }
+    }
+
     info!("Standalone server exiting cleanly.");
     Ok(())
 }
