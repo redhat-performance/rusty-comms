@@ -1185,6 +1185,21 @@ pub trait BlockingTransport: Send {
     /// timeout mechanisms if needed (SO_RCVTIMEO on sockets, etc).
     fn receive_blocking(&mut self) -> Result<Message>;
 
+    /// Receive a message and capture a monotonic timestamp immediately
+    /// after the raw bytes are read but before deserialization.
+    ///
+    /// This provides more accurate one-way latency measurement by
+    /// excluding deserialization overhead from the receive timestamp.
+    ///
+    /// The default implementation captures the timestamp after
+    /// `receive_blocking()` returns (including deserialization).
+    /// Transport implementations should override this to place the
+    /// timestamp between raw I/O and deserialization.
+    fn receive_blocking_timed(&mut self) -> Result<(Message, u64)> {
+        let msg = self.receive_blocking()?;
+        Ok((msg, get_monotonic_time_ns()))
+    }
+
     /// Close the transport and release resources.
     ///
     /// This method cleanly shuts down the transport, closing connections

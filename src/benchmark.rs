@@ -377,6 +377,8 @@ impl BenchmarkConfig {
 /// #     pmq_priority: 0,
 /// #     include_first_message: false,
 /// #     blocking: false,
+/// #     server: false,
+/// #     client: false,
 /// #     internal_run_as_server: false,
 /// #     socket_path: None,
 /// #     shared_memory_name: None,
@@ -766,7 +768,7 @@ impl BenchmarkRunner {
         cmd.arg("-s").arg(self.config.message_size.to_string());
 
         if let Some(duration) = self.config.duration {
-            cmd.arg("-d").arg(format!("{}s", duration.as_secs()));
+            cmd.arg("-d").arg(format!("{}s", duration.as_secs_f64()));
         } else if let Some(count) = self.config.msg_count {
             cmd.arg("-i").arg(count.to_string());
         }

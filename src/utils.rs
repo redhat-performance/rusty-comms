@@ -202,6 +202,48 @@ pub fn current_timestamp_ns() -> u64 {
         .as_nanos() as u64
 }
 
+/// Sets the CPU affinity for the current thread to the specified core.
+///
+/// This function takes a core ID as input and attempts to pin the current
+/// thread to that CPU core. This can help improve performance by reducing
+/// cache misses and context switching.
+///
+/// ## Parameters
+///
+/// - `core_id`: The ID of the CPU core to pin the thread to.
+///
+/// ## Returns
+///
+/// - `Ok(())` if the affinity was set successfully.
+/// - `Err(anyhow::Error)` if the specified core ID is not available or the
+///   affinity could not be set.
+pub fn set_affinity(core_id: usize) -> anyhow::Result<()> {
+    use anyhow::Context;
+
+    let core_ids = core_affinity::get_core_ids().context("Failed to get core IDs")?;
+    tracing::info!(
+        "Available cores: {} total, requesting core {}",
+        core_ids.len(),
+        core_id
+    );
+
+    let core = core_ids
+        .get(core_id)
+        .ok_or_else(|| anyhow::anyhow!("Invalid core ID: {}", core_id))?;
+    tracing::info!("Attempting to set affinity to core {:?}", core);
+
+    if core_affinity::set_for_current(*core) {
+        tracing::info!("Successfully set affinity to core {}", core_id);
+        Ok(())
+    } else {
+        tracing::error!("Failed to set affinity to core {}", core_id);
+        Err(anyhow::anyhow!(
+            "Failed to set affinity for core ID: {}",
+            core_id
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{get_temp_dir, get_temp_socket_path, spawn_with_affinity};

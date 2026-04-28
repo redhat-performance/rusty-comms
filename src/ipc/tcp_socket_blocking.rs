@@ -106,6 +106,17 @@ impl BlockingTcpSocket {
         }
     }
 
+    /// Create a transport from a pre-accepted TCP stream.
+    ///
+    /// Used by the standalone server to wrap each accepted connection
+    /// in its own transport instance for per-client handler threads.
+    pub fn from_stream(stream: TcpStream) -> Self {
+        Self {
+            listener: None,
+            stream: Some(stream),
+        }
+    }
+
     /// Accept a connection if we haven't already.
     /// This is called automatically on first send/receive in server mode.
     fn ensure_connection(&mut self) -> Result<()> {
@@ -291,6 +302,42 @@ impl BlockingTransport for BlockingTcpSocket {
 
         trace!("Received message ID {}", message.id);
         Ok(message)
+    }
+
+    fn receive_blocking_timed(&mut self) -> Result<(Message, u64)> {
+        self.ensure_connection()?;
+
+        let stream = self.stream.as_mut().context(
+            "Cannot receive: socket not connected. \
+                 Call start_server_blocking() or start_client_blocking() first.",
+        )?;
+
+        let mut len_bytes = [0u8; 4];
+        stream.read_exact(&mut len_bytes).context(
+            "Failed to read message length. \
+                 Connection may be closed or peer disconnected.",
+        )?;
+        let len = u32::from_le_bytes(len_bytes) as usize;
+        if len == 0 || len > Self::MAX_MESSAGE_SIZE {
+            return Err(anyhow!(
+                "Invalid message length: {} bytes (allowed: 1..={})",
+                len,
+                Self::MAX_MESSAGE_SIZE
+            ));
+        }
+
+        let mut buffer = vec![0u8; len];
+        stream
+            .read_exact(&mut buffer)
+            .context("Failed to read message data")?;
+
+        // Capture timestamp after raw read, before deserialization
+        let receive_time_ns = crate::ipc::get_monotonic_time_ns();
+
+        let message: Message =
+            bincode::deserialize(&buffer).context("Failed to deserialize message")?;
+
+        Ok((message, receive_time_ns))
     }
 
     fn close_blocking(&mut self) -> Result<()> {
