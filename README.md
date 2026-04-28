@@ -658,7 +658,7 @@ The benchmark generates comprehensive JSON output with the following structure:
       "summary": {
         "total_messages_sent": 10000,
         "total_bytes_transferred": 10240000,
-        "average_throughput_mbps": 305.17,
+        "average_throughput_megabytes_per_sec": 305.17,
         "p95_latency_ns": 5200,
         "p99_latency_ns": 8500
       }
