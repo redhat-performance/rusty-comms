@@ -332,6 +332,7 @@ impl BlockingSharedMemoryDirect {
     /// # Panics
     ///
     /// Panics if shared memory is not initialized.
+    #[inline]
     unsafe fn get_raw_message_ptr(&self) -> *mut RawSharedMessage {
         self.shmem
             .as_ref()
@@ -470,6 +471,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
         Ok(())
     }
 
+    #[inline]
     fn send_blocking(&mut self, message: &Message) -> Result<()> {
         trace!("Sending message ID {} via direct memory SHM", message.id);
 
@@ -574,6 +576,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
         Ok(())
     }
 
+    #[inline]
     fn receive_blocking(&mut self) -> Result<Message> {
         trace!("Waiting to receive message via direct memory SHM");
 
@@ -607,6 +610,11 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 }
             }
 
+            // Capture receive timestamp immediately after wake — before
+            // any copies or allocations — so measured latency matches
+            // what the C implementation reports.
+            let receive_time_ns = crate::ipc::get_monotonic_time_ns();
+
             // Read message data directly from shared memory (no deserialization!)
             let id = (*ptr).id;
             let timestamp = (*ptr).timestamp;
@@ -614,13 +622,15 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
             let message_type = <MessageType as From<u32>>::from(message_type_u32);
             let payload_len = (*ptr).payload_len;
 
-            // Copy only the valid payload bytes (variable length)
-            let mut payload = vec![0u8; payload_len];
+            // Copy payload without zero-filling first: allocate capacity
+            // then copy directly, avoiding a redundant memset.
+            let mut payload = Vec::with_capacity(payload_len);
             std::ptr::copy_nonoverlapping(
                 (*ptr).payload.as_ptr(),
                 payload.as_mut_ptr(),
                 payload_len,
             );
+            payload.set_len(payload_len);
 
             // Clear ready flag and signal sender
             (*ptr).ready = 0;
@@ -636,12 +646,12 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 return Err(anyhow!("Failed to unlock mutex: {}", ret));
             }
 
-            // Construct Message from raw data
             Message {
                 id,
                 timestamp,
                 payload,
                 message_type,
+                receive_time_ns,
             }
         };
 

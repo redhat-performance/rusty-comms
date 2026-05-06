@@ -50,6 +50,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+#[cfg(not(unix))]
 use time::OffsetDateTime;
 use tokio::sync::mpsc;
 
@@ -102,19 +103,18 @@ pub use unix_domain_socket_blocking::BlockingUnixDomainSocket;
 /// ## Platform Support
 /// - **Linux/Unix**: Uses CLOCK_MONOTONIC via nix crate
 /// - **Other platforms**: Falls back to system time (less accurate)
+#[inline]
 pub fn get_monotonic_time_ns() -> u64 {
     #[cfg(unix)]
     {
-        use nix::time::{clock_gettime, ClockId};
-        match clock_gettime(ClockId::CLOCK_MONOTONIC) {
-            Ok(timespec) => {
-                (timespec.tv_sec() as u64) * 1_000_000_000 + (timespec.tv_nsec() as u64)
-            }
-            Err(_) => {
-                // Fallback to system time if monotonic clock fails
-                OffsetDateTime::now_utc().unix_timestamp_nanos() as u64
-            }
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        unsafe {
+            libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
         }
+        (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64)
     }
     #[cfg(not(unix))]
     {
@@ -201,6 +201,13 @@ pub struct Message {
     /// Enables different test patterns like one-way messaging,
     /// request-response cycles, and ping-pong latency measurement.
     pub message_type: MessageType,
+
+    /// Monotonic timestamp captured inside the transport's receive path,
+    /// as close to the wake-from-condvar as possible. Transports that
+    /// support this populate the field; others leave it at 0 so the
+    /// caller falls back to its own clock read.
+    #[serde(skip, default)]
+    pub receive_time_ns: u64,
 }
 
 /// Message types for different benchmark patterns
@@ -325,9 +332,10 @@ impl Message {
     pub fn new(id: u64, payload: Vec<u8>, message_type: MessageType) -> Self {
         Self {
             id,
-            timestamp: get_monotonic_time_ns(), // Use monotonic clock for both async and blocking
+            timestamp: get_monotonic_time_ns(),
             payload,
             message_type,
+            receive_time_ns: 0,
         }
     }
 
@@ -357,6 +365,7 @@ impl Message {
             timestamp: get_monotonic_time_ns(),
             payload,
             message_type,
+            receive_time_ns: 0,
         }
     }
 

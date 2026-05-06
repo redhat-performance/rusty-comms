@@ -46,10 +46,12 @@ impl SharedMemoryRingBuffer {
         }
     }
 
+    #[inline]
     fn data_ptr(&self) -> *mut u8 {
         unsafe { (self as *const Self as *mut u8).add(Self::HEADER_SIZE) }
     }
 
+    #[inline]
     fn available_write_space(&self) -> usize {
         let capacity = self.capacity.load(Ordering::Acquire);
         let read_pos = self.read_pos.load(Ordering::Acquire);
@@ -62,6 +64,7 @@ impl SharedMemoryRingBuffer {
         }
     }
 
+    #[inline]
     fn available_read_data(&self) -> usize {
         let read_pos = self.read_pos.load(Ordering::Acquire);
         let write_pos = self.write_pos.load(Ordering::Acquire);
@@ -73,6 +76,7 @@ impl SharedMemoryRingBuffer {
         }
     }
 
+    #[inline]
     fn write_data(&self, data: &[u8]) -> Result<()> {
         let data_len = data.len();
         let required_space = data_len + 4; // 4 bytes for length prefix
@@ -118,6 +122,7 @@ impl SharedMemoryRingBuffer {
         Ok(())
     }
 
+    #[inline]
     fn read_data(&self) -> Result<Vec<u8>> {
         if self.available_read_data() < 4 {
             return Err(anyhow!("No data available"));

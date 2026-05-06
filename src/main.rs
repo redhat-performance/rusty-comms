@@ -690,9 +690,14 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
     loop {
         match transport.receive_blocking() {
             Ok(message) => {
-                // Calculate actual IPC latency: receive_time - send_time
-                // Use monotonic clock to avoid NTP adjustments affecting measurements
-                let receive_time_ns = get_monotonic_time_ns();
+                // Use the transport-captured timestamp when available (e.g.
+                // direct SHM captures it right after condvar wake), otherwise
+                // fall back to a clock read here.
+                let receive_time_ns = if message.receive_time_ns != 0 {
+                    message.receive_time_ns
+                } else {
+                    get_monotonic_time_ns()
+                };
                 let wall_now_ns = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
@@ -895,9 +900,11 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
         // client disconnects) are observed and the server can exit cleanly.
         match transport.receive().await {
             Ok(msg) => {
-                // Calculate actual IPC latency: receive_time - send_time
-                // Use monotonic clock to avoid NTP adjustments affecting measurements
-                let receive_time_ns = get_monotonic_time_ns();
+                let receive_time_ns = if msg.receive_time_ns != 0 {
+                    msg.receive_time_ns
+                } else {
+                    get_monotonic_time_ns()
+                };
                 let wall_now_ns = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
