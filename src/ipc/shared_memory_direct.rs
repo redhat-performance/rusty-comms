@@ -44,6 +44,7 @@ use libc;
 use shared_memory::{Shmem, ShmemConf};
 use tracing::{debug, trace};
 
+
 /// Maximum payload size in bytes.
 ///
 /// Set to 8KB to match typical IPC benchmark message sizes.
@@ -520,7 +521,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 }
             }
 
-            // CRITICAL: Capture timestamp immediately before write
+            // CRITICAL: Capture timestamp immediately before write.
             let timestamp_ns = crate::ipc::get_monotonic_time_ns();
 
             // Validate payload size before writing to prevent
@@ -610,9 +611,9 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 }
             }
 
-            // Capture receive timestamp immediately after wake — before
-            // any copies or allocations — so measured latency matches
-            // what the C implementation reports.
+            // Capture receive timestamp immediately after wake-up, while
+            // still holding the mutex. This matches the Nissan C approach
+            // and gives the most accurate latency measurement.
             let receive_time_ns = crate::ipc::get_monotonic_time_ns();
 
             // Read message data directly from shared memory (no deserialization!)
