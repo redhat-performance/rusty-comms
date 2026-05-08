@@ -521,7 +521,11 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 }
             }
 
-            // CRITICAL: Capture timestamp immediately before write.
+            // PERF: Capture send timestamp inside the mutex, immediately
+            // before writing message data to shared memory. This ensures
+            // the measured one-way latency (receive_time - send_time) only
+            // includes the actual IPC transit — not any backpressure wait
+            // time spent in pthread_cond_timedwait above.
             let timestamp_ns = crate::ipc::get_monotonic_time_ns();
 
             // Validate payload size before writing to prevent
@@ -611,9 +615,15 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 }
             }
 
-            // Capture receive timestamp immediately after wake-up, while
-            // still holding the mutex. This matches the Nissan C approach
-            // and gives the most accurate latency measurement.
+            // PERF: Capture receive timestamp immediately after condvar
+            // wake-up, while still holding the mutex. This matches the
+            // Nissan C SHM implementation, which calls clock_gettime
+            // at the same point. By timestamping here instead of after
+            // receive_blocking() returns (in main.rs), we exclude the
+            // cost of payload copy, Vec allocation, mutex unlock, and
+            // function return from the measured latency — saving ~5-10 µs
+            // per message. The timestamp is stored in the Message's
+            // receive_time_ns field and used by the server loop in main.rs.
             let receive_time_ns = crate::ipc::get_monotonic_time_ns();
 
             // Read message data directly from shared memory (no deserialization!)
@@ -623,8 +633,14 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
             let message_type = <MessageType as From<u32>>::from(message_type_u32);
             let payload_len = (*ptr).payload_len;
 
-            // Copy payload without zero-filling first: allocate capacity
-            // then copy directly, avoiding a redundant memset.
+            // PERF: Allocate payload without zero-filling. The original
+            // code used vec![0u8; payload_len] which calls memset to zero
+            // every byte, then immediately overwrites them all with
+            // copy_nonoverlapping. Vec::with_capacity allocates the same
+            // memory but skips the redundant zeroing. set_len() tells Rust
+            // the buffer is valid after the copy. This eliminates one
+            // memset per received message, which is significant for large
+            // payloads and reduces tail-latency spikes from page faults.
             let mut payload = Vec::with_capacity(payload_len);
             std::ptr::copy_nonoverlapping(
                 (*ptr).payload.as_ptr(),

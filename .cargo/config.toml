@@ -1,2 +1,7 @@
+# Performance: Tell LLVM to emit instructions optimized for the build
+# machine's CPU (e.g. Cortex-A53 on NXP S32G). This enables wider
+# loads/stores, better instruction scheduling, and improved
+# auto-vectorization for memcpy-heavy SHM paths. Binaries built with
+# this flag are NOT portable to CPUs lacking the same feature set.
 [build]
 rustflags = ["-C", "target-cpu=native"]

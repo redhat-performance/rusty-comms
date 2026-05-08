@@ -46,6 +46,12 @@ impl SharedMemoryRingBuffer {
         }
     }
 
+    // PERF: #[inline] on all ring buffer hot-path functions below
+    // (data_ptr, available_write_space, available_read_data, write_data,
+    // read_data). These are small functions called on every message
+    // send/receive. Inlining eliminates call overhead and lets LLVM
+    // optimize across the call boundary (e.g. keeping the data pointer
+    // in a register across consecutive field accesses).
     #[inline]
     fn data_ptr(&self) -> *mut u8 {
         unsafe { (self as *const Self as *mut u8).add(Self::HEADER_SIZE) }

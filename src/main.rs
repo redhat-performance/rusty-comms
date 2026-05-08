@@ -690,9 +690,13 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
     loop {
         match transport.receive_blocking() {
             Ok(message) => {
-                // Use the transport-captured timestamp when available (e.g.
-                // direct SHM captures it right after condvar wake), otherwise
-                // fall back to a clock read here.
+                // PERF: Prefer the transport-level receive timestamp when
+                // available. SHM-direct captures clock_gettime inside the
+                // mutex immediately after pthread_cond_wait returns — this
+                // is the earliest possible point and matches how Nissan C
+                // measures latency. Other transports (TCP, UDS, PMQ) leave
+                // receive_time_ns at 0, so we fall back to a clock read
+                // here (the original behavior, unchanged for those paths).
                 let receive_time_ns = if message.receive_time_ns != 0 {
                     message.receive_time_ns
                 } else {
@@ -900,6 +904,10 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
         // client disconnects) are observed and the server can exit cleanly.
         match transport.receive().await {
             Ok(msg) => {
+                // PERF: Same transport-level timestamp preference as the
+                // blocking loop above. Currently no async transport sets
+                // receive_time_ns, so this always falls back to the clock
+                // read — preserving existing behavior for TCP/UDS/PMQ.
                 let receive_time_ns = if msg.receive_time_ns != 0 {
                     msg.receive_time_ns
                 } else {

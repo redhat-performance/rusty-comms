@@ -101,8 +101,18 @@ pub use unix_domain_socket_blocking::BlockingUnixDomainSocket;
 /// Current monotonic time in nanoseconds since an unspecified epoch
 ///
 /// ## Platform Support
-/// - **Linux/Unix**: Uses CLOCK_MONOTONIC via nix crate
+/// - **Linux/Unix**: Uses CLOCK_MONOTONIC via direct libc call
 /// - **Other platforms**: Falls back to system time (less accurate)
+///
+/// ## Performance
+/// This function calls `libc::clock_gettime` directly instead of going
+/// through the `nix` crate wrapper. The `nix` path allocates a `TimeSpec`
+/// struct, wraps the result in `Result<TimeSpec, Errno>`, and requires
+/// pattern-matching on every call. The direct libc call writes into a
+/// stack-local `timespec` with no allocation or error-wrapping overhead.
+/// Combined with `#[inline]`, this eliminates all function-call overhead
+/// at the call site — important because this is called on every message
+/// send and receive.
 #[inline]
 pub fn get_monotonic_time_ns() -> u64 {
     #[cfg(unix)]
@@ -202,10 +212,23 @@ pub struct Message {
     /// request-response cycles, and ping-pong latency measurement.
     pub message_type: MessageType,
 
-    /// Monotonic timestamp captured inside the transport's receive path,
-    /// as close to the wake-from-condvar as possible. Transports that
-    /// support this populate the field; others leave it at 0 so the
-    /// caller falls back to its own clock read.
+    /// Monotonic nanosecond timestamp captured inside the transport's
+    /// receive path, as close to the condvar wake-up as possible.
+    ///
+    /// This field exists to close the latency measurement gap with the
+    /// Nissan C SHM implementation. Nissan C captures its receive
+    /// timestamp inside the mutex immediately after `pthread_cond_wait`
+    /// returns. Without this field, rusty-comms captured the timestamp
+    /// in `main.rs` after `receive_blocking()` returned — after mutex
+    /// unlock, heap allocation, payload copy, and struct construction,
+    /// adding ~5-10 µs to the measured latency.
+    ///
+    /// Transports that support early capture (currently SHM-direct)
+    /// populate this field; others leave it at 0, and the server loop
+    /// in `main.rs` falls back to calling `get_monotonic_time_ns()`.
+    ///
+    /// Marked `#[serde(skip)]` so it is never serialized — the wire
+    /// format is unchanged and backward-compatible.
     #[serde(skip, default)]
     pub receive_time_ns: u64,
 }

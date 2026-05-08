@@ -343,7 +343,18 @@ impl SharedMemoryRingBuffer {
             *data_ptr.add((write_pos + i) % capacity) = byte;
         }
 
-        // Write data using bulk copy when possible
+        // PERF: Bulk copy using copy_nonoverlapping instead of the
+        // original byte-by-byte loop. The old code was:
+        //   for (i, &byte) in data.iter().enumerate() {
+        //       *data_ptr.add((write_pos + 4 + i) % capacity) = byte;
+        //   }
+        // That loop has a modulo division per byte, prevents LLVM from
+        // auto-vectorizing, and forces single-byte stores. The bulk
+        // copy lets the CPU transfer data in cache-line-sized bursts.
+        // For a 4096-byte message this replaces 4096 individual stores
+        // (each with an integer division) with 1-2 memcpy calls. The
+        // split handles ring buffer wrap-around: if the write would
+        // cross the end of the buffer, we copy in two parts.
         let data_start = (write_pos + 4) % capacity;
         if data_start + data_len <= capacity {
             std::ptr::copy_nonoverlapping(data.as_ptr(), data_ptr.add(data_start), data_len);
@@ -422,7 +433,18 @@ impl SharedMemoryRingBuffer {
             ));
         }
 
-        // Read data using bulk copy when possible
+        // PERF: Bulk read + zero-fill elimination. Two improvements:
+        //
+        // 1) Vec::with_capacity instead of vec![0u8; data_len]: avoids a
+        //    redundant memset since every byte is immediately overwritten
+        //    by the copy. set_len() marks the buffer valid after the copy.
+        //
+        // 2) copy_nonoverlapping instead of the original byte-by-byte loop:
+        //      for (i, byte) in data.iter_mut().enumerate() {
+        //          *byte = *data_ptr.add((read_pos + 4 + i) % capacity);
+        //      }
+        //    Same rationale as the write path — eliminates per-byte modulo
+        //    and enables cache-line-sized bulk transfers.
         let mut data = Vec::with_capacity(data_len);
         let data_start = (read_pos + 4) % capacity;
         if data_start + data_len <= capacity {
