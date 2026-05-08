@@ -44,7 +44,6 @@ use libc;
 use shared_memory::{Shmem, ShmemConf};
 use tracing::{debug, trace};
 
-
 /// Maximum payload size in bytes.
 ///
 /// Set to 8KB to match typical IPC benchmark message sizes.
@@ -617,7 +616,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
 
             // PERF: Capture receive timestamp immediately after condvar
             // wake-up, while still holding the mutex. This matches the
-            // Nissan C SHM implementation, which calls clock_gettime
+            // reference C SHM implementation, which calls clock_gettime
             // at the same point. By timestamping here instead of after
             // receive_blocking() returns (in main.rs), we exclude the
             // cost of payload copy, Vec allocation, mutex unlock, and

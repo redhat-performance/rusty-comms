@@ -215,10 +215,10 @@ pub struct Message {
     /// Monotonic nanosecond timestamp captured inside the transport's
     /// receive path, as close to the condvar wake-up as possible.
     ///
-    /// This field exists to close the latency measurement gap with the
-    /// Nissan C SHM implementation. Nissan C captures its receive
-    /// timestamp inside the mutex immediately after `pthread_cond_wait`
-    /// returns. Without this field, rusty-comms captured the timestamp
+    /// This field exists to close the latency measurement gap with a
+    /// reference C SHM implementation. The C baseline captures its
+    /// receive timestamp inside the mutex immediately after
+    /// `pthread_cond_wait` returns. Without this field, rusty-comms captured the timestamp
     /// in `main.rs` after `receive_blocking()` returned — after mutex
     /// unlock, heap allocation, payload copy, and struct construction,
     /// adding ~5-10 µs to the measured latency.

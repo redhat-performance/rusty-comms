@@ -693,8 +693,8 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
                 // PERF: Prefer the transport-level receive timestamp when
                 // available. SHM-direct captures clock_gettime inside the
                 // mutex immediately after pthread_cond_wait returns — this
-                // is the earliest possible point and matches how Nissan C
-                // measures latency. Other transports (TCP, UDS, PMQ) leave
+                // is the earliest possible point and matches how the
+                // reference C benchmark measures latency. Other transports (TCP, UDS, PMQ) leave
                 // receive_time_ns at 0, so we fall back to a clock read
                 // here (the original behavior, unchanged for those paths).
                 let receive_time_ns = if message.receive_time_ns != 0 {

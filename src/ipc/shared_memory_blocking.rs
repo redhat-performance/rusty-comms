@@ -448,18 +448,10 @@ impl SharedMemoryRingBuffer {
         let mut data = Vec::with_capacity(data_len);
         let data_start = (read_pos + 4) % capacity;
         if data_start + data_len <= capacity {
-            std::ptr::copy_nonoverlapping(
-                data_ptr.add(data_start),
-                data.as_mut_ptr(),
-                data_len,
-            );
+            std::ptr::copy_nonoverlapping(data_ptr.add(data_start), data.as_mut_ptr(), data_len);
         } else {
             let first_part = capacity - data_start;
-            std::ptr::copy_nonoverlapping(
-                data_ptr.add(data_start),
-                data.as_mut_ptr(),
-                first_part,
-            );
+            std::ptr::copy_nonoverlapping(data_ptr.add(data_start), data.as_mut_ptr(), first_part);
             std::ptr::copy_nonoverlapping(
                 data_ptr,
                 data.as_mut_ptr().add(first_part),
