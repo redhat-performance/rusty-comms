@@ -477,6 +477,13 @@ impl BlockingBenchmarkRunner {
                 .arg(self.config.pmq_priority.to_string());
         }
 
+        // Forward send-delay to server so SHM-direct can enable precise
+        // (inside-mutex) timestamps for latency-focused benchmarks.
+        if let Some(delay) = self.config.send_delay {
+            let micros = delay.as_micros();
+            cmd.arg("--send-delay").arg(format!("{micros}us"));
+        }
+
         // Add latency file path if provided (for true IPC measurement)
         if let Some(path) = latency_file_path {
             cmd.arg("--internal-latency-file").arg(path);
@@ -813,8 +820,11 @@ impl BlockingBenchmarkRunner {
     /// - `Ok(())`: Warmup completed successfully
     /// - `Err(anyhow::Error)`: Warmup failed
     fn run_warmup(&self, transport_config: &TransportConfig) -> Result<()> {
-        let mut client_transport =
-            BlockingTransportFactory::create(&self.mechanism, self.args.shm_direct)?;
+        let mut client_transport = BlockingTransportFactory::create(
+            &self.mechanism,
+            self.args.shm_direct,
+            self.config.send_delay,
+        )?;
 
         // --- Server Process Spawning ---
         let (mut server_process, mut pipe_reader) = self.spawn_server_process(transport_config)?;
@@ -1000,8 +1010,11 @@ impl BlockingBenchmarkRunner {
         metrics_collector: &mut MetricsCollector,
         mut results_manager: Option<&mut crate::results_blocking::BlockingResultsManager>,
     ) -> Result<()> {
-        let mut client_transport =
-            BlockingTransportFactory::create(&self.mechanism, self.args.shm_direct)?;
+        let mut client_transport = BlockingTransportFactory::create(
+            &self.mechanism,
+            self.args.shm_direct,
+            self.config.send_delay,
+        )?;
 
         // Create a temporary file for server to write latencies
         let latency_file_path = std::env::temp_dir()
@@ -1181,8 +1194,11 @@ impl BlockingBenchmarkRunner {
         metrics_collector: &mut MetricsCollector,
         mut results_manager: Option<&mut crate::results_blocking::BlockingResultsManager>,
     ) -> Result<()> {
-        let mut client_transport =
-            BlockingTransportFactory::create(&self.mechanism, self.args.shm_direct)?;
+        let mut client_transport = BlockingTransportFactory::create(
+            &self.mechanism,
+            self.args.shm_direct,
+            self.config.send_delay,
+        )?;
 
         // --- Server Process Spawning ---
         let (mut server_process, mut pipe_reader) = self.spawn_server_process(transport_config)?;

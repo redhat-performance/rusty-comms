@@ -666,7 +666,8 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
         IpcMechanism::All => {}
     }
 
-    let mut transport = BlockingTransportFactory::create(&mechanism, args.shm_direct)?;
+    let mut transport =
+        BlockingTransportFactory::create(&mechanism, args.shm_direct, args.send_delay)?;
     transport
         .start_server_blocking(&transport_config)
         .context("Server failed to start transport")?;
@@ -691,12 +692,11 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
         match transport.receive_blocking() {
             Ok(message) => {
                 // PERF: Prefer the transport-level receive timestamp when
-                // available. SHM-direct captures clock_gettime inside the
-                // mutex immediately after pthread_cond_wait returns — this
-                // is the earliest possible point and matches how the
-                // reference C benchmark measures latency. Other transports (TCP, UDS, PMQ) leave
-                // receive_time_ns at 0, so we fall back to a clock read
-                // here (the original behavior, unchanged for those paths).
+                // available. SHM-direct populates receive_time_ns either
+                // inside the mutex (precise mode, with --send-delay) or
+                // immediately after mutex unlock (throughput mode). Other
+                // transports leave receive_time_ns at 0, so we fall back
+                // to a clock read here (the original behavior).
                 let receive_time_ns = if message.receive_time_ns != 0 {
                     message.receive_time_ns
                 } else {

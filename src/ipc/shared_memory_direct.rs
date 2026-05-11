@@ -297,6 +297,18 @@ pub struct BlockingSharedMemoryDirect {
     ///
     /// The server is responsible for initializing and destroying pthread primitives.
     is_server: bool,
+
+    /// When true, the receive timestamp is captured inside the mutex
+    /// (immediately after condvar wake-up) for highest accuracy — matching
+    /// the reference C implementation. When false, the timestamp is captured
+    /// after mutex unlock to minimize critical section length and preserve
+    /// throughput.
+    ///
+    /// Derived from `--send-delay`: latency-focused benchmarks (send-delay > 0)
+    /// enable precise timestamps because the delay dwarfs any mutex overhead;
+    /// throughput benchmarks (no send-delay) disable them to avoid a 22-31%
+    /// regression from the extra clock_gettime inside the critical section.
+    precise_timestamps: bool,
 }
 
 impl BlockingSharedMemoryDirect {
@@ -317,6 +329,21 @@ impl BlockingSharedMemoryDirect {
         Self {
             shmem: None,
             is_server: false,
+            precise_timestamps: false,
+        }
+    }
+
+    /// Create a transport with explicit timestamp precision control.
+    ///
+    /// When `precise` is true, `receive_blocking()` captures its timestamp
+    /// inside the mutex (best latency accuracy, higher mutex contention).
+    /// When false, the timestamp is captured after mutex unlock (best
+    /// throughput, slightly later timestamp).
+    pub fn with_precise_timestamps(precise: bool) -> Self {
+        Self {
+            shmem: None,
+            is_server: false,
+            precise_timestamps: precise,
         }
     }
 
@@ -494,8 +521,9 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                     tv_sec: 0,
                     tv_nsec: 0,
                 };
-                libc::clock_gettime(libc::CLOCK_REALTIME, &mut timespec);
-                timespec.tv_sec += 5; // 5 second timeout
+                let ret = libc::clock_gettime(libc::CLOCK_REALTIME, &mut timespec);
+                debug_assert!(ret == 0, "clock_gettime(CLOCK_REALTIME) failed: {ret}");
+                timespec.tv_sec += 5;
 
                 while (*ptr).ready == 1 {
                     let ret = libc::pthread_cond_timedwait(
@@ -614,16 +642,30 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 }
             }
 
-            // PERF: Capture receive timestamp immediately after condvar
-            // wake-up, while still holding the mutex. This matches the
-            // reference C SHM implementation, which calls clock_gettime
-            // at the same point. By timestamping here instead of after
-            // receive_blocking() returns (in main.rs), we exclude the
-            // cost of payload copy, Vec allocation, mutex unlock, and
-            // function return from the measured latency — saving ~5-10 µs
-            // per message. The timestamp is stored in the Message's
-            // receive_time_ns field and used by the server loop in main.rs.
-            let receive_time_ns = crate::ipc::get_monotonic_time_ns();
+            // PERF: Conditionally capture receive timestamp inside vs
+            // outside the mutex based on `precise_timestamps`.
+            //
+            // Inside (precise_timestamps == true): Timestamp is taken
+            // immediately after condvar wake-up, while still holding the
+            // mutex. This matches the reference C SHM implementation and
+            // excludes payload copy, Vec allocation, mutex unlock, and
+            // function return from measured latency (~5-10 µs savings).
+            // Trade-off: extends the critical section, reducing throughput
+            // by 22-31% at small message sizes.
+            //
+            // Outside (precise_timestamps == false): Timestamp is taken
+            // after mutex unlock. The critical section is minimal,
+            // preserving full throughput. The timestamp includes mutex
+            // unlock overhead (~sub-µs), negligible for most benchmarks.
+            //
+            // The flag is derived from --send-delay at the CLI layer:
+            // latency benchmarks (send-delay > 0) use inside-mutex;
+            // throughput benchmarks (no send-delay) use outside-mutex.
+            let receive_time_ns_inner = if self.precise_timestamps {
+                crate::ipc::get_monotonic_time_ns()
+            } else {
+                0
+            };
 
             // Read message data directly from shared memory (no deserialization!)
             let id = (*ptr).id;
@@ -661,6 +703,12 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
             if ret != 0 {
                 return Err(anyhow!("Failed to unlock mutex: {}", ret));
             }
+
+            let receive_time_ns = if receive_time_ns_inner != 0 {
+                receive_time_ns_inner
+            } else {
+                crate::ipc::get_monotonic_time_ns()
+            };
 
             Message {
                 id,
