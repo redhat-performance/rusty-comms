@@ -1346,7 +1346,7 @@ impl BlockingTransportFactory {
                 if use_direct_memory {
                     #[cfg(unix)]
                     {
-                        let precise = send_delay.map_or(false, |d| d > std::time::Duration::ZERO);
+                        let precise = send_delay.is_some_and(|d| d > std::time::Duration::ZERO);
                         Ok(Box::new(
                             BlockingSharedMemoryDirect::with_precise_timestamps(precise),
                         ))
@@ -1451,6 +1451,42 @@ mod tests {
         assert!(
             result.is_ok(),
             "Factory should successfully create Direct Memory Shared Memory transport"
+        );
+    }
+
+    /// Verifies the factory accepts `send_delay` variants when
+    /// creating SHM-direct transports. The actual `precise_timestamps`
+    /// field wiring is covered by unit tests in `shared_memory_direct`.
+    #[test]
+    #[cfg(unix)]
+    fn test_factory_shm_direct_accepts_send_delay_variants() {
+        use std::time::Duration;
+
+        let result_none =
+            BlockingTransportFactory::create(&crate::cli::IpcMechanism::SharedMemory, true, None);
+        assert!(
+            result_none.is_ok(),
+            "Factory should create SHM-direct with send_delay=None"
+        );
+
+        let result_zero = BlockingTransportFactory::create(
+            &crate::cli::IpcMechanism::SharedMemory,
+            true,
+            Some(Duration::ZERO),
+        );
+        assert!(
+            result_zero.is_ok(),
+            "Factory should create SHM-direct with send_delay=0"
+        );
+
+        let result_delay = BlockingTransportFactory::create(
+            &crate::cli::IpcMechanism::SharedMemory,
+            true,
+            Some(Duration::from_millis(10)),
+        );
+        assert!(
+            result_delay.is_ok(),
+            "Factory should create SHM-direct with send_delay=10ms"
         );
     }
 

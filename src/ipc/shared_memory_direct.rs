@@ -963,6 +963,88 @@ mod tests {
         );
     }
 
+    /// Verifies that `with_precise_timestamps(true)` sets the
+    /// internal flag correctly.
+    #[test]
+    fn test_with_precise_timestamps_true() {
+        let transport = BlockingSharedMemoryDirect::with_precise_timestamps(true);
+        assert!(transport.shmem.is_none());
+        assert!(!transport.is_server);
+        assert!(
+            transport.precise_timestamps,
+            "precise_timestamps should be true when constructed with true"
+        );
+    }
+
+    /// Verifies that `with_precise_timestamps(false)` matches the
+    /// default `new()` behavior — precise timestamps disabled.
+    #[test]
+    fn test_with_precise_timestamps_false() {
+        let transport = BlockingSharedMemoryDirect::with_precise_timestamps(false);
+        let default_transport = BlockingSharedMemoryDirect::new();
+        assert_eq!(
+            transport.precise_timestamps, default_transport.precise_timestamps,
+            "with_precise_timestamps(false) should match new() default"
+        );
+        assert!(
+            !transport.precise_timestamps,
+            "precise_timestamps should be false when constructed with false"
+        );
+    }
+
+    /// Sends and receives a message with `precise_timestamps` enabled
+    /// to exercise the inside-mutex timestamp code path. Verifies
+    /// the receive timestamp is non-zero and plausible.
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn test_receive_with_precise_timestamps() {
+        use std::thread;
+        use std::time::Duration;
+        use uuid::Uuid;
+
+        let shm_name = format!("test_precise_{}", Uuid::new_v4());
+        let shm_name_clone = shm_name.clone();
+
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingSharedMemoryDirect::with_precise_timestamps(true);
+            let config = TransportConfig {
+                shared_memory_name: shm_name_clone,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            let msg = server.receive_blocking().unwrap();
+            assert_eq!(msg.id, 99);
+            assert!(
+                msg.receive_time_ns > 0,
+                "Receive timestamp should be non-zero with precise_timestamps=true"
+            );
+            assert!(
+                msg.receive_time_ns >= msg.timestamp,
+                "Receive timestamp should be >= send timestamp"
+            );
+
+            server.close_blocking().unwrap();
+        });
+
+        // Allow server time to initialize
+        thread::sleep(Duration::from_millis(100));
+
+        let mut client = BlockingSharedMemoryDirect::with_precise_timestamps(true);
+        let config = TransportConfig {
+            shared_memory_name: shm_name,
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        let mut msg = Message::new(99, vec![0u8; 64], MessageType::OneWay);
+        msg.timestamp = crate::ipc::get_monotonic_time_ns();
+        client.send_blocking(&msg).unwrap();
+        client.close_blocking().unwrap();
+
+        server_handle.join().unwrap();
+    }
+
     /// Exercises the oversized-payload validation in
     /// `send_blocking`. The transport must be connected to
     /// reach the size-check code path, so we set up a real

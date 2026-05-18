@@ -334,9 +334,25 @@ sudo sysctl -p
 ### Application-Level Tuning
 
 #### Rust Compiler Optimizations
+
+> **Important:** This repo does **not** ship a `.cargo/config.toml` with
+> `target-cpu=native`. That setting would apply to every build —
+> including CI — producing non-portable binaries. When CI
+> cross-compiles for ARM on x86 runners, `target-cpu=native`
+> silently optimizes for the build host, not the target, and may
+> emit instructions the deployment CPU does not support (e.g.,
+> ARMv8.2+ on a Cortex-A53). Apply CPU tuning explicitly at build
+> time instead. See the README's
+> [CPU-Optimized Builds](README.md#cpu-optimized-builds) section
+> for per-platform examples.
+
 ```bash
-# Maximum optimization
+# On-target build (uses every instruction the local CPU supports)
 RUSTFLAGS="-C target-cpu=native -C opt-level=3" cargo build --release
+
+# Cross-compile for a specific ARM CPU
+RUSTFLAGS="-C target-cpu=cortex-a53 -C opt-level=3" cargo build \
+  --release --target aarch64-unknown-linux-gnu
 
 # Link-time optimization
 RUSTFLAGS="-C lto=fat" cargo build --release
