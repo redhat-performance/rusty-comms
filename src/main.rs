@@ -37,7 +37,9 @@ use ipc_benchmark::{
     benchmark::{BenchmarkConfig, BenchmarkRunner},
     benchmark_blocking::BlockingBenchmarkRunner,
     cli::{Args, IpcMechanism},
-    ipc::{get_monotonic_time_ns, Message, MessageType, TransportFactory},
+    ipc::{
+        get_monotonic_time_ns, BlockingTransportFactory, Message, MessageType, TransportFactory,
+    },
     results::{BenchmarkResults, ResultsManager},
     results_blocking::BlockingResultsManager,
 };
@@ -47,9 +49,8 @@ use tracing::{debug, error, info, warn};
 
 use tracing_subscriber::{filter::LevelFilter, prelude::*, Layer};
 
-mod logging;
 use ipc_benchmark::cli;
-use logging::ColorizedFormatter;
+use ipc_benchmark::logging::ColorizedFormatter;
 
 /// Main entry point for the IPC benchmark suite.
 ///
@@ -89,7 +90,11 @@ fn main() -> Result<()> {
     }
 
     // Branch to appropriate execution path based on mode
-    if args.blocking {
+    if args.server {
+        ipc_benchmark::standalone_server::run_standalone_server(args)
+    } else if args.client {
+        ipc_benchmark::standalone_client::run_standalone_client(args)
+    } else if args.blocking {
         // Blocking mode: use std library with blocking I/O
         run_blocking_mode(args)
     } else {
@@ -613,8 +618,6 @@ fn run_blocking_benchmark_for_mechanism(
 /// * `Ok(())` - Server completed successfully
 /// * `Err(anyhow::Error)` - Server setup or execution failed
 fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
-    use ipc_benchmark::ipc::BlockingTransportFactory;
-
     info!("Running in server-only mode (blocking)");
 
     // In server mode, we only care about the first mechanism specified
@@ -629,7 +632,7 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
 
     // Set CPU affinity for the server process if specified
     if let Some(core) = args.server_affinity {
-        if let Err(e) = set_affinity(core) {
+        if let Err(e) = ipc_benchmark::utils::set_affinity(core) {
             error!("Failed to set server CPU affinity to core {}: {}", core, e);
         } else {
             info!("Successfully set server affinity to CPU core {}", core);
@@ -748,46 +751,6 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
     Ok(())
 }
 
-/// Sets the CPU affinity for the current thread to the specified core.
-///
-/// This function takes a core ID as input and attempts to pin the current
-/// thread to that CPU core. This can help improve performance by reducing
-/// cache misses and context switching.
-///
-/// ## Parameters
-///
-/// - `core_id`: The ID of the CPU core to pin the thread to.
-///
-/// ## Returns
-///
-/// - `Ok(())` if the affinity was set successfully.
-/// - `Err(anyhow::Error)` if the specified core ID is not available or the
-///   affinity could not be set.
-fn set_affinity(core_id: usize) -> Result<()> {
-    let core_ids = core_affinity::get_core_ids().context("Failed to get core IDs")?;
-    info!(
-        "Server: Available cores: {} total, requesting core {}",
-        core_ids.len(),
-        core_id
-    );
-
-    let core = core_ids
-        .get(core_id)
-        .ok_or_else(|| anyhow::anyhow!("Invalid core ID: {}", core_id))?;
-    info!("Server: Attempting to set affinity to core {:?}", core);
-
-    if core_affinity::set_for_current(*core) {
-        info!("Server: Successfully set affinity to core {}", core_id);
-        Ok(())
-    } else {
-        error!("Server: Failed to set affinity to core {}", core_id);
-        Err(anyhow::anyhow!(
-            "Failed to set affinity for core ID: {}",
-            core_id
-        ))
-    }
-}
-
 /// Executes the application in a server-only mode for a single IPC mechanism.
 ///
 /// This function is triggered by the internal `--internal-run-as-server` flag.
@@ -828,7 +791,7 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
 
     // Set CPU affinity for the server process if specified.
     if let Some(core) = args.server_affinity {
-        if let Err(e) = set_affinity(core) {
+        if let Err(e) = ipc_benchmark::utils::set_affinity(core) {
             error!("Failed to set server CPU affinity to core {}: {}", core, e);
             // We'll log the error but continue execution.
         } else {
@@ -1025,7 +988,7 @@ fn write_latency_buffer(path: &str, buffer: &[(u64, u64)]) -> Result<()> {
     let mut file = std::fs::File::create(path)
         .with_context(|| format!("Failed to create latency file: {}", path))?;
     for &(wall_send_ns, latency_ns) in buffer {
-        writeln!(file, "{},{}", wall_send_ns, latency_ns).ok();
+        writeln!(file, "{},{}", wall_send_ns, latency_ns)?;
     }
     debug!("Finished writing latencies to file");
     Ok(())

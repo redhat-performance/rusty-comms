@@ -649,6 +649,15 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
         Ok(message)
     }
 
+    fn receive_blocking_timed(&mut self) -> Result<(Message, u64)> {
+        // SHM-direct has no deserialization (direct memcpy), so the
+        // timestamp is captured immediately after the data read and
+        // before mutex unlock/signal. This uses the default implementation
+        // since there's no meaningful deserialization to exclude.
+        let msg = self.receive_blocking()?;
+        Ok((msg, crate::ipc::get_monotonic_time_ns()))
+    }
+
     fn close_blocking(&mut self) -> Result<()> {
         debug!("Closing direct memory SHM transport");
 

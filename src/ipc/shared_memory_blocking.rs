@@ -756,6 +756,42 @@ impl BlockingTransport for BlockingSharedMemory {
         Ok(message)
     }
 
+    fn receive_blocking_timed(&mut self) -> Result<(Message, u64)> {
+        self.ensure_peer_ready()?;
+
+        let ring_buffer = self.ring_buffer.ok_or_else(|| {
+            anyhow!(
+                "Cannot receive: shared memory not initialized. \
+                 Call start_server_blocking() or start_client_blocking() first."
+            )
+        })?;
+
+        #[cfg(unix)]
+        let data = unsafe { (*ring_buffer).read_data_blocking()? };
+
+        #[cfg(not(unix))]
+        let data = loop {
+            match unsafe { (*ring_buffer).read_data() } {
+                Ok(d) => break d,
+                Err(_) => {
+                    if unsafe { (*ring_buffer).shutdown.load(Ordering::Acquire) } {
+                        return Err(anyhow!("Connection closed"));
+                    }
+                    thread::yield_now();
+                    thread::sleep(Duration::from_micros(100));
+                }
+            }
+        };
+
+        // Capture timestamp after raw read, before deserialization
+        let receive_time_ns = crate::ipc::get_monotonic_time_ns();
+
+        let message: Message =
+            bincode::deserialize(&data).context("Failed to deserialize message")?;
+
+        Ok((message, receive_time_ns))
+    }
+
     fn close_blocking(&mut self) -> Result<()> {
         debug!("Closing blocking shared memory transport");
 

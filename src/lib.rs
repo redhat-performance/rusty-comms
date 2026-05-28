@@ -154,6 +154,9 @@ pub mod results;
 /// - System information collection for reproducibility
 pub mod results_blocking;
 
+pub mod logging;
+pub mod standalone_client;
+pub mod standalone_server;
 pub mod utils;
 
 // Re-export commonly used utilities for convenient access
