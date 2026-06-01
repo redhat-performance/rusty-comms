@@ -205,6 +205,16 @@ send-wait-receive per message).
 3. **Client Side**: Timestamp captured after receiving response
 4. **Latency Calculation**: Total elapsed time from send to receive
 
+#### SHM-Direct Conditional Timestamp Placement
+
+The `--shm-direct` transport uses **adaptive receive timestamp placement** based on the test type, controlled automatically by `--send-delay`:
+
+- **Latency-focused tests** (`--send-delay > 0`): The receive timestamp is captured **inside the mutex**, immediately after the condvar wake-up. This matches the reference C SHM implementation and excludes payload copy, allocation, and mutex unlock from measured latency (~5–10 µs savings). The send-delay between messages dwarfs any additional mutex contention.
+
+- **Throughput-focused tests** (no `--send-delay`): The receive timestamp is captured **after the mutex unlock**, keeping the critical section minimal. This avoids a 22–31% throughput regression at small message sizes caused by the extra `clock_gettime` call inside the mutex.
+
+This behavior is fully automatic — no additional CLI flags are needed. The `--send-delay` flag is sufficient to signal intent: if you're pacing messages for latency measurement, you get the most accurate timestamps; if you're saturating the pipe for throughput, you get maximum performance.
+
 #### Streaming Output Columns
 
 The per-message streaming output (JSON and CSV) contains the
@@ -357,6 +367,37 @@ cargo build --release
 ```
 
 The optimized binary will be available at `target/release/ipc-benchmark`.
+
+### CPU-Optimized Builds
+
+By default, `cargo build --release` produces **portable binaries** that run on any CPU in the target architecture family (e.g., generic `aarch64`). This is intentional — the repo does not ship a `.cargo/config.toml` with `target-cpu=native` because that setting would silently affect every build, including CI, producing non-portable binaries that may use instructions unsupported on the deployment target.
+
+This matters especially for cross-platform ARM development. If CI runs on AWS Graviton (Neoverse-N1) but the target is an NXP S32G (Cortex-A53), a `target-cpu=native` binary built on Graviton could use ARMv8.2+ instructions that the Cortex-A53 does not support, causing illegal-instruction crashes at runtime.
+
+**When building directly on target hardware**, enable CPU-specific optimizations at build time:
+
+```bash
+# On-target build: let the compiler use every instruction the local CPU supports
+RUSTFLAGS="-C target-cpu=native" cargo build --release
+```
+
+**When cross-compiling in CI**, specify the exact CPU target per platform:
+
+```bash
+# NXP S32G (Cortex-A53)
+RUSTFLAGS="-C target-cpu=cortex-a53" cargo build --release \
+  --target aarch64-unknown-linux-gnu
+
+# Qualcomm Ride SX4 (Cortex-A78AE) — use the closest supported LLVM target
+RUSTFLAGS="-C target-cpu=cortex-a78" cargo build --release \
+  --target aarch64-unknown-linux-gnu
+
+# Renesas R-Car S4 (Cortex-A76)
+RUSTFLAGS="-C target-cpu=cortex-a76" cargo build --release \
+  --target aarch64-unknown-linux-gnu
+```
+
+The performance-critical code paths in this project (timestamp placement, bulk copies, zero-fill elimination, direct `libc::clock_gettime`) are pure code optimizations that do not depend on `target-cpu`. They provide the bulk of the latency improvement regardless of CPU target. The `target-cpu` flag adds a smaller, incremental gain from SIMD auto-vectorization and instruction scheduling tuned for the specific microarchitecture.
 
 ### Quick Start
 

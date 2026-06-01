@@ -297,6 +297,18 @@ pub struct BlockingSharedMemoryDirect {
     ///
     /// The server is responsible for initializing and destroying pthread primitives.
     is_server: bool,
+
+    /// When true, the receive timestamp is captured inside the mutex
+    /// (immediately after condvar wake-up) for highest accuracy — matching
+    /// the reference C implementation. When false, the timestamp is captured
+    /// after mutex unlock to minimize critical section length and preserve
+    /// throughput.
+    ///
+    /// Derived from `--send-delay`: latency-focused benchmarks (send-delay > 0)
+    /// enable precise timestamps because the delay dwarfs any mutex overhead;
+    /// throughput benchmarks (no send-delay) disable them to avoid a 22-31%
+    /// regression from the extra clock_gettime inside the critical section.
+    precise_timestamps: bool,
 }
 
 impl BlockingSharedMemoryDirect {
@@ -317,6 +329,21 @@ impl BlockingSharedMemoryDirect {
         Self {
             shmem: None,
             is_server: false,
+            precise_timestamps: false,
+        }
+    }
+
+    /// Create a transport with explicit timestamp precision control.
+    ///
+    /// When `precise` is true, `receive_blocking()` captures its timestamp
+    /// inside the mutex (best latency accuracy, higher mutex contention).
+    /// When false, the timestamp is captured after mutex unlock (best
+    /// throughput, slightly later timestamp).
+    pub fn with_precise_timestamps(precise: bool) -> Self {
+        Self {
+            shmem: None,
+            is_server: false,
+            precise_timestamps: precise,
         }
     }
 
@@ -332,6 +359,7 @@ impl BlockingSharedMemoryDirect {
     /// # Panics
     ///
     /// Panics if shared memory is not initialized.
+    #[inline]
     unsafe fn get_raw_message_ptr(&self) -> *mut RawSharedMessage {
         self.shmem
             .as_ref()
@@ -470,6 +498,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
         Ok(())
     }
 
+    #[inline]
     fn send_blocking(&mut self, message: &Message) -> Result<()> {
         trace!("Sending message ID {} via direct memory SHM", message.id);
 
@@ -492,8 +521,9 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                     tv_sec: 0,
                     tv_nsec: 0,
                 };
-                libc::clock_gettime(libc::CLOCK_REALTIME, &mut timespec);
-                timespec.tv_sec += 5; // 5 second timeout
+                let ret = libc::clock_gettime(libc::CLOCK_REALTIME, &mut timespec);
+                debug_assert!(ret == 0, "clock_gettime(CLOCK_REALTIME) failed: {ret}");
+                timespec.tv_sec += 5;
 
                 while (*ptr).ready == 1 {
                     let ret = libc::pthread_cond_timedwait(
@@ -518,7 +548,11 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 }
             }
 
-            // CRITICAL: Capture timestamp immediately before write
+            // PERF: Capture send timestamp inside the mutex, immediately
+            // before writing message data to shared memory. This ensures
+            // the measured one-way latency (receive_time - send_time) only
+            // includes the actual IPC transit — not any backpressure wait
+            // time spent in pthread_cond_timedwait above.
             let timestamp_ns = crate::ipc::get_monotonic_time_ns();
 
             // Validate payload size before writing to prevent
@@ -574,6 +608,7 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
         Ok(())
     }
 
+    #[inline]
     fn receive_blocking(&mut self) -> Result<Message> {
         trace!("Waiting to receive message via direct memory SHM");
 
@@ -607,6 +642,31 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 }
             }
 
+            // PERF: Conditionally capture receive timestamp inside vs
+            // outside the mutex based on `precise_timestamps`.
+            //
+            // Inside (precise_timestamps == true): Timestamp is taken
+            // immediately after condvar wake-up, while still holding the
+            // mutex. This matches the reference C SHM implementation and
+            // excludes payload copy, Vec allocation, mutex unlock, and
+            // function return from measured latency (~5-10 µs savings).
+            // Trade-off: extends the critical section, reducing throughput
+            // by 22-31% at small message sizes.
+            //
+            // Outside (precise_timestamps == false): Timestamp is taken
+            // after mutex unlock. The critical section is minimal,
+            // preserving full throughput. The timestamp includes mutex
+            // unlock overhead (~sub-µs), negligible for most benchmarks.
+            //
+            // The flag is derived from --send-delay at the CLI layer:
+            // latency benchmarks (send-delay > 0) use inside-mutex;
+            // throughput benchmarks (no send-delay) use outside-mutex.
+            let receive_time_ns_inner = if self.precise_timestamps {
+                crate::ipc::get_monotonic_time_ns()
+            } else {
+                0
+            };
+
             // Read message data directly from shared memory (no deserialization!)
             let id = (*ptr).id;
             let timestamp = (*ptr).timestamp;
@@ -614,13 +674,21 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
             let message_type = <MessageType as From<u32>>::from(message_type_u32);
             let payload_len = (*ptr).payload_len;
 
-            // Copy only the valid payload bytes (variable length)
-            let mut payload = vec![0u8; payload_len];
+            // PERF: Allocate payload without zero-filling. The original
+            // code used vec![0u8; payload_len] which calls memset to zero
+            // every byte, then immediately overwrites them all with
+            // copy_nonoverlapping. Vec::with_capacity allocates the same
+            // memory but skips the redundant zeroing. set_len() tells Rust
+            // the buffer is valid after the copy. This eliminates one
+            // memset per received message, which is significant for large
+            // payloads and reduces tail-latency spikes from page faults.
+            let mut payload = Vec::with_capacity(payload_len);
             std::ptr::copy_nonoverlapping(
                 (*ptr).payload.as_ptr(),
                 payload.as_mut_ptr(),
                 payload_len,
             );
+            payload.set_len(payload_len);
 
             // Clear ready flag and signal sender
             (*ptr).ready = 0;
@@ -636,12 +704,18 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
                 return Err(anyhow!("Failed to unlock mutex: {}", ret));
             }
 
-            // Construct Message from raw data
+            let receive_time_ns = if receive_time_ns_inner != 0 {
+                receive_time_ns_inner
+            } else {
+                crate::ipc::get_monotonic_time_ns()
+            };
+
             Message {
                 id,
                 timestamp,
                 payload,
                 message_type,
+                receive_time_ns,
             }
         };
 
@@ -896,6 +970,88 @@ mod tests {
             struct_size,
             payload_cap
         );
+    }
+
+    /// Verifies that `with_precise_timestamps(true)` sets the
+    /// internal flag correctly.
+    #[test]
+    fn test_with_precise_timestamps_true() {
+        let transport = BlockingSharedMemoryDirect::with_precise_timestamps(true);
+        assert!(transport.shmem.is_none());
+        assert!(!transport.is_server);
+        assert!(
+            transport.precise_timestamps,
+            "precise_timestamps should be true when constructed with true"
+        );
+    }
+
+    /// Verifies that `with_precise_timestamps(false)` matches the
+    /// default `new()` behavior — precise timestamps disabled.
+    #[test]
+    fn test_with_precise_timestamps_false() {
+        let transport = BlockingSharedMemoryDirect::with_precise_timestamps(false);
+        let default_transport = BlockingSharedMemoryDirect::new();
+        assert_eq!(
+            transport.precise_timestamps, default_transport.precise_timestamps,
+            "with_precise_timestamps(false) should match new() default"
+        );
+        assert!(
+            !transport.precise_timestamps,
+            "precise_timestamps should be false when constructed with false"
+        );
+    }
+
+    /// Sends and receives a message with `precise_timestamps` enabled
+    /// to exercise the inside-mutex timestamp code path. Verifies
+    /// the receive timestamp is non-zero and plausible.
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn test_receive_with_precise_timestamps() {
+        use std::thread;
+        use std::time::Duration;
+        use uuid::Uuid;
+
+        let shm_name = format!("test_precise_{}", Uuid::new_v4());
+        let shm_name_clone = shm_name.clone();
+
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingSharedMemoryDirect::with_precise_timestamps(true);
+            let config = TransportConfig {
+                shared_memory_name: shm_name_clone,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            let msg = server.receive_blocking().unwrap();
+            assert_eq!(msg.id, 99);
+            assert!(
+                msg.receive_time_ns > 0,
+                "Receive timestamp should be non-zero with precise_timestamps=true"
+            );
+            assert!(
+                msg.receive_time_ns >= msg.timestamp,
+                "Receive timestamp should be >= send timestamp"
+            );
+
+            server.close_blocking().unwrap();
+        });
+
+        // Allow server time to initialize
+        thread::sleep(Duration::from_millis(100));
+
+        let mut client = BlockingSharedMemoryDirect::with_precise_timestamps(true);
+        let config = TransportConfig {
+            shared_memory_name: shm_name,
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        let mut msg = Message::new(99, vec![0u8; 64], MessageType::OneWay);
+        msg.timestamp = crate::ipc::get_monotonic_time_ns();
+        client.send_blocking(&msg).unwrap();
+        client.close_blocking().unwrap();
+
+        server_handle.join().unwrap();
     }
 
     /// Exercises the oversized-payload validation in

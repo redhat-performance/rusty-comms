@@ -669,7 +669,8 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
         IpcMechanism::All => {}
     }
 
-    let mut transport = BlockingTransportFactory::create(&mechanism, args.shm_direct)?;
+    let mut transport =
+        BlockingTransportFactory::create(&mechanism, args.shm_direct, args.send_delay)?;
     transport
         .start_server_blocking(&transport_config)
         .context("Server failed to start transport")?;
@@ -693,9 +694,17 @@ fn run_server_mode_blocking(args: cli::Args) -> Result<()> {
     loop {
         match transport.receive_blocking() {
             Ok(message) => {
-                // Calculate actual IPC latency: receive_time - send_time
-                // Use monotonic clock to avoid NTP adjustments affecting measurements
-                let receive_time_ns = get_monotonic_time_ns();
+                // PERF: Prefer the transport-level receive timestamp when
+                // available. SHM-direct populates receive_time_ns either
+                // inside the mutex (precise mode, with --send-delay) or
+                // immediately after mutex unlock (throughput mode). Other
+                // transports leave receive_time_ns at 0, so we fall back
+                // to a clock read here (the original behavior).
+                let receive_time_ns = if message.receive_time_ns != 0 {
+                    message.receive_time_ns
+                } else {
+                    get_monotonic_time_ns()
+                };
                 let wall_now_ns = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
@@ -858,9 +867,15 @@ async fn run_server_mode(args: cli::Args) -> Result<()> {
         // client disconnects) are observed and the server can exit cleanly.
         match transport.receive().await {
             Ok(msg) => {
-                // Calculate actual IPC latency: receive_time - send_time
-                // Use monotonic clock to avoid NTP adjustments affecting measurements
-                let receive_time_ns = get_monotonic_time_ns();
+                // PERF: Same transport-level timestamp preference as the
+                // blocking loop above. Currently no async transport sets
+                // receive_time_ns, so this always falls back to the clock
+                // read — preserving existing behavior for TCP/UDS/PMQ.
+                let receive_time_ns = if msg.receive_time_ns != 0 {
+                    msg.receive_time_ns
+                } else {
+                    get_monotonic_time_ns()
+                };
                 let wall_now_ns = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()

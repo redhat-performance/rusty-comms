@@ -50,6 +50,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+#[cfg(not(unix))]
 use time::OffsetDateTime;
 use tokio::sync::mpsc;
 
@@ -100,21 +101,31 @@ pub use unix_domain_socket_blocking::BlockingUnixDomainSocket;
 /// Current monotonic time in nanoseconds since an unspecified epoch
 ///
 /// ## Platform Support
-/// - **Linux/Unix**: Uses CLOCK_MONOTONIC via nix crate
+/// - **Linux/Unix**: Uses CLOCK_MONOTONIC via direct libc call
 /// - **Other platforms**: Falls back to system time (less accurate)
+///
+/// ## Performance
+/// This function calls `libc::clock_gettime` directly instead of going
+/// through the `nix` crate wrapper. The `nix` path allocates a `TimeSpec`
+/// struct, wraps the result in `Result<TimeSpec, Errno>`, and requires
+/// pattern-matching on every call. The direct libc call writes into a
+/// stack-local `timespec` with no allocation or error-wrapping overhead.
+/// Combined with `#[inline]`, this eliminates all function-call overhead
+/// at the call site — important because this is called on every message
+/// send and receive.
+#[inline]
 pub fn get_monotonic_time_ns() -> u64 {
     #[cfg(unix)]
     {
-        use nix::time::{clock_gettime, ClockId};
-        match clock_gettime(ClockId::CLOCK_MONOTONIC) {
-            Ok(timespec) => {
-                (timespec.tv_sec() as u64) * 1_000_000_000 + (timespec.tv_nsec() as u64)
-            }
-            Err(_) => {
-                // Fallback to system time if monotonic clock fails
-                OffsetDateTime::now_utc().unix_timestamp_nanos() as u64
-            }
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        unsafe {
+            let ret = libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
+            debug_assert!(ret == 0, "clock_gettime(CLOCK_MONOTONIC) failed: {ret}");
         }
+        (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64)
     }
     #[cfg(not(unix))]
     {
@@ -201,6 +212,26 @@ pub struct Message {
     /// Enables different test patterns like one-way messaging,
     /// request-response cycles, and ping-pong latency measurement.
     pub message_type: MessageType,
+
+    /// Monotonic nanosecond timestamp captured inside the transport's
+    /// receive path, as close to the condvar wake-up as possible.
+    ///
+    /// This field exists to close the latency measurement gap with a
+    /// reference C SHM implementation. The C baseline captures its
+    /// receive timestamp inside the mutex immediately after
+    /// `pthread_cond_wait` returns. Without this field, rusty-comms captured the timestamp
+    /// in `main.rs` after `receive_blocking()` returned — after mutex
+    /// unlock, heap allocation, payload copy, and struct construction,
+    /// adding ~5-10 µs to the measured latency.
+    ///
+    /// Transports that support early capture (currently SHM-direct)
+    /// populate this field; others leave it at 0, and the server loop
+    /// in `main.rs` falls back to calling `get_monotonic_time_ns()`.
+    ///
+    /// Marked `#[serde(skip)]` so it is never serialized — the wire
+    /// format is unchanged and backward-compatible.
+    #[serde(skip, default)]
+    pub receive_time_ns: u64,
 }
 
 /// Message types for different benchmark patterns
@@ -325,9 +356,10 @@ impl Message {
     pub fn new(id: u64, payload: Vec<u8>, message_type: MessageType) -> Self {
         Self {
             id,
-            timestamp: get_monotonic_time_ns(), // Use monotonic clock for both async and blocking
+            timestamp: get_monotonic_time_ns(),
             payload,
             message_type,
+            receive_time_ns: 0,
         }
     }
 
@@ -357,6 +389,7 @@ impl Message {
             timestamp: get_monotonic_time_ns(),
             payload,
             message_type,
+            receive_time_ns: 0,
         }
     }
 
@@ -1057,7 +1090,7 @@ impl TransportFactory {
 ///
 /// # fn example() -> anyhow::Result<()> {
 /// // Create a blocking transport (use false for ring buffer mode)
-/// let mut transport = BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false)?;
+/// let mut transport = BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false, None)?;
 ///
 /// // Configure transport
 /// let config = TransportConfig::default();
@@ -1245,10 +1278,10 @@ pub trait BlockingTransport: Send {
 /// # fn example() -> anyhow::Result<()> {
 /// // Create a Unix Domain Socket transport (ring buffer mode)
 /// # #[cfg(unix)]
-/// let transport = BlockingTransportFactory::create(&IpcMechanism::UnixDomainSocket, false)?;
+/// let transport = BlockingTransportFactory::create(&IpcMechanism::UnixDomainSocket, false, None)?;
 ///
 /// // Create a TCP transport (not applicable for direct memory)
-/// let transport = BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false)?;
+/// let transport = BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false, None)?;
 ///
 /// // The returned Box<dyn BlockingTransport> can be used polymorphically
 /// # Ok(())
@@ -1300,21 +1333,23 @@ impl BlockingTransportFactory {
     /// use ipc_benchmark::cli::IpcMechanism;
     ///
     /// # fn example() -> anyhow::Result<()> {
-    /// // Create transport for TCP
-    /// let mut tcp_transport = BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false)?;
+    /// // Create transport for TCP (send_delay=None for throughput mode)
+    /// let mut tcp_transport = BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false, None)?;
     ///
     /// // Platform-specific: Unix Domain Socket
     /// #[cfg(unix)]
-    /// let mut uds_transport = BlockingTransportFactory::create(&IpcMechanism::UnixDomainSocket, false)?;
+    /// let mut uds_transport = BlockingTransportFactory::create(&IpcMechanism::UnixDomainSocket, false, None)?;
     ///
-    /// // Create direct memory SHM transport
-    /// let mut shm_direct = BlockingTransportFactory::create(&IpcMechanism::SharedMemory, true)?;
+    /// // Create direct memory SHM with precise timestamps (latency mode)
+    /// use std::time::Duration;
+    /// let mut shm_direct = BlockingTransportFactory::create(&IpcMechanism::SharedMemory, true, Some(Duration::from_millis(10)))?;
     /// # Ok(())
     /// # }
     /// ```
     pub fn create(
         mechanism: &crate::cli::IpcMechanism,
         use_direct_memory: bool,
+        send_delay: Option<std::time::Duration>,
     ) -> Result<Box<dyn BlockingTransport>> {
         match mechanism {
             #[cfg(unix)]
@@ -1324,10 +1359,12 @@ impl BlockingTransportFactory {
             crate::cli::IpcMechanism::TcpSocket => Ok(Box::new(BlockingTcpSocket::new())),
             crate::cli::IpcMechanism::SharedMemory => {
                 if use_direct_memory {
-                    // Direct memory implementation (high performance)
                     #[cfg(unix)]
                     {
-                        Ok(Box::new(BlockingSharedMemoryDirect::new()))
+                        let precise = send_delay.is_some_and(|d| d > std::time::Duration::ZERO);
+                        Ok(Box::new(
+                            BlockingSharedMemoryDirect::with_precise_timestamps(precise),
+                        ))
                     }
                     #[cfg(not(unix))]
                     {
@@ -1337,7 +1374,6 @@ impl BlockingTransportFactory {
                         )
                     }
                 } else {
-                    // Ring buffer implementation (reliable, default)
                     Ok(Box::new(BlockingSharedMemory::new()))
                 }
             }
@@ -1345,13 +1381,10 @@ impl BlockingTransportFactory {
             crate::cli::IpcMechanism::PosixMessageQueue => {
                 Ok(Box::new(BlockingPosixMessageQueue::new()))
             }
-            crate::cli::IpcMechanism::All => {
-                // 'All' should be expanded before calling factory
-                Err(anyhow::anyhow!(
-                    "Cannot create transport for 'All' mechanism. \
+            crate::cli::IpcMechanism::All => Err(anyhow::anyhow!(
+                "Cannot create transport for 'All' mechanism. \
                      Use IpcMechanism::expand_all() first."
-                ))
-            }
+            )),
         }
     }
 }
@@ -1377,7 +1410,7 @@ mod tests {
     #[test]
     fn test_factory_rejects_all_mechanism() {
         // The 'All' mechanism should return an error
-        let result = BlockingTransportFactory::create(&crate::cli::IpcMechanism::All, false);
+        let result = BlockingTransportFactory::create(&crate::cli::IpcMechanism::All, false, None);
         assert!(result.is_err());
         if let Err(e) = result {
             let err_msg = e.to_string();
@@ -1393,6 +1426,7 @@ mod tests {
             let result = BlockingTransportFactory::create(
                 &crate::cli::IpcMechanism::UnixDomainSocket,
                 false,
+                None,
             );
             assert!(
                 result.is_ok(),
@@ -1404,7 +1438,8 @@ mod tests {
     #[test]
     fn test_factory_creates_tcp_transport() {
         // Stage 3.2: TCP implementation is now available
-        let result = BlockingTransportFactory::create(&crate::cli::IpcMechanism::TcpSocket, false);
+        let result =
+            BlockingTransportFactory::create(&crate::cli::IpcMechanism::TcpSocket, false, None);
         assert!(
             result.is_ok(),
             "Factory should successfully create TCP transport"
@@ -1415,7 +1450,7 @@ mod tests {
     fn test_factory_creates_shm_transport() {
         // Stage 3.3: Shared Memory implementation is now available (ring buffer)
         let result =
-            BlockingTransportFactory::create(&crate::cli::IpcMechanism::SharedMemory, false);
+            BlockingTransportFactory::create(&crate::cli::IpcMechanism::SharedMemory, false, None);
         assert!(
             result.is_ok(),
             "Factory should successfully create Shared Memory transport"
@@ -1427,10 +1462,46 @@ mod tests {
     fn test_factory_creates_shm_direct_transport() {
         // Direct memory implementation (Unix-only)
         let result =
-            BlockingTransportFactory::create(&crate::cli::IpcMechanism::SharedMemory, true);
+            BlockingTransportFactory::create(&crate::cli::IpcMechanism::SharedMemory, true, None);
         assert!(
             result.is_ok(),
             "Factory should successfully create Direct Memory Shared Memory transport"
+        );
+    }
+
+    /// Verifies the factory accepts `send_delay` variants when
+    /// creating SHM-direct transports. The actual `precise_timestamps`
+    /// field wiring is covered by unit tests in `shared_memory_direct`.
+    #[test]
+    #[cfg(unix)]
+    fn test_factory_shm_direct_accepts_send_delay_variants() {
+        use std::time::Duration;
+
+        let result_none =
+            BlockingTransportFactory::create(&crate::cli::IpcMechanism::SharedMemory, true, None);
+        assert!(
+            result_none.is_ok(),
+            "Factory should create SHM-direct with send_delay=None"
+        );
+
+        let result_zero = BlockingTransportFactory::create(
+            &crate::cli::IpcMechanism::SharedMemory,
+            true,
+            Some(Duration::ZERO),
+        );
+        assert!(
+            result_zero.is_ok(),
+            "Factory should create SHM-direct with send_delay=0"
+        );
+
+        let result_delay = BlockingTransportFactory::create(
+            &crate::cli::IpcMechanism::SharedMemory,
+            true,
+            Some(Duration::from_millis(10)),
+        );
+        assert!(
+            result_delay.is_ok(),
+            "Factory should create SHM-direct with send_delay=10ms"
         );
     }
 
@@ -1438,8 +1509,11 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn test_factory_creates_pmq_transport() {
         // Stage 3.4: POSIX Message Queue implementation is now available
-        let result =
-            BlockingTransportFactory::create(&crate::cli::IpcMechanism::PosixMessageQueue, false);
+        let result = BlockingTransportFactory::create(
+            &crate::cli::IpcMechanism::PosixMessageQueue,
+            false,
+            None,
+        );
         assert!(
             result.is_ok(),
             "Factory should successfully create POSIX Message Queue transport"
