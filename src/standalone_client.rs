@@ -206,7 +206,8 @@ pub fn run_standalone_client_blocking_single(
     results_manager: &mut BlockingResultsManager,
     config: &BenchmarkConfig,
 ) -> Result<()> {
-    let mut transport = BlockingTransportFactory::create(&mechanism, args.shm_direct)?;
+    let mut transport =
+        BlockingTransportFactory::create(&mechanism, args.shm_direct, args.send_delay)?;
 
     info!("Connecting to server...");
     connect_blocking_with_retry(&mut transport, &transport_config)?;
@@ -461,7 +462,11 @@ pub fn run_standalone_client_blocking_concurrent(
     // exits before round-trip workers connect.
     let sentinel: Option<Box<dyn crate::ipc::BlockingTransport>> =
         if config.one_way && config.round_trip {
-            let mut transport = BlockingTransportFactory::create(&mechanism, args.shm_direct)?;
+            let mut transport = BlockingTransportFactory::create(
+                &mechanism,
+                args.shm_direct,
+                args.send_delay,
+            )?;
             connect_blocking_with_retry(&mut transport, &transport_config)?;
             debug!("Sentinel connection established to keep server alive across phases");
             Some(transport)
@@ -491,7 +496,7 @@ pub fn run_standalone_client_blocking_concurrent(
                     };
 
                 std::thread::spawn(move || -> Result<PerformanceMetrics> {
-                    let mut transport = BlockingTransportFactory::create(&mech, shm_direct)?;
+                    let mut transport = BlockingTransportFactory::create(&mech, shm_direct, send_delay)?;
                     connect_blocking_with_retry(&mut transport, &tc)?;
                     debug!("Worker {} connected (one-way)", worker_id);
 
@@ -587,7 +592,7 @@ pub fn run_standalone_client_blocking_concurrent(
                     };
 
                 std::thread::spawn(move || -> Result<(PerformanceMetrics, Vec<MessageLatencyRecord>)> {
-                    let mut transport = BlockingTransportFactory::create(&mech, shm_direct)?;
+                    let mut transport = BlockingTransportFactory::create(&mech, shm_direct, send_delay)?;
                     connect_blocking_with_retry(&mut transport, &tc)?;
                     debug!("Worker {} connected (round-trip)", worker_id);
 
@@ -1360,7 +1365,7 @@ mod tests {
         let client_config = transport_config.clone();
         let client_handle = std::thread::spawn(move || {
             let mut transport =
-                BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+                BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false, None).unwrap();
             connect_blocking_with_retry(&mut transport, &client_config).unwrap();
             transport.close_blocking().unwrap();
         });
@@ -1368,7 +1373,7 @@ mod tests {
         // Wait, then start server
         std::thread::sleep(std::time::Duration::from_millis(500));
         let mut server_transport =
-            BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+            BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false, None).unwrap();
         server_transport
             .start_server_blocking(&transport_config)
             .unwrap();
@@ -1641,7 +1646,7 @@ mod tests {
         // Start server first
         let server_handle = std::thread::spawn(move || {
             let mut transport =
-                BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false).unwrap();
+                BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false, None).unwrap();
             let config = TransportConfig {
                 host: "127.0.0.1".to_string(),
                 port,
