@@ -462,11 +462,8 @@ pub fn run_standalone_client_blocking_concurrent(
     // exits before round-trip workers connect.
     let sentinel: Option<Box<dyn crate::ipc::BlockingTransport>> =
         if config.one_way && config.round_trip {
-            let mut transport = BlockingTransportFactory::create(
-                &mechanism,
-                args.shm_direct,
-                args.send_delay,
-            )?;
+            let mut transport =
+                BlockingTransportFactory::create(&mechanism, args.shm_direct, args.send_delay)?;
             connect_blocking_with_retry(&mut transport, &transport_config)?;
             debug!("Sentinel connection established to keep server alive across phases");
             Some(transport)
@@ -496,7 +493,8 @@ pub fn run_standalone_client_blocking_concurrent(
                     };
 
                 std::thread::spawn(move || -> Result<PerformanceMetrics> {
-                    let mut transport = BlockingTransportFactory::create(&mech, shm_direct, send_delay)?;
+                    let mut transport =
+                        BlockingTransportFactory::create(&mech, shm_direct, send_delay)?;
                     connect_blocking_with_retry(&mut transport, &tc)?;
                     debug!("Worker {} connected (one-way)", worker_id);
 

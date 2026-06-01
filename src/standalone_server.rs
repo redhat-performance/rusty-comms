@@ -1552,7 +1552,8 @@ mod tests {
                 };
                 std::thread::spawn(move || {
                     let mut transport =
-                        BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false, None).unwrap();
+                        BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false, None)
+                            .unwrap();
                     connect_blocking_with_retry(&mut transport, &config).unwrap();
 
                     for i in 0..msgs_per_client {
@@ -1724,7 +1725,8 @@ mod tests {
                 };
                 std::thread::spawn(move || {
                     let mut transport =
-                        BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false, None).unwrap();
+                        BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false, None)
+                            .unwrap();
                     connect_blocking_with_retry(&mut transport, &config).unwrap();
 
                     for i in 0..msgs_per_client {
@@ -1777,7 +1779,8 @@ mod tests {
             };
             let client_handle = std::thread::spawn(move || {
                 let mut transport =
-                    BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false, None).unwrap();
+                    BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false, None)
+                        .unwrap();
                 connect_blocking_with_retry(&mut transport, &config).unwrap();
 
                 for i in 0..msgs_per_client {
@@ -2185,7 +2188,8 @@ mod tests {
             let tc = transport_config.clone();
             let h = std::thread::spawn(move || {
                 let mut transport =
-                    BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false, None).unwrap();
+                    BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false, None)
+                        .unwrap();
                 crate::standalone_server::connect_blocking_with_retry(&mut transport, &tc).unwrap();
                 for i in 0..5u64 {
                     let msg = Message::new(worker * 100 + i, vec![0u8; 64], MessageType::Request);
@@ -2370,7 +2374,8 @@ mod tests {
             };
             join_set.spawn_blocking(move || {
                 let mut transport =
-                    BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false, None).unwrap();
+                    BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false, None)
+                        .unwrap();
                 connect_blocking_with_retry(&mut transport, &tc).unwrap();
                 for i in 0..5u64 {
                     let msg = Message::new(
@@ -2531,7 +2536,8 @@ mod tests {
             let tc = transport_config.clone();
             let h = tokio::task::spawn_blocking(move || {
                 let mut transport =
-                    BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false, None).unwrap();
+                    BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false, None)
+                        .unwrap();
                 connect_blocking_with_retry(&mut transport, &tc).unwrap();
                 for i in 0..5u64 {
                     let msg = Message::new(worker * 100 + i, vec![0u8; 64], MessageType::Request);
@@ -3026,7 +3032,8 @@ mod tests {
             let tc = transport_config.clone();
             let h = std::thread::spawn(move || {
                 let mut transport =
-                    BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false, None).unwrap();
+                    BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false, None)
+                        .unwrap();
                 connect_blocking_with_retry(&mut transport, &tc).unwrap();
 
                 let start = std::time::Instant::now();
@@ -3080,7 +3087,8 @@ mod tests {
             let tc = transport_config.clone();
             let h = tokio::task::spawn_blocking(move || {
                 let mut transport =
-                    BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false, None).unwrap();
+                    BlockingTransportFactory::create(&IpcMechanism::TcpSocket, false, None)
+                        .unwrap();
                 connect_blocking_with_retry(&mut transport, &tc).unwrap();
 
                 let start = std::time::Instant::now();

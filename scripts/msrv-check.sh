@@ -1,26 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "[MSRV] Running Rust 1.70 build/tests in container..."
-
-# Find container runtime
-RUNTIME="$(command -v podman || command -v docker || true)"
-if [[ -z "${RUNTIME}" ]]; then
-  echo "[MSRV] No container runtime (podman/docker) found. Skipping MSRV check."
+MSRV="$(awk -F '"' '/rust-version/ {print $2}' Cargo.toml)"
+if [[ -z "${MSRV}" ]]; then
+  echo "[MSRV] No rust-version found in Cargo.toml. Skipping."
   exit 0
 fi
 
-IMAGE="docker.io/library/rust:1.70"
-WORKDIR="/work"
-MOUNT="$(pwd):${WORKDIR}"
-if [[ "${RUNTIME}" == *podman ]]; then
-  MOUNT="${MOUNT}:Z"
+echo "[MSRV] Checking Rust ${MSRV} compatibility..."
+
+if ! command -v rustup &>/dev/null; then
+  echo "[MSRV] rustup not found. Skipping MSRV check."
+  exit 0
 fi
 
-CMD='. /usr/local/cargo/env && cargo -V && rustc -V && cargo build --locked -q && cargo test --locked -q'
+if ! rustup toolchain list | grep -q "${MSRV}"; then
+  echo "[MSRV] Installing Rust ${MSRV} toolchain..."
+  rustup toolchain install "${MSRV}" --profile minimal
+fi
 
-"${RUNTIME}" run --rm -v "${MOUNT}" -w "${WORKDIR}" "${IMAGE}" bash -lc "${CMD}"
+echo "[MSRV] Building with Rust ${MSRV}..."
+rustup run "${MSRV}" cargo build --locked -q
 
-echo "[MSRV] Rust 1.70 build/tests passed."
+echo "[MSRV] Testing with Rust ${MSRV}..."
+rustup run "${MSRV}" cargo test --locked -q
 
-
+echo "[MSRV] Rust ${MSRV} build/tests passed."
