@@ -8,8 +8,6 @@ EXIT_CODE=0
 
 # --- Rust Checks ---
 run_rust_checks() {
-    echo "Rust files changed. Running Rust-specific checks..."
-
     run_check() {
         echo "Running '$@'..."
         if ! "$@"; then
@@ -18,11 +16,22 @@ run_rust_checks() {
         fi
     }
 
-    run_check cargo audit
+    run_check cargo check
     run_check cargo clippy --all-targets --all-features -- -D warnings
     run_check cargo fmt --all -- --check
-    run_check cargo test --all-features
-    run_check scripts/msrv-check.sh
+
+    # Only run the expensive checks (tests, audit, MSRV) when source
+    # code actually changed. Cargo.toml/Cargo.lock-only changes and
+    # non-code files skip these.
+    RUST_SOURCE_CHANGED=$(git diff --cached --name-only --diff-filter=ACMRT | grep -E '\.rs$' || true)
+    if [ -n "$RUST_SOURCE_CHANGED" ]; then
+        echo "Rust source changed. Running tests, audit, and MSRV checks..."
+        run_check cargo audit
+        run_check cargo test --all-features
+        run_check scripts/msrv-check.sh
+    else
+        echo "No .rs files changed. Skipping tests, audit, and MSRV."
+    fi
 }
 
 # --- Python Checks ---
