@@ -911,7 +911,9 @@ mod tests {
                     // The first few sends might succeed without backpressure.
                     // Some might even succeed with backpressure if the timing is just right.
                     if backpressure_detected {
-                        println!("Regular backpressure detected, continuing to force a timeout.");
+                        tracing::trace!(
+                            "Regular backpressure detected, continuing to force a timeout."
+                        );
                     }
                 }
                 Err(e) => {

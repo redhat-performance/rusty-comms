@@ -66,9 +66,9 @@
 //!
 //! The library is designed for high-performance benchmarking with:
 //!
-//! - **Zero-copy serialization** where possible using bincode
+//! - **Compact binary serialization** via bincode (zero-copy direct memcpy for SHM-direct)
 //! - **HDR histograms** for accurate latency measurement without coordination omission
-//! - **Async I/O** throughout using Tokio for scalable concurrent operations
+//! - **Dual execution modes**: async I/O (Tokio) and blocking I/O (std) for comparison
 //! - **Configurable buffer sizes** and queue depths for optimal performance tuning
 //! - **Comprehensive metrics** including percentiles, throughput, and error rates
 
@@ -251,8 +251,8 @@ pub mod defaults {
     /// Default warmup iterations
     ///
     /// 1,000 warmup iterations help stabilize performance by:
-    /// - Allowing JIT compilation to optimize hot paths
-    /// - Filling CPU caches with relevant data
+    /// - Filling CPU caches and TLBs with relevant data
+    /// - Warming OS page caches and kernel buffers
     /// - Establishing network connections and OS buffers
     /// - Reducing measurement variance from cold-start effects
     pub const WARMUP_ITERATIONS: usize = 1000;

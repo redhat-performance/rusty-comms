@@ -845,10 +845,11 @@ pub fn parse_duration_micros(s: &str) -> Result<Duration, String> {
         return Err("Duration cannot be negative".to_string());
     }
 
-    // Convert to Duration based on the unit
+    // Convert to Duration based on the unit, using float-based
+    // conversion to preserve fractional inputs like "1.5ms"
     let duration = match unit {
-        "us" => Duration::from_micros(num as u64),
-        "ms" => Duration::from_millis(num as u64),
+        "us" => Duration::from_secs_f64(num / 1_000_000.0),
+        "ms" => Duration::from_secs_f64(num / 1_000.0),
         "s" => Duration::from_secs_f64(num),
         "m" => Duration::from_secs_f64(num * 60.0),
         "h" => Duration::from_secs_f64(num * 3600.0),

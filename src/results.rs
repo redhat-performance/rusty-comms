@@ -427,7 +427,7 @@ pub struct SystemInfo {
     /// Available system memory in gigabytes
     pub memory_gb: f64,
 
-    /// Rust compiler version used to build the benchmark
+    /// Minimum Supported Rust Version (MSRV) from Cargo.toml
     pub rust_version: String,
 
     /// Benchmark suite version
@@ -1242,30 +1242,34 @@ impl ResultsManager {
     /// ## Returns
     /// Estimated available memory in gigabytes
     ///
-    /// ## Implementation Note
-    ///
-    /// This is a placeholder implementation that returns reasonable
-    /// defaults. A production implementation would use platform-specific
-    /// system information APIs to get accurate memory information.
+    /// Reads total physical memory from `/proc/meminfo` on Linux,
+    /// falling back to 0.0 on other platforms or read failure.
     fn get_memory_gb() -> f64 {
-        // This is a simplified implementation
-        // In a real implementation, you'd want to use a system info crate
-        16.0 // Default assumption
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(contents) = std::fs::read_to_string("/proc/meminfo") {
+                for line in contents.lines() {
+                    if let Some(rest) = line.strip_prefix("MemTotal:") {
+                        let kb_str = rest.trim().trim_end_matches(" kB").trim();
+                        if let Ok(kb) = kb_str.parse::<u64>() {
+                            return kb as f64 / 1_048_576.0;
+                        }
+                    }
+                }
+            }
+            0.0
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            0.0
+        }
     }
 
-    /// Get Rust version
+    /// Get the Minimum Supported Rust Version (MSRV) from Cargo.toml.
     ///
-    /// Retrieves the Rust compiler version used to build the benchmark.
-    /// This information is important for correlating performance with
-    /// compiler optimizations and language features.
-    ///
-    /// ## Returns
-    /// Rust version string from build-time metadata
-    ///
-    /// ## Build-time Detection
-    ///
-    /// The version is captured at build time from Cargo metadata,
-    /// ensuring it reflects the actual compiler used for the benchmark.
+    /// Returns the `rust-version` field from Cargo.toml, captured at
+    /// build time. This is the MSRV, not necessarily the compiler
+    /// version used to build this binary.
     fn get_rust_version() -> String {
         env!("CARGO_PKG_RUST_VERSION").to_string()
     }
@@ -1882,8 +1886,8 @@ impl Default for SystemInfo {
             os: std::env::consts::OS.to_string(),
             architecture: std::env::consts::ARCH.to_string(),
             cpu_cores: num_cpus::get(),
-            memory_gb: 16.0,
-            rust_version: "1.75.0".to_string(),
+            memory_gb: ResultsManager::get_memory_gb(),
+            rust_version: env!("CARGO_PKG_RUST_VERSION").to_string(),
             benchmark_version: crate::VERSION.to_string(),
         }
     }

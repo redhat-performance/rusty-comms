@@ -716,7 +716,7 @@ impl BlockingBenchmarkRunner {
     /// - No async/await - all operations block
     /// - No Tokio runtime
     /// - Uses BlockingTransport instead of Transport
-    /// - Streaming output not yet implemented (Stage 5)
+    /// - Streaming output supported via `ResultsManagerBlocking`
     ///
     /// ## Returns
     /// - `Ok(BenchmarkResults)`: Complete test results with metrics
@@ -1309,24 +1309,21 @@ impl BlockingBenchmarkRunner {
 
                 let latency = send_time.elapsed();
 
-                // Record latency for all measured messages
-                if true {
-                    // Stream latency if enabled
-                    if let Some(ref mut manager) = results_manager {
-                        let record = crate::results::MessageLatencyRecord::new(
-                            i as u64,
-                            self.mechanism,
-                            self.config.message_size,
-                            crate::metrics::LatencyType::RoundTrip,
-                            latency,
-                            send_timestamp_ns,
-                        );
-                        let _ = manager.stream_latency_record(&record);
-                    }
-
-                    // Record in metrics collector
-                    metrics_collector.record_message(self.config.message_size, Some(latency))?;
+                // Stream latency if enabled
+                if let Some(ref mut manager) = results_manager {
+                    let record = crate::results::MessageLatencyRecord::new(
+                        i as u64,
+                        self.mechanism,
+                        self.config.message_size,
+                        crate::metrics::LatencyType::RoundTrip,
+                        latency,
+                        send_timestamp_ns,
+                    );
+                    let _ = manager.stream_latency_record(&record);
                 }
+
+                // Record in metrics collector
+                metrics_collector.record_message(self.config.message_size, Some(latency))?;
             }
         }
 

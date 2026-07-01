@@ -280,21 +280,40 @@ impl BlockingTransport for BlockingUnixDomainSocket {
         let total_len = 4 + serialized.len();
         let mut written = 0usize;
 
-        // writev may not write everything in one call, so loop until complete
+        // writev may not write everything in one call, so loop until
+        // complete. On partial writes we fall back to write_all on the
+        // combined [len_prefix || serialized] buffer at the correct offset.
         while written < total_len {
             let result = unsafe { libc::writev(fd, iov.as_ptr(), 2) };
             if result < 0 {
                 return Err(std::io::Error::last_os_error())
                     .context("Failed to write message via writev");
             }
+            if result == 0 {
+                return Err(anyhow::anyhow!(
+                    "writev returned 0 bytes written (peer closed?)"
+                ));
+            }
             written += result as usize;
             if written < total_len {
-                // Partial write - fall back to regular write for remainder
-                // This is rare for small messages on UDS
-                let remaining = &serialized[written.saturating_sub(4)..];
-                stream
-                    .write_all(remaining)
-                    .context("Failed to write remaining data")?;
+                // Partial write — fall back to write_all for the
+                // unsent portion. Build the remaining slice correctly
+                // by accounting for which part of [len_bytes ||
+                // serialized] was already written.
+                if written < 4 {
+                    // Still within the length prefix
+                    stream
+                        .write_all(&len_bytes[written..])
+                        .context("Failed to write remaining length prefix")?;
+                    stream
+                        .write_all(&serialized)
+                        .context("Failed to write serialized data")?;
+                } else {
+                    // Length prefix fully sent; write remaining payload
+                    stream
+                        .write_all(&serialized[written - 4..])
+                        .context("Failed to write remaining data")?;
+                }
                 break;
             }
         }

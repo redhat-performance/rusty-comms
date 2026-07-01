@@ -413,25 +413,33 @@ impl IpcTransport for TcpSocketTransport {
                         );
 
                         // Configure socket options for low latency.
-                        // Failure here means the socket would run
-                        // without TCP_NODELAY, which skews benchmark
-                        // results, so we drop the connection instead.
-                        if let Ok(std_stream) = stream.into_std() {
-                            let socket =
-                                socket2::Socket::from(std_stream.try_clone().unwrap_or_else(|e| {
-                                    panic!(
-                                        "Failed to clone TCP stream for \
-                                         socket tuning on connection {}: {}",
-                                        connection_id, e
-                                    );
-                                }));
-                            socket.set_nodelay(true).unwrap_or_else(|e| {
-                                warn!("set_nodelay failed on connection {}: {}", connection_id, e);
-                            });
-                            let _ = socket.set_recv_buffer_size(buffer_size);
-                            let _ = socket.set_send_buffer_size(buffer_size);
+                        // On failure we skip this connection rather than
+                        // panicking, since the server should remain stable.
+                        let std_stream = match stream.into_std() {
+                            Ok(s) => s,
+                            Err(e) => {
+                                warn!("into_std() failed on connection {}: {}", connection_id, e);
+                                continue;
+                            }
+                        };
 
-                            if let Ok(tokio_stream) = TcpStream::from_std(std_stream) {
+                        let cloned = match std_stream.try_clone() {
+                            Ok(c) => c,
+                            Err(e) => {
+                                warn!("try_clone() failed on connection {}: {}", connection_id, e);
+                                continue;
+                            }
+                        };
+
+                        let socket = socket2::Socket::from(cloned);
+                        if let Err(e) = socket.set_nodelay(true) {
+                            warn!("set_nodelay failed on connection {}: {}", connection_id, e);
+                        }
+                        let _ = socket.set_recv_buffer_size(buffer_size);
+                        let _ = socket.set_send_buffer_size(buffer_size);
+
+                        match TcpStream::from_std(std_stream) {
+                            Ok(tokio_stream) => {
                                 let handler_sender = message_sender.clone();
                                 let handler_connections = connections.clone();
 
@@ -441,6 +449,9 @@ impl IpcTransport for TcpSocketTransport {
                                     handler_sender,
                                     handler_connections,
                                 ));
+                            }
+                            Err(e) => {
+                                warn!("from_std() failed on connection {}: {}", connection_id, e);
                             }
                         }
                     }
@@ -588,7 +599,9 @@ mod tests {
             match client.send(&message).await {
                 Ok(backpressure_detected) => {
                     if backpressure_detected {
-                        println!("Regular backpressure detected, continuing to force a timeout.");
+                        tracing::trace!(
+                            "Regular backpressure detected, continuing to force a timeout."
+                        );
                     }
                 }
                 Err(e) => {
