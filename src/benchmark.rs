@@ -815,9 +815,37 @@ impl BenchmarkRunner {
             IpcMechanism::All => {} // 'All' is expanded in the main process
         }
 
+        // Forward buffer size so server uses the same transport config
+        cmd.arg("--buffer-size")
+            .arg(transport_config.buffer_size.to_string());
+
+        // Forward --shm-direct flag if enabled
+        if self.args.shm_direct {
+            cmd.arg("--shm-direct");
+        }
+
+        // Forward PMQ priority if applicable
+        #[cfg(target_os = "linux")]
+        if self.mechanism == IpcMechanism::PosixMessageQueue {
+            cmd.arg("--pmq-priority")
+                .arg(self.config.pmq_priority.to_string());
+        }
+
+        // Forward send-delay so server can enable precise timestamps
+        if let Some(delay) = self.config.send_delay {
+            let micros = delay.as_micros();
+            cmd.arg("--send-delay").arg(format!("{micros}us"));
+        }
+
         // Add latency file path if provided (for true IPC measurement)
         if let Some(path) = latency_file_path {
             cmd.arg("--internal-latency-file").arg(path);
+        }
+
+        // Forward verbose flags to the server for debugging
+        let verbose_count = self.args.verbose;
+        for _ in 0..verbose_count {
+            cmd.arg("-v");
         }
 
         let child = cmd.spawn().context("Failed to spawn server process")?;
