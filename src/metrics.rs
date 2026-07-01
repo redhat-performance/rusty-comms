@@ -940,14 +940,24 @@ impl MetricsCollector {
             .map(|p| p.value_ns as f64)
             .unwrap_or(0.0);
 
-        // Calculate weighted standard deviation (approximation)
-        let mut total_variance_weighted = 0.0;
-        for metrics in &latency_metrics {
-            let weight = metrics.total_samples as f64;
-            total_variance_weighted += metrics.std_dev_ns * metrics.std_dev_ns * weight;
-        }
+        // Correct pooled standard deviation using the law of total variance:
+        //   Var(X) = E[Var(X|G)] + Var(E[X|G])
+        // where G is the group (worker). This accounts for both within-group
+        // variance and between-group mean differences.
         let std_dev_ns = if total_samples > 0 {
-            (total_variance_weighted / total_samples as f64).sqrt()
+            let mut within_group_variance = 0.0;
+            let mut between_group_variance = 0.0;
+            for metrics in &latency_metrics {
+                let n_i = metrics.total_samples as f64;
+                // Within-group: weighted sum of individual variances
+                within_group_variance += n_i * metrics.std_dev_ns * metrics.std_dev_ns;
+                // Between-group: weighted squared deviation of group
+                // mean from the combined mean
+                let mean_diff = metrics.mean_ns - mean_ns;
+                between_group_variance += n_i * mean_diff * mean_diff;
+            }
+            let total_n = total_samples as f64;
+            ((within_group_variance + between_group_variance) / total_n).sqrt()
         } else {
             0.0
         };
@@ -1103,7 +1113,10 @@ pub mod utils {
 
 #[cfg(test)]
 mod tests {
-    use super::{utils, LatencyCollector, LatencyType, ThroughputCalculator};
+    use super::{
+        utils, LatencyCollector, LatencyMetrics, LatencyType, MetricsCollector, PercentileValue,
+        ThroughputCalculator,
+    };
     use std::time::Duration;
 
     /// Test latency collector basic functionality
@@ -1154,5 +1167,124 @@ mod tests {
         assert_eq!(utils::format_throughput(1536.0), "1.50 KB/s");
         assert_eq!(utils::format_throughput(1572864.0), "1.50 MB/s");
         assert_eq!(utils::format_throughput(1610612736.0), "1.50 GB/s");
+    }
+
+    /// Verify pooled std dev accounts for between-group mean differences.
+    ///
+    /// Two groups with identical internal std_dev but different means
+    /// must produce a combined std_dev larger than the individual one.
+    #[test]
+    fn test_pooled_stddev_between_group_variance() {
+        use crate::metrics::LatencyType;
+
+        // Group A: mean=100, std_dev=10, n=1000
+        // Group B: mean=200, std_dev=10, n=1000
+        // Combined mean = 150
+        // Within-group variance = (1000*100 + 1000*100) / 2000 = 100
+        // Between-group variance = (1000*(100-150)^2 + 1000*(200-150)^2) / 2000
+        //                        = (1000*2500 + 1000*2500) / 2000 = 2500
+        // Total variance = 100 + 2500 = 2600
+        // Pooled std_dev = sqrt(2600) ≈ 50.99
+        let metrics_a = LatencyMetrics {
+            latency_type: LatencyType::RoundTrip,
+            min_ns: 50,
+            max_ns: 150,
+            mean_ns: 100.0,
+            median_ns: 100.0,
+            std_dev_ns: 10.0,
+            percentiles: vec![PercentileValue {
+                percentile: 50.0,
+                value_ns: 100,
+            }],
+            total_samples: 1000,
+            histogram_data: vec![],
+        };
+        let metrics_b = LatencyMetrics {
+            latency_type: LatencyType::RoundTrip,
+            min_ns: 150,
+            max_ns: 250,
+            mean_ns: 200.0,
+            median_ns: 200.0,
+            std_dev_ns: 10.0,
+            percentiles: vec![PercentileValue {
+                percentile: 50.0,
+                value_ns: 200,
+            }],
+            total_samples: 1000,
+            histogram_data: vec![],
+        };
+
+        let result =
+            MetricsCollector::aggregate_latency_metrics(vec![&metrics_a, &metrics_b], &[50.0])
+                .unwrap();
+
+        // The old (buggy) formula would give sqrt((1000*100 + 1000*100)/2000)
+        // = sqrt(100) = 10.0 — same as individual, ignoring mean difference.
+        // The correct formula gives sqrt(2600) ≈ 50.99
+        let expected_stddev = (2600.0_f64).sqrt();
+        assert!(
+            (result.std_dev_ns - expected_stddev).abs() < 0.01,
+            "Pooled std_dev should be ~{:.2} but got {:.2}",
+            expected_stddev,
+            result.std_dev_ns
+        );
+        // Must be significantly larger than the individual std_dev of 10
+        assert!(
+            result.std_dev_ns > 40.0,
+            "Pooled std_dev ({:.2}) must account for between-group \
+             mean difference, not just within-group variance",
+            result.std_dev_ns
+        );
+    }
+
+    /// Verify pooled std dev is correct when all groups have same mean.
+    ///
+    /// When means are identical, pooled std_dev should equal the
+    /// common std_dev (between-group variance is zero).
+    #[test]
+    fn test_pooled_stddev_same_means() {
+        use crate::metrics::LatencyType;
+
+        let metrics_a = LatencyMetrics {
+            latency_type: LatencyType::OneWay,
+            min_ns: 50,
+            max_ns: 150,
+            mean_ns: 100.0,
+            median_ns: 100.0,
+            std_dev_ns: 20.0,
+            percentiles: vec![PercentileValue {
+                percentile: 50.0,
+                value_ns: 100,
+            }],
+            total_samples: 500,
+            histogram_data: vec![],
+        };
+        let metrics_b = LatencyMetrics {
+            latency_type: LatencyType::OneWay,
+            min_ns: 50,
+            max_ns: 150,
+            mean_ns: 100.0,
+            median_ns: 100.0,
+            std_dev_ns: 20.0,
+            percentiles: vec![PercentileValue {
+                percentile: 50.0,
+                value_ns: 100,
+            }],
+            total_samples: 500,
+            histogram_data: vec![],
+        };
+
+        let result =
+            MetricsCollector::aggregate_latency_metrics(vec![&metrics_a, &metrics_b], &[50.0])
+                .unwrap();
+
+        // Same means → between-group variance = 0
+        // Pooled std_dev = sqrt(within-group) = sqrt(400) = 20.0
+        assert!(
+            (result.std_dev_ns - 20.0).abs() < 0.01,
+            "With identical means, pooled std_dev should equal \
+             individual std_dev (20.0), got {:.2}",
+            result.std_dev_ns
+        );
     }
 }
