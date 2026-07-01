@@ -1,4 +1,7 @@
-use super::{ConnectionId, IpcError, IpcTransport, Message, TransportConfig, TransportState};
+use super::{
+    get_monotonic_time_ns, ConnectionId, IpcError, IpcTransport, Message, TransportConfig,
+    TransportState,
+};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -67,6 +70,28 @@ impl TcpSocketTransport {
 
         // Deserialize message
         Message::from_bytes(&message_data)
+    }
+
+    /// Read a message and capture a monotonic timestamp immediately after
+    /// the raw bytes are read but before deserialization. This excludes
+    /// deserialization overhead from one-way latency measurements.
+    async fn read_message_timed(stream: &mut TcpStream) -> Result<(Message, u64)> {
+        let mut len_bytes = [0u8; 4];
+        stream.read_exact(&mut len_bytes).await?;
+        let message_len = u32::from_le_bytes(len_bytes) as usize;
+
+        if message_len > 16 * 1024 * 1024 {
+            return Err(anyhow!("Message too large: {} bytes", message_len));
+        }
+
+        let mut message_data = vec![0u8; message_len];
+        stream.read_exact(&mut message_data).await?;
+
+        // Capture timestamp between raw I/O and deserialization
+        let receive_time_ns = get_monotonic_time_ns();
+
+        let message = Message::from_bytes(&message_data)?;
+        Ok((message, receive_time_ns))
     }
 
     /// Write a message to the TCP stream.
@@ -335,6 +360,36 @@ impl IpcTransport for TcpSocketTransport {
             let message = Self::read_message(stream).await?;
             debug!("Received message {} via TCP Socket", message.id);
             Ok(message)
+        } else {
+            Err(anyhow!("No active stream available"))
+        }
+    }
+
+    async fn receive_timed(&mut self) -> Result<(Message, u64)> {
+        if self.state != TransportState::Connected {
+            return Err(anyhow!("Transport not connected"));
+        }
+
+        if self.stream.is_none() {
+            if let Some(listener) = self.listener.as_ref() {
+                let (stream, client_addr) = listener.accept().await?;
+                debug!(
+                    "TCP Socket server accepted connection from: {}",
+                    client_addr
+                );
+                let std_stream = stream.into_std()?;
+                let socket = socket2::Socket::from(std_stream.try_clone()?);
+                socket.set_nodelay(true)?;
+                socket.set_recv_buffer_size(self.buffer_size)?;
+                socket.set_send_buffer_size(self.buffer_size)?;
+                self.stream = Some(TcpStream::from_std(std_stream)?);
+            }
+        }
+
+        if let Some(ref mut stream) = self.stream {
+            let (message, ts) = Self::read_message_timed(stream).await?;
+            debug!("Received message {} via TCP Socket", message.id);
+            Ok((message, ts))
         } else {
             Err(anyhow!("No active stream available"))
         }

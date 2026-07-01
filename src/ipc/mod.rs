@@ -711,6 +711,28 @@ pub trait IpcTransport: Send + Sync {
     /// - Async implementation allows cancellation
     async fn receive(&mut self) -> Result<Message>;
 
+    /// Receive a message and capture a monotonic timestamp immediately
+    /// after the raw bytes are read but before deserialization.
+    ///
+    /// This provides more accurate one-way latency measurement by
+    /// excluding deserialization overhead from the receive timestamp,
+    /// mirroring the blocking transport's `receive_blocking_timed()`.
+    ///
+    /// The default implementation captures the timestamp after
+    /// `receive()` returns (including deserialization). Transport
+    /// implementations should override this to place the timestamp
+    /// between raw I/O and deserialization for better accuracy.
+    ///
+    /// # Returns
+    ///
+    /// A tuple of (Message, timestamp_ns) where timestamp_ns is a
+    /// monotonic clock value captured as close to I/O completion as
+    /// possible.
+    async fn receive_timed(&mut self) -> Result<(Message, u64)> {
+        let msg = self.receive().await?;
+        Ok((msg, get_monotonic_time_ns()))
+    }
+
     /// Close the transport
     ///
     /// Cleanly shuts down the transport, releasing all resources
