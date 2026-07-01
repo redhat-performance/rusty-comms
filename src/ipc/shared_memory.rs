@@ -481,11 +481,16 @@ impl SharedMemoryTransport {
         Ok(())
     }
 
-    /// Handle a client connection in multi-server mode
+    /// Handle a client connection in multi-server mode.
+    ///
+    /// Waits for the client peer to connect, marks the server side as
+    /// ready, registers the connection, then runs a receive loop that
+    /// forwards incoming messages to the channel until the ring buffer
+    /// shuts down or a receive timeout occurs.
     async fn handle_connection(
         connection_id: ConnectionId,
         connection: SharedMemoryConnection,
-        _message_sender: mpsc::Sender<(ConnectionId, Message)>,
+        message_sender: mpsc::Sender<(ConnectionId, Message)>,
         connections: Arc<Mutex<HashMap<ConnectionId, SharedMemoryConnection>>>,
     ) {
         debug!("Handling shared memory connection {}", connection_id);
@@ -502,21 +507,45 @@ impl SharedMemoryTransport {
         // Mark server as ready
         connection.mark_ready();
 
-        // Add to active connections
+        // Clone the connection for the receive loop; the original
+        // goes into the shared map for send operations.
+        let recv_conn = connection.clone();
         {
             let mut conns = connections.lock();
             conns.insert(connection_id, connection);
         }
 
-        // Get the connection back for receiving messages
-        {
-            let conns = connections.lock();
-            if let Some(_conn) = conns.get(&connection_id) {
-                // We can't easily clone the connection, so we'll work with the one in the map
-                // This is a limitation of the current design - we'd need a more sophisticated
-                // approach for true concurrent access
+        // Receive loop: read messages and forward to the channel
+        loop {
+            let rb = recv_conn.get_ring_buffer();
+            if rb.shutdown.load(Ordering::Acquire) {
+                debug!("Shutdown flag set, stopping connection {}", connection_id);
+                break;
             }
-        };
+
+            match recv_conn.receive_message().await {
+                Ok(msg) => {
+                    if message_sender.send((connection_id, msg)).await.is_err() {
+                        debug!("Channel closed, stopping connection {}", connection_id);
+                        break;
+                    }
+                }
+                Err(_) => {
+                    // Timeout or error — check shutdown and retry
+                    let rb = recv_conn.get_ring_buffer();
+                    if rb.shutdown.load(Ordering::Acquire) {
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Remove from active connections on exit
+        {
+            let mut conns = connections.lock();
+            conns.remove(&connection_id);
+        }
+        debug!("Connection {} handler exiting", connection_id);
     }
 }
 
@@ -629,6 +658,20 @@ impl IpcTransport for SharedMemoryTransport {
 
     async fn close(&mut self) -> Result<()> {
         debug!("Closing Shared Memory transport");
+
+        // Set shutdown flag on the ring buffer so blocked receive loops
+        // wake up and exit cleanly (mirrors shared_memory_blocking).
+        if let Some(ref conn) = self.single_connection {
+            let rb = conn.get_ring_buffer();
+            rb.shutdown.store(true, Ordering::Release);
+        }
+        {
+            let conns = self.connections.lock();
+            for conn in conns.values() {
+                let rb = conn.get_ring_buffer();
+                rb.shutdown.store(true, Ordering::Release);
+            }
+        }
 
         // Close all connections
         {
