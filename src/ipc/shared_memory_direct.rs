@@ -183,23 +183,57 @@ impl RawSharedMessage {
 
         // Initialize mutex attributes with PTHREAD_PROCESS_SHARED
         let mut mutex_attr = MaybeUninit::uninit();
-        libc::pthread_mutexattr_init(mutex_attr.as_mut_ptr());
-        libc::pthread_mutexattr_setpshared(mutex_attr.as_mut_ptr(), libc::PTHREAD_PROCESS_SHARED);
+        let ret = libc::pthread_mutexattr_init(mutex_attr.as_mut_ptr());
+        if ret != 0 {
+            return Err(anyhow!("pthread_mutexattr_init failed with errno {}", ret));
+        }
+        let ret = libc::pthread_mutexattr_setpshared(
+            mutex_attr.as_mut_ptr(),
+            libc::PTHREAD_PROCESS_SHARED,
+        );
+        if ret != 0 {
+            libc::pthread_mutexattr_destroy(mutex_attr.as_mut_ptr());
+            return Err(anyhow!(
+                "pthread_mutexattr_setpshared failed with errno {}",
+                ret
+            ));
+        }
 
-        // Initialize the mutex
+        // Initialize the mutex with process-shared attribute
         let mut mutex = MaybeUninit::uninit();
-        libc::pthread_mutex_init(mutex.as_mut_ptr(), mutex_attr.as_ptr());
+        let ret = libc::pthread_mutex_init(mutex.as_mut_ptr(), mutex_attr.as_ptr());
         libc::pthread_mutexattr_destroy(mutex_attr.as_mut_ptr());
+        if ret != 0 {
+            return Err(anyhow!("pthread_mutex_init failed with errno {}", ret));
+        }
         self.mutex = mutex.assume_init();
 
-        // Initialize condition variable with PTHREAD_PROCESS_SHARED
+        // Initialize condition variable attributes with PTHREAD_PROCESS_SHARED
         let mut cond_attr = MaybeUninit::uninit();
-        libc::pthread_condattr_init(cond_attr.as_mut_ptr());
-        libc::pthread_condattr_setpshared(cond_attr.as_mut_ptr(), libc::PTHREAD_PROCESS_SHARED);
+        let ret = libc::pthread_condattr_init(cond_attr.as_mut_ptr());
+        if ret != 0 {
+            libc::pthread_mutex_destroy(&mut self.mutex);
+            return Err(anyhow!("pthread_condattr_init failed with errno {}", ret));
+        }
+        let ret =
+            libc::pthread_condattr_setpshared(cond_attr.as_mut_ptr(), libc::PTHREAD_PROCESS_SHARED);
+        if ret != 0 {
+            libc::pthread_condattr_destroy(cond_attr.as_mut_ptr());
+            libc::pthread_mutex_destroy(&mut self.mutex);
+            return Err(anyhow!(
+                "pthread_condattr_setpshared failed with errno {}",
+                ret
+            ));
+        }
 
+        // Initialize the condition variable with process-shared attribute
         let mut cond = MaybeUninit::uninit();
-        libc::pthread_cond_init(cond.as_mut_ptr(), cond_attr.as_ptr());
+        let ret = libc::pthread_cond_init(cond.as_mut_ptr(), cond_attr.as_ptr());
         libc::pthread_condattr_destroy(cond_attr.as_mut_ptr());
+        if ret != 0 {
+            libc::pthread_mutex_destroy(&mut self.mutex);
+            return Err(anyhow!("pthread_cond_init failed with errno {}", ret));
+        }
         self.cond = cond.assume_init();
 
         // Initialize coordination flags and payload length
