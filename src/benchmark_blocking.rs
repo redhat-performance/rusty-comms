@@ -439,10 +439,16 @@ impl BlockingBenchmarkRunner {
         cmd.arg("-m")
             .arg(self.mechanism.to_possible_value().unwrap().get_name());
 
-        // Add message size and count
+        // Add message size
         cmd.arg("--message-size")
             .arg(self.config.message_size.to_string());
-        cmd.arg("--msg-count").arg(self.get_msg_count().to_string());
+
+        // Forward duration or msg-count (duration takes precedence)
+        if let Some(duration) = self.config.duration {
+            cmd.arg("-d").arg(format!("{}s", duration.as_secs_f64()));
+        } else if let Some(count) = self.config.msg_count {
+            cmd.arg("--msg-count").arg(count.to_string());
+        }
 
         // Add transport-specific identifiers
         if !transport_config.socket_path.is_empty() {
