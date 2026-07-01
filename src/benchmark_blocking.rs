@@ -1291,19 +1291,17 @@ impl BlockingBenchmarkRunner {
                 }
             }
         } else {
-            // Message-count based test
+            // Message-count based test — match the async runner's
+            // skip-first-message logic: send one extra iteration and
+            // discard its latency rather than using a canary message.
             let msg_count = self.config.msg_count.unwrap_or_default();
+            let iterations = if self.config.include_first_message {
+                msg_count
+            } else {
+                msg_count + 1
+            };
 
-            // Send canary message if first message should not be included
-            if !self.config.include_first_message {
-                let canary = Message::new(u64::MAX, payload.clone(), MessageType::Request);
-                if client_transport.send_blocking(&canary).is_ok() {
-                    let _ = client_transport.receive_blocking();
-                }
-            }
-
-            for i in 0..msg_count {
-                // Capture send timestamp for streaming record (wall clock)
+            for i in 0..iterations {
                 let send_timestamp_ns =
                     crate::results::MessageLatencyRecord::current_timestamp_ns();
                 let send_time = Instant::now();
@@ -1318,21 +1316,21 @@ impl BlockingBenchmarkRunner {
 
                 let latency = send_time.elapsed();
 
-                // Stream latency if enabled
-                if let Some(ref mut manager) = results_manager {
-                    let record = crate::results::MessageLatencyRecord::new(
-                        i as u64,
-                        self.mechanism,
-                        self.config.message_size,
-                        crate::metrics::LatencyType::RoundTrip,
-                        latency,
-                        send_timestamp_ns,
-                    );
-                    let _ = manager.stream_latency_record(&record);
-                }
+                if i > 0 || self.config.include_first_message {
+                    if let Some(ref mut manager) = results_manager {
+                        let record = crate::results::MessageLatencyRecord::new(
+                            i as u64,
+                            self.mechanism,
+                            self.config.message_size,
+                            crate::metrics::LatencyType::RoundTrip,
+                            latency,
+                            send_timestamp_ns,
+                        );
+                        let _ = manager.stream_latency_record(&record);
+                    }
 
-                // Record in metrics collector
-                metrics_collector.record_message(self.config.message_size, Some(latency))?;
+                    metrics_collector.record_message(self.config.message_size, Some(latency))?;
+                }
             }
         }
 
