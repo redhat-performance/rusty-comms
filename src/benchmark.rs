@@ -624,9 +624,15 @@ impl BenchmarkRunner {
 
         // --- Cleanup ---
         client_transport.close().await?;
-        server_process
+        let status = server_process
             .wait()
-            .context("Server process exited with an error during warmup")?;
+            .context("Failed to wait for server process during warmup")?;
+        if !status.success() {
+            warn!(
+                "Server process exited with non-zero status during warmup: {}",
+                status
+            );
+        }
 
         debug!("Warmup completed");
         Ok(())
@@ -1127,9 +1133,12 @@ port={}",
         crate::utils::spawn_with_affinity(client_future, self.config.client_affinity).await?;
 
         // --- Cleanup ---
-        server_process
+        let status = server_process
             .wait()
-            .context("Server process exited with an error")?;
+            .context("Failed to wait for server process")?;
+        if !status.success() {
+            warn!("Server process exited with non-zero status: {}", status);
+        }
 
         // --- Read server-measured latencies from file ---
         debug!(
@@ -1312,9 +1321,12 @@ port={}",
         }
 
         // --- Cleanup ---
-        server_process
+        let status = server_process
             .wait()
-            .context("Server process exited with an error")?;
+            .context("Failed to wait for server process")?;
+        if !status.success() {
+            warn!("Server process exited with non-zero status: {}", status);
+        }
         Ok(())
     }
 
@@ -1612,9 +1624,12 @@ port={}",
         }
 
         // --- Cleanup ---
-        server_process
+        let status = server_process
             .wait()
-            .context("Server process exited with an error")?;
+            .context("Failed to wait for server process")?;
+        if !status.success() {
+            warn!("Server process exited with non-zero status: {}", status);
+        }
         Ok(())
     }
 
