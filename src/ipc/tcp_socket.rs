@@ -527,27 +527,48 @@ impl IpcTransport for TcpSocketTransport {
         connection_id: ConnectionId,
         message: &Message,
     ) -> Result<()> {
-        let mut conns = self.connections.lock().await;
+        // Remove the stream from the map so we can release the lock
+        // before the async write, avoiding holding the mutex across
+        // an await point.
+        let mut stream = {
+            let mut conns = self.connections.lock().await;
+            conns
+                .remove(&connection_id)
+                .ok_or_else(|| anyhow!("Connection {} not found", connection_id))?
+        };
 
-        if let Some(stream) = conns.get_mut(&connection_id) {
-            Self::write_message(stream, message).await?;
-            debug!(
-                "Sent message {} to TCP connection {}",
-                message.id, connection_id
-            );
-            Ok(())
-        } else {
-            Err(anyhow!("Connection {} not found", connection_id))
+        let result = Self::write_message(&mut stream, message).await;
+
+        // Re-insert the stream regardless of write outcome so the
+        // connection remains available for future operations.
+        {
+            let mut conns = self.connections.lock().await;
+            conns.insert(connection_id, stream);
+        }
+
+        match result {
+            Ok(()) => {
+                debug!(
+                    "Sent message {} to TCP connection {}",
+                    message.id, connection_id
+                );
+                Ok(())
+            }
+            Err(e) => Err(anyhow::Error::from(e)),
         }
     }
 
     fn get_active_connections(&self) -> Vec<ConnectionId> {
-        // Note: This is a blocking operation, should be called from async context with care
-        let conns = match self.connections.try_lock() {
-            Ok(conns) => conns,
-            Err(_) => return vec![], // Return empty if locked
-        };
-        conns.keys().copied().collect()
+        match self.connections.try_lock() {
+            Ok(conns) => conns.keys().copied().collect(),
+            Err(_) => {
+                warn!(
+                    "Could not acquire connections lock in \
+                     get_active_connections; returning empty list"
+                );
+                vec![]
+            }
+        }
     }
 
     async fn close_connection(&mut self, connection_id: ConnectionId) -> Result<()> {
