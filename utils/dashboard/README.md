@@ -30,17 +30,21 @@ To ensure full dashboard functionality, run ipc-benchmark with both output param
 
 ```bash
 # Minimum command for dashboard compatibility
-./ipc-benchmark --mechanism SharedMemory --message-size 1024 \
-                 -o ./dashboard_data/ \
-                 --streaming-output-json \
-                 --duration 30s
+mkdir -p ./dashboard_data
+./target/release/ipc-benchmark -m shm -s 1024 -d 30s \
+    -o ./dashboard_data/shm_1024_summary.json \
+    --streaming-output-json ./dashboard_data/shm_1024_streaming.json
 ```
+
+> **Note:** `-o` is a file path (not a directory). You must name each output
+> file explicitly. The dashboard discovers files by JSON structure, not by
+> naming convention.
 
 #### **Expected Output Structure**
 ```
 dashboard_data/
-├── sharedmemory_1024_summary.json     # Summary statistics
-└── sharedmemory_1024_streaming.json   # Per-message latency data
+├── shm_1024_summary.json       # Final results (user-chosen name)
+└── shm_1024_streaming.json     # Per-message latency data (user-chosen name)
 ```
 
 ### **Troubleshooting Data Issues**

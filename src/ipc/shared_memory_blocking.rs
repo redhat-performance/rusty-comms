@@ -423,11 +423,11 @@ impl SharedMemoryRingBuffer {
         }
         let data_len = u32::from_le_bytes(len_bytes) as usize;
 
-        // Validate data length
-        if data_len > capacity {
+        // Validate data length (reject zero or oversized frames)
+        if data_len == 0 || data_len > capacity {
             libc::pthread_mutex_unlock(&self.mutex as *const _ as *mut _);
             return Err(anyhow!(
-                "Invalid data length: {} exceeds capacity {}",
+                "Invalid data length: {} (capacity: {}, min: 1)",
                 data_len,
                 capacity
             ));

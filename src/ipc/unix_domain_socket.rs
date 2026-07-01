@@ -578,7 +578,9 @@ mod tests {
             match client.send(&message).await {
                 Ok(backpressure_detected) => {
                     if backpressure_detected {
-                        println!("Regular backpressure detected, continuing to force a timeout.");
+                        tracing::trace!(
+                            "Regular backpressure detected, continuing to force a timeout."
+                        );
                     }
                 }
                 Err(e) => {

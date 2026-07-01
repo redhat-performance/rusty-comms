@@ -170,7 +170,7 @@ This benchmark suite uses **high-precision monotonic clocks** to measure true IP
 
 #### Clock Source
 
-- **Unix/Linux**: Uses `CLOCK_MONOTONIC` via the nix crate
+- **Unix/Linux**: Uses `CLOCK_MONOTONIC` via direct `libc::clock_gettime` call
 - **Windows**: Falls back to system time (less precise)
 - **Characteristics**: Monotonic clocks measure time from system boot and are unaffected by NTP adjustments, daylight saving time, or manual clock changes
 
@@ -481,7 +481,7 @@ ipc-benchmark -m all --continue-on-error
 
 # Run only round-trip tests (one-way and round-trip run
 # sequentially by default; use these flags to select one)
-ipc-benchmark --round-trip --no-one-way
+ipc-benchmark --round-trip
 
 # Custom percentiles for latency analysis
 ipc-benchmark --percentiles 50 90 95 99 99.9 99.99
@@ -501,7 +501,7 @@ ipc-benchmark -m shm --buffer-size 16384
 This benchmark runs the server as a separate child process for each test to ensure strong isolation and realistic IPC behavior.
 
 - The parent process spawns the same binary in a special "server-only" mode and waits for a readiness byte via a pipe connected to the child's stdout.
-- On Unix, the readiness signal is a single byte `0x01` written to stdout. On Windows, tests use a simple `echo` to emit a single character (e.g., `R`).
+- The readiness signal is a single byte `0x01` written to stdout on all platforms.
 - The child process is terminated at the end of each test; resources are cleaned up by the transport implementation.
 
 Binary resolution strategy used by the spawner:
@@ -548,6 +548,8 @@ If you need to analyze the raw performance data, including the first-message spi
 ```bash
 # Include the first message in the final results
 ipc-benchmark --include-first-message
+```
+
 ### Understanding Test Types: Throughput vs. Latency
 
 This benchmark suite can be used to measure two primary aspects of IPC performance: **throughput** and **latency**. The configuration you choose will determine which of these you are primarily testing.
