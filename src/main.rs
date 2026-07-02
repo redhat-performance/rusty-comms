@@ -47,10 +47,8 @@ use std::io::{self, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 
-use tracing_subscriber::{filter::LevelFilter, prelude::*, Layer};
-
 use ipc_benchmark::cli;
-use ipc_benchmark::logging::ColorizedFormatter;
+use ipc_benchmark::logging::{init_logging, LogConfig};
 
 /// Main entry point for the IPC benchmark suite.
 ///
@@ -118,81 +116,13 @@ fn main() -> Result<()> {
 /// * `Err(anyhow::Error)` - Benchmark failed with error
 #[tokio::main]
 async fn run_async_mode(args: Args) -> Result<()> {
-    // === ALL EXISTING MAIN() LOGIC STARTS HERE ===
-
-    // Configure logging level based on verbosity flags.
-    // This level applies to both the log file and stdout.
-    // - default: INFO
-    // -v: DEBUG
-    // -vv and more: TRACE
-    let log_level = match args.verbose {
-        0 => LevelFilter::INFO,
-        1 => LevelFilter::DEBUG,
-        _ => LevelFilter::TRACE,
+    let log_config = LogConfig {
+        verbose: args.verbose,
+        quiet: args.quiet || args.internal_run_as_server,
+        log_file: args.log_file.clone(),
+        is_server_subprocess: args.internal_run_as_server,
     };
-
-    // Configure the detailed log layer (file or stderr).
-    // The guard must be kept alive for the duration of the program for file logging.
-    let guard;
-    let detailed_log_layer;
-
-    if let Some("stderr") = args.log_file.as_deref() {
-        // Log detailed messages to stderr.
-        detailed_log_layer = tracing_subscriber::fmt::layer()
-            .with_writer(std::io::stderr)
-            .with_filter(log_level)
-            .boxed();
-        guard = None;
-    } else {
-        // Log to a file, either specified or default.
-        let file_appender = match args.log_file.as_deref() {
-            Some(path_str) => {
-                let log_path = std::path::Path::new(path_str);
-                let log_dir = log_path
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new("."));
-                let log_filename = log_path
-                    .file_name()
-                    .unwrap_or_else(|| std::ffi::OsStr::new("ipc_benchmark.log"));
-                tracing_appender::rolling::daily(log_dir, log_filename)
-            }
-            None => tracing_appender::rolling::daily(".", "ipc_benchmark.log"),
-        };
-        let (non_blocking_writer, file_guard) = tracing_appender::non_blocking(file_appender);
-        detailed_log_layer = tracing_subscriber::fmt::layer()
-            .with_writer(non_blocking_writer)
-            .with_ansi(false) // Disable color codes for the file logger
-            .with_filter(log_level)
-            .boxed();
-        guard = Some(file_guard);
-    }
-
-    // This layer sends clean, user-facing output to stdout.
-    // It is only enabled if the --quiet flag is NOT present.
-    // Its verbosity is controlled by the `log_level` derived from `-v` flags.
-    // Disable stdout logging when running as the spawned server process to
-    // keep stdout reserved for the readiness byte signaling.
-    let stdout_log = if !args.quiet && !args.internal_run_as_server {
-        Some(
-            tracing_subscriber::fmt::layer()
-                .with_writer(std::io::stdout)
-                .event_format(ColorizedFormatter) // Use the custom formatter
-                .with_filter(log_level),
-        )
-    } else {
-        None
-    };
-
-    // Initialize the tracing subscriber by combining the layers.
-    // The `with` method on the registry conveniently handles the Option from the stdout layer.
-    tracing_subscriber::registry()
-        .with(detailed_log_layer)
-        .with(stdout_log)
-        .init();
-
-    // Keep the logging guard alive for the duration of the program.
-    // If we don't assign it to a variable, it gets dropped immediately, and file logging stops working.
-    let _log_guard = guard;
+    let _log_guard = init_logging(&log_config)?;
 
     // If the internal server flag is present, run in server-only mode and exit.
     if args.internal_run_as_server {
@@ -365,79 +295,26 @@ async fn run_async_mode(args: Args) -> Result<()> {
 /// * `Ok(())` - Benchmark completed successfully
 /// * `Err(anyhow::Error)` - Benchmark failed with error
 fn run_blocking_mode(args: Args) -> Result<()> {
-    // Check for server mode FIRST before setting up logging
-    // Server mode uses stderr for logging to avoid interfering with stdout pipe
+    // Check for server mode FIRST — uses minimal stderr logging to
+    // avoid interfering with stdout pipe signalling.
     if args.internal_run_as_server {
-        // Minimal logging setup for server mode - log to stderr only
-        tracing_subscriber::fmt()
-            .with_writer(std::io::stderr)
-            .with_max_level(tracing::Level::DEBUG)
-            .init();
+        let log_config = LogConfig {
+            verbose: args.verbose,
+            quiet: true,
+            log_file: None,
+            is_server_subprocess: true,
+        };
+        let _guard = init_logging(&log_config)?;
         return run_server_mode_blocking(args);
     }
 
-    // Configure logging level based on verbosity flags
-    let log_level = match args.verbose {
-        0 => LevelFilter::INFO,
-        1 => LevelFilter::DEBUG,
-        _ => LevelFilter::TRACE,
+    let log_config = LogConfig {
+        verbose: args.verbose,
+        quiet: args.quiet,
+        log_file: args.log_file.clone(),
+        is_server_subprocess: false,
     };
-
-    // Configure the detailed log layer (file or stderr)
-    let guard;
-    let detailed_log_layer;
-
-    if let Some("stderr") = args.log_file.as_deref() {
-        // Log detailed messages to stderr
-        detailed_log_layer = tracing_subscriber::fmt::layer()
-            .with_writer(std::io::stderr)
-            .with_filter(log_level)
-            .boxed();
-        guard = None;
-    } else {
-        // Log to a file, either specified or default
-        let file_appender = match args.log_file.as_deref() {
-            Some(path_str) => {
-                let log_path = std::path::Path::new(path_str);
-                let log_dir = log_path
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new("."));
-                let log_filename = log_path
-                    .file_name()
-                    .unwrap_or_else(|| std::ffi::OsStr::new("ipc_benchmark.log"));
-                tracing_appender::rolling::daily(log_dir, log_filename)
-            }
-            None => tracing_appender::rolling::daily(".", "ipc_benchmark.log"),
-        };
-        let (non_blocking_writer, file_guard) = tracing_appender::non_blocking(file_appender);
-        detailed_log_layer = tracing_subscriber::fmt::layer()
-            .with_writer(non_blocking_writer)
-            .with_ansi(false)
-            .with_filter(log_level)
-            .boxed();
-        guard = Some(file_guard);
-    }
-
-    // Stdout layer for user-facing output (disabled in server mode)
-    let stdout_log = if !args.quiet {
-        Some(
-            tracing_subscriber::fmt::layer()
-                .with_writer(std::io::stdout)
-                .event_format(ColorizedFormatter)
-                .with_filter(log_level),
-        )
-    } else {
-        None
-    };
-
-    // Initialize the tracing subscriber
-    tracing_subscriber::registry()
-        .with(detailed_log_layer)
-        .with(stdout_log)
-        .init();
-
-    // Keep the logging guard alive
-    let _log_guard = guard;
+    let _log_guard = init_logging(&log_config)?;
 
     info!("Starting IPC Benchmark Suite (Blocking Mode)");
 

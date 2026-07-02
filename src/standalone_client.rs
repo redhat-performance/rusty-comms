@@ -10,17 +10,13 @@
 //! up logging, CPU affinity, and dispatches to the appropriate blocking
 //! or async implementation based on CLI flags.
 
-use anyhow::{Context, Result};
-use tracing::{debug, error, info, warn};
-use tracing_subscriber::filter::LevelFilter;
-
 use crate::benchmark::BenchmarkConfig;
 use crate::cli::{Args, IpcMechanism};
 use crate::ipc::{
     get_monotonic_time_ns, BlockingTransportFactory, Message, MessageType, TransportConfig,
     TransportFactory,
 };
-use crate::logging::ColorizedFormatter;
+use crate::logging::{try_init_logging, LogConfig};
 use crate::metrics::{LatencyType, MetricsCollector};
 use crate::results::{BenchmarkResults, MessageLatencyRecord};
 use crate::results_blocking::BlockingResultsManager;
@@ -28,6 +24,8 @@ use crate::standalone_server::{
     build_standalone_transport_config, effective_concurrency, CONNECT_RETRY_INTERVAL,
     CONNECT_RETRY_TIMEOUT,
 };
+use anyhow::{Context, Result};
+use tracing::{debug, error, info, warn};
 
 /// Run in standalone client mode.
 ///
@@ -61,24 +59,13 @@ pub fn run_standalone_client(args: Args) -> Result<()> {
         return Err(anyhow::anyhow!("--shm-direct requires --blocking mode"));
     }
 
-    // Set up logging
-    if !args.quiet {
-        let log_level = match args.verbose {
-            0 => LevelFilter::INFO,
-            1 => LevelFilter::DEBUG,
-            _ => LevelFilter::TRACE,
-        };
-
-        if tracing_subscriber::fmt()
-            .with_writer(std::io::stderr)
-            .with_max_level(log_level)
-            .event_format(ColorizedFormatter)
-            .try_init()
-            .is_err()
-        {
-            eprintln!("Note: tracing subscriber already initialized, using existing configuration");
-        }
-    }
+    let log_config = LogConfig {
+        verbose: args.verbose,
+        quiet: args.quiet,
+        log_file: Some("stderr".to_string()),
+        is_server_subprocess: false,
+    };
+    try_init_logging(&log_config)?;
 
     if let Some(core) = args.client_affinity {
         if let Err(e) = crate::utils::set_affinity(core) {
