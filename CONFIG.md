@@ -224,10 +224,10 @@ results/
 #### Missing Time Series Data
 ```bash
 # Problem: Only used -o parameter
-ipc-benchmark -m shm -o results/
+ipc-benchmark -m shm -o results.json
 
 # Solution: Add streaming output
-ipc-benchmark -m shm -o results/ --streaming-output-json
+ipc-benchmark -m shm -o results.json --streaming-output-json
 ```
 
 #### Missing Summary Data
@@ -236,7 +236,7 @@ ipc-benchmark -m shm -o results/ --streaming-output-json
 ipc-benchmark -m shm --streaming-output-json
 
 # Solution: Add summary output
-ipc-benchmark -m shm -o results/ --streaming-output-json
+ipc-benchmark -m shm -o results.json --streaming-output-json
 ```
 
 #### No Dashboard Data
@@ -245,7 +245,7 @@ ipc-benchmark -m shm -o results/ --streaming-output-json
 ipc-benchmark -m shm
 
 # Solution: Use both required parameters
-ipc-benchmark -m shm -o results/ --streaming-output-json
+ipc-benchmark -m shm -o results.json --streaming-output-json
 ```
 
 For dashboard setup and usage instructions, see [`utils/dashboard/README.md`](utils/dashboard/README.md).
