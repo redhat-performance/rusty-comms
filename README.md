@@ -97,7 +97,7 @@ Blocking mode uses only the Rust standard library (`std::net`, `std::thread`, `s
 
 ## Shared Memory Implementations
 
-The benchmark suite provides **two shared memory implementations** for blocking mode, each optimized for different use cases:
+The benchmark suite provides **two shared memory implementations** optimized for different use cases (a third async ring buffer is used in the default async path):
 
 ### Ring Buffer (Default)
 
@@ -112,7 +112,7 @@ ipc-benchmark -m shm -i 10000
 ```
 
 **Characteristics:**
-- Works on all platforms (Linux, macOS, Windows, BSD)
+- Unix-only (Linux, macOS, BSD — uses pthread process-shared primitives)
 - Supports variable message sizes
 - Uses bincode serialization (~15-30 μs overhead)
 - Average latency: ~20 μs
@@ -144,7 +144,7 @@ ipc-benchmark -m shm --shm-direct -i 10000 --server-affinity 0 --client-affinity
 | **Max Latency** | ~10 ms | ~22 μs (450× better) |
 | **Serialization** | bincode | None (memcpy) |
 | **Message Size** | Variable | Fixed (8KB max) |
-| **Platform Support** | All | Unix only |
+| **Platform Support** | Unix (pthread) | Unix only |
 | **Best For** | Flexibility, cross-platform | Maximum performance |
 
 ### When to Use Each Implementation
@@ -155,10 +155,9 @@ ipc-benchmark -m shm --shm-direct -i 10000 --server-affinity 0 --client-affinity
 - Running on Unix/Linux systems
 
 **Use Ring Buffer (default) when:**
-- Cross-platform support is needed
 - Variable message sizes are required
 - Flexibility is more important than raw speed
-- Windows support is required
+- You want the default async mode (`-m shm` without `--blocking`)
 
 For detailed technical comparison, see [SHM_COMPARISON.md](SHM_COMPARISON.md).
 
@@ -548,6 +547,8 @@ If you need to analyze the raw performance data, including the first-message spi
 ```bash
 # Include the first message in the final results
 ipc-benchmark --include-first-message
+```
+
 ### Understanding Test Types: Throughput vs. Latency
 
 This benchmark suite can be used to measure two primary aspects of IPC performance: **throughput** and **latency**. The configuration you choose will determine which of these you are primarily testing.
@@ -991,12 +992,18 @@ To generate dashboard-compatible output, you **must** include both output parame
 
 ### File Output Expectations
 
-After running with the required parameters, you should see these files:
+After running with the required parameters, the files you specified
+are created:
 
-```
-results/
-├── sharedmemory_1024_summary.json     # Enables Summary Analysis
-└── sharedmemory_1024_streaming.json   # Enables Time Series Analysis
+```bash
+# Example: produces two files with the names you chose
+./ipc-benchmark -m shm -i 10000 \
+  -o ./shm_results.json \
+  --streaming-output-json ./shm_streaming.json
+
+# Results in:
+# ./shm_results.json          (summary/aggregated metrics)
+# ./shm_streaming.json        (per-message latency data)
 ```
 
 ### Dashboard Parameter Reference
@@ -1097,8 +1104,9 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and changes.
 
 | Transport | Concurrency > 1 | Behavior |
 |-----------|----------------|----------|
-| **TCP** | ✅ Supported | Simulated concurrency (sequential tests) |
-| **Unix Domain Sockets** | ✅ Supported | Simulated concurrency (sequential tests) |
+| **TCP** | ✅ Supported | Multi-threaded workers |
+| **Unix Domain Sockets** | ✅ Supported | Multi-threaded workers |
+| **POSIX Message Queues** | ✅ Supported | Multi-threaded workers |
 | **Shared Memory** | ⚠️ **Forced to single-thread** | Automatically uses `concurrency = 1` |
 
 ### Shared Memory Limitations
