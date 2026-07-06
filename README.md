@@ -360,8 +360,8 @@ done
 ### Building from Source
 
 ```bash
-git clone https://github.com/your-org/ipc-benchmark.git
-cd ipc-benchmark
+git clone https://github.com/redhat-performance/rusty-comms.git
+cd rusty-comms
 cargo build --release
 ```
 
@@ -1090,7 +1090,7 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for version history and changes.
+Version history is tracked via git tags and GitHub releases.
 
 ---
 
