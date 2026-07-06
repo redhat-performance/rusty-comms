@@ -633,12 +633,12 @@ impl BlockingBenchmarkRunner {
 
                     queue_depth
                 } else {
-                    100
+                    10
                 }
             }
             #[cfg(not(target_os = "linux"))]
             {
-                100
+                10
             }
         };
 
@@ -677,7 +677,7 @@ impl BlockingBenchmarkRunner {
                     if self.mechanism == IpcMechanism::PosixMessageQueue {
                         args.message_queue_name
                             .clone()
-                            .unwrap_or_else(|| format!("/ipc_benchmark_{}", unique_id))
+                            .unwrap_or_else(|| format!("/ipc_benchmark_pmq_{}", unique_id))
                     } else {
                         String::new()
                     }
@@ -688,6 +688,8 @@ impl BlockingBenchmarkRunner {
                 }
             },
             buffer_size,
+            // Blocking mode is single-threaded — only one connection is
+            // ever active (unlike async which uses concurrency.max(16)).
             max_connections: 1,
             message_queue_depth: adaptive_queue_depth,
             pmq_priority: self.config.pmq_priority,
@@ -773,8 +775,11 @@ impl BlockingBenchmarkRunner {
             results.add_one_way_results(one_way_results);
         }
 
-        // Run round-trip latency test if enabled
-        // Note: Shared memory in blocking mode doesn't support bidirectional communication
+        // Run round-trip latency test if enabled.
+        // The blocking SHM ring buffer is physically unidirectional (one
+        // writer, one reader) so round-trip requires two separate segments.
+        // This is an intentional design difference vs async SHM which uses
+        // a bidirectional channel approach.
         if self.config.round_trip {
             if self.mechanism == IpcMechanism::SharedMemory {
                 warn!(
@@ -851,8 +856,12 @@ impl BlockingBenchmarkRunner {
         }
 
         // --- Cleanup ---
-        // For PMQ and SHM, send a shutdown message to signal the server to exit
-        // (These mechanisms don't have a connection to close like sockets)
+        // PMQ and SHM are message-oriented, not stream-oriented — the server
+        // cannot detect client disconnect via EOF the way TCP/UDS can. An
+        // explicit Shutdown message is required so the server exits cleanly.
+        // The 50 ms sleep gives the server time to process the message before
+        // the transport is torn down. (Async mode doesn't need this because
+        // its stream-based transports signal EOF on close.)
         #[cfg(target_os = "linux")]
         if self.mechanism == IpcMechanism::PosixMessageQueue {
             debug!("Sending shutdown message to PMQ server (warmup)");
