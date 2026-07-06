@@ -1,33 +1,34 @@
-# Shared Memory Implementation Comparison: Ring Buffer vs Direct Memory
+# Shared Memory Implementation Comparison
 
 ## Overview
 
-The rusty-comms project provides **two** shared memory implementations for blocking mode:
+The rusty-comms project provides **three** shared memory implementations:
 
-1. **Ring Buffer** (`shared_memory_blocking.rs`) - Default
-2. **Direct Memory** (`shared_memory_direct.rs`) - Enabled with `--shm-direct` flag
+1. **Async Ring Buffer** (`shared_memory.rs`) - Default for async mode (`-m shm`)
+2. **Blocking Ring Buffer** (`shared_memory_blocking.rs`) - Default for blocking mode (`-m shm --blocking`)
+3. **Direct Memory** (`shared_memory_direct.rs`) - Enabled with `--shm-direct` (auto-enables blocking)
 
-Both are production-ready. Choose based on your performance vs flexibility needs.
+The async and blocking ring buffers share the same conceptual design
+(circular buffer with bincode serialization) but differ in their I/O
+model. Direct memory is a separate high-performance path using raw
+`memcpy` with no serialization.
 
 ---
 
 ## Quick Comparison Table
 
-| Feature | Ring Buffer (Default) | Direct Memory (`--shm-direct`) |
-|---------|----------------------|-------------------------------|
-| **CLI Flag** | `--blocking` (with `-m shm`) | `--shm-direct` (auto-enables blocking) |
-| **Average Latency** | ~20 μs | ~7 μs (3× faster) |
-| **Max Latency** | ~10 ms | ~22 μs (450× better) |
-| **Min Latency** | ~5-10 μs | <1 μs (sub-microsecond) |
-| **Serialization** | bincode (length-prefixed) | None (direct memcpy) |
-| **Message Size** | Variable (flexible) | Fixed (MAX_PAYLOAD_SIZE) |
-| **Memory Layout** | Ring buffer structure | Single `#[repr(C)]` struct |
-| **Synchronization** | 3 pthread primitives | 2 pthread primitives |
-| **Platform Support** | All (Linux, macOS, Windows, BSD) | Unix only (Linux, macOS, BSD) |
-| **Round-Trip Support** | ❌ No (one-way only) | ❌ No (one-way only) |
-| **Code Complexity** | Higher (ring buffer logic) | Lower (simple struct) |
-| **Cache Locality** | Multiple memory regions | Single contiguous struct |
-| **Use Case** | General purpose, flexible | Performance-critical, fixed-size |
+| Feature | Async Ring Buffer | Blocking Ring Buffer | Direct Memory (`--shm-direct`) |
+|---------|------------------|---------------------|-------------------------------|
+| **CLI Flag** | `-m shm` (default) | `-m shm --blocking` | `--shm-direct` (auto-enables blocking) |
+| **Average Latency** | ~20 μs | ~20 μs | ~7 μs (3× faster) |
+| **Max Latency** | ~10 ms | ~10 ms | ~22 μs (450× better) |
+| **Serialization** | bincode | bincode | None (direct memcpy) |
+| **Message Size** | Variable | Variable | Fixed (MAX_PAYLOAD_SIZE = 8KB) |
+| **Synchronization** | Tokio notify | 3 pthread primitives | 2 pthread primitives |
+| **Platform** | Unix (cfg(unix)) | Unix (cfg(unix)) | Unix only |
+| **Round-Trip** | ✅ Yes | ❌ No (one-way only) | ❌ No (one-way only) |
+| **Concurrency** | Supports -c > 1 | Single-threaded only | Single-threaded only |
+| **Use Case** | General async apps | Blocking comparison | Maximum performance |
 
 ---
 
@@ -274,8 +275,8 @@ Total:      ~8.3KB  Fixed size (predictable)
 
 ### 6. Code Complexity
 
-#### Ring Buffer
-- **Lines of Code**: 958 lines
+#### Blocking Ring Buffer
+- **Lines of Code**: ~1521 lines (`shared_memory_blocking.rs`)
 - **Complexity**: Higher
   - Ring buffer wraparound logic
   - Read/write position management
@@ -291,7 +292,7 @@ available_data() // Calculate readable data
 ```
 
 #### Direct Memory
-- **Lines of Code**: 789 lines (17% less code)
+- **Lines of Code**: ~1109 lines (`shared_memory_direct.rs`)
 - **Complexity**: Lower
   - Simple struct copy
   - No buffer management
@@ -310,14 +311,15 @@ receive_blocking() // Direct memcpy from shared memory
 
 ### 7. Platform Support
 
-#### Ring Buffer
-✅ **Cross-platform:**
+#### Ring Buffer (Both Async and Blocking)
+⚠️ **Unix-only** (`#[cfg(unix)]`):
 - Linux (tested)
 - macOS (tested)
-- Windows (should work)
 - BSD (should work)
+- ❌ Windows (not supported)
 
-Uses standard Rust primitives that work everywhere.
+Both ring buffer implementations use pthread process-shared
+primitives and are gated behind `#[cfg(unix)]`.
 
 #### Direct Memory
 ⚠️ **Unix-only:**
@@ -326,18 +328,21 @@ Uses standard Rust primitives that work everywhere.
 - BSD (should work)
 - ❌ Windows (not supported)
 
-Requires POSIX pthread primitives (`pthread_mutex_t`, `pthread_cond_t`).
+Also requires POSIX pthread primitives (`pthread_mutex_t`, `pthread_cond_t`).
 
 ---
 
 ### 8. Limitations
 
-#### Ring Buffer
-1. ❌ No round-trip support (one-way only)
+#### Blocking Ring Buffer
+1. ❌ No round-trip support (one-way only in blocking mode)
 2. ⚠️ Higher latency (~20 μs avg)
 3. ⚠️ Worse maximum latency (~10 ms)
 4. ⚠️ Serialization overhead (15-30 μs)
 5. ⚠️ More complex code (harder to debug)
+
+Note: The **async** ring buffer (`shared_memory.rs`) *does* support
+round-trip. Only the blocking implementation skips round-trip.
 
 #### Direct Memory
 1. ❌ No round-trip support (one-way only)
@@ -465,11 +470,13 @@ SHM Load:    Mean: ~7 μs,   Min: <1 μs,   Max: ~22 μs
 
 ### 13. Implementation Files
 
-- **Ring Buffer**: `src/ipc/shared_memory_blocking.rs` (958 lines)
-- **Direct Memory**: `src/ipc/shared_memory_direct.rs` (789 lines)
-- **Factory**: `src/ipc/mod.rs` (`BlockingTransportFactory::create()`)
+- **Async Ring Buffer**: `src/ipc/shared_memory.rs` (~998 lines)
+- **Blocking Ring Buffer**: `src/ipc/shared_memory_blocking.rs` (~1521 lines)
+- **Direct Memory**: `src/ipc/shared_memory_direct.rs` (~1109 lines)
+- **Factory**: `src/ipc/mod.rs` (`TransportFactory::create()`, `BlockingTransportFactory::create()`)
 - **CLI Args**: `src/cli.rs` (`--blocking`, `--shm-direct`)
-- **Benchmark**: `src/benchmark_blocking.rs` (`BlockingBenchmarkRunner`)
+- **Benchmark (async)**: `src/benchmark.rs` (`BenchmarkRunner`)
+- **Benchmark (blocking)**: `src/benchmark_blocking.rs` (`BlockingBenchmarkRunner`)
 
 ---
 
