@@ -896,20 +896,19 @@ impl BenchmarkRunner {
         let mut metrics_collector =
             MetricsCollector::new(Some(LatencyType::OneWay), self.config.percentiles.clone())?;
 
-        // Check for problematic configurations and adapt automatically
-        // Shared memory currently has race conditions with concurrency > 1
-        // so we force single-threaded execution for reliability
+        // Shared memory has race conditions with concurrency > 1
         if self.mechanism == IpcMechanism::SharedMemory && self.config.concurrency > 1 {
             warn!(
-                "Shared memory with concurrency > 1 has race conditions. Forcing concurrency = 1."
+                "Shared memory with concurrency > 1 has race conditions. \
+                 Forcing concurrency = 1."
             );
-            // Run single-threaded instead
             self.run_single_threaded_one_way(
                 transport_config,
                 &mut metrics_collector,
                 results_manager,
             )
             .await?;
+            Ok(metrics_collector.get_metrics())
         } else if self.config.concurrency == 1 {
             self.run_single_threaded_one_way(
                 transport_config,
@@ -917,16 +916,11 @@ impl BenchmarkRunner {
                 results_manager,
             )
             .await?;
+            Ok(metrics_collector.get_metrics())
         } else {
-            self.run_multi_threaded_one_way(
-                transport_config,
-                &mut metrics_collector,
-                results_manager,
-            )
-            .await?;
+            self.run_multi_threaded_one_way(transport_config, results_manager)
+                .await
         }
-
-        Ok(metrics_collector.get_metrics())
     }
 
     /// Run round-trip latency test
@@ -960,18 +954,19 @@ impl BenchmarkRunner {
             self.config.percentiles.clone(),
         )?;
 
-        // Check for problematic configurations and adapt automatically
+        // Shared memory has race conditions with concurrency > 1
         if self.mechanism == IpcMechanism::SharedMemory && self.config.concurrency > 1 {
             warn!(
-                "Shared memory with concurrency > 1 has race conditions. Forcing concurrency = 1."
+                "Shared memory with concurrency > 1 has race conditions. \
+                 Forcing concurrency = 1."
             );
-            // Run single-threaded instead
             self.run_single_threaded_round_trip(
                 transport_config,
                 &mut metrics_collector,
                 results_manager,
             )
             .await?;
+            Ok(metrics_collector.get_metrics())
         } else if self.config.concurrency == 1 {
             self.run_single_threaded_round_trip(
                 transport_config,
@@ -979,16 +974,11 @@ impl BenchmarkRunner {
                 results_manager,
             )
             .await?;
+            Ok(metrics_collector.get_metrics())
         } else {
-            self.run_multi_threaded_round_trip(
-                transport_config,
-                &mut metrics_collector,
-                results_manager,
-            )
-            .await?;
+            self.run_multi_threaded_round_trip(transport_config, results_manager)
+                .await
         }
-
-        Ok(metrics_collector.get_metrics())
     }
 
     /// Run single-threaded one-way test
@@ -1319,109 +1309,79 @@ port={}",
     }
 
     /// Run multi-threaded one-way test
+    /// Run multi-threaded one-way test (simulated via sequential workers).
     ///
-    /// This implementation simulates concurrent client workloads by running
-    /// multiple sequential tests and aggregating their results. While not
-    /// truly concurrent, it provides meaningful performance data for
-    /// understanding scalability characteristics.
+    /// Each worker runs the full configured message count independently.
+    /// Results are aggregated using pooled statistics so latency
+    /// distributions and throughput are correctly combined.
     ///
-    /// ## Current Implementation Limitations
-    ///
-    /// The current implementation runs "workers" sequentially rather than
-    /// concurrently to avoid complex connection management issues. This
-    /// provides stable results while avoiding race conditions in transport setup.
-    ///
-    /// ## Future Improvements
-    ///
-    /// A future implementation could support true concurrency with:
-    /// - Connection pooling for shared transports
-    /// - Proper resource isolation between workers
-    /// - Advanced synchronization for startup/shutdown
+    /// Returns the aggregated [`PerformanceMetrics`] directly rather
+    /// than populating a shared collector, avoiding double-counting.
     async fn run_multi_threaded_one_way(
         &self,
         transport_config: &TransportConfig,
-        metrics_collector: &mut MetricsCollector,
         _results_manager: Option<&mut crate::results::ResultsManager>,
-    ) -> Result<()> {
-        // For now, we'll simulate concurrency by running multiple sequential tests
-        // This avoids the complex connection management issues while still providing
-        // meaningful performance data for concurrent workloads
-
-        warn!("Running simulated multi-threaded one-way test. This is a placeholder and does not achieve true concurrency.");
+    ) -> Result<PerformanceMetrics> {
+        warn!(
+            "Running simulated multi-threaded one-way test with {} \
+             workers (sequential, not truly concurrent).",
+            self.config.concurrency
+        );
 
         let mut all_worker_metrics = Vec::new();
-        let messages_per_worker = self.get_msg_count() / self.config.concurrency;
 
-        // Run each "worker" sequentially to avoid connection conflicts
         for worker_id in 0..self.config.concurrency {
             debug!(
-                "Running worker {} with {} messages",
-                worker_id, messages_per_worker
+                "Running one-way worker {}/{}",
+                worker_id + 1,
+                self.config.concurrency
             );
 
             let mut worker_metrics =
                 MetricsCollector::new(Some(LatencyType::OneWay), self.config.percentiles.clone())?;
 
-            // Run single-threaded test for this worker
-            // Note: Passing None for results_manager to avoid duplicate streaming in simulated multi-threading
             self.run_single_threaded_one_way(transport_config, &mut worker_metrics, None)
                 .await?;
 
             all_worker_metrics.push(worker_metrics.get_metrics());
         }
 
-        // Aggregate all worker results
-        let aggregated_metrics = MetricsCollector::aggregate_worker_metrics(
+        let aggregated = MetricsCollector::aggregate_worker_metrics(
             all_worker_metrics,
             &self.config.percentiles,
         )?;
 
-        // Update the main metrics collector with aggregated data
-        if let Some(ref latency) = aggregated_metrics.latency {
-            for _ in 0..latency.total_samples {
-                metrics_collector.record_message(self.config.message_size, None)?;
-            }
-        }
-
-        // Record throughput data
-        for _ in 0..aggregated_metrics.throughput.total_messages {
-            metrics_collector.record_message(self.config.message_size, None)?;
-        }
-
-        debug!("Simulated multi-threaded one-way test completed");
-        Ok(())
+        debug!("Multi-threaded one-way test completed");
+        Ok(aggregated)
     }
 
-    /// Run multi-threaded round-trip test
+    /// Run multi-threaded round-trip test (simulated via sequential
+    /// workers).
     ///
-    /// Similar to the one-way multi-threaded test, this implementation
-    /// simulates concurrent request-response workloads by running multiple
-    /// sequential tests and aggregating results.
+    /// Each worker runs the full configured message count independently.
+    /// Results are aggregated using pooled statistics so latency
+    /// distributions and throughput are correctly combined.
     ///
-    /// ## Aggregation Strategy
-    ///
-    /// Results from multiple workers are aggregated using statistical
-    /// methods that properly combine latency distributions and throughput
-    /// measurements to provide meaningful overall performance metrics.
+    /// Returns the aggregated [`PerformanceMetrics`] directly rather
+    /// than populating a shared collector, avoiding double-counting.
     async fn run_multi_threaded_round_trip(
         &self,
         transport_config: &TransportConfig,
-        metrics_collector: &mut MetricsCollector,
         _results_manager: Option<&mut crate::results::ResultsManager>,
-    ) -> Result<()> {
-        // For now, we'll simulate concurrency by running multiple sequential tests
-        // This avoids the complex bidirectional connection management issues
-
-        warn!("Running simulated multi-threaded round-trip test. This is a placeholder and does not achieve true concurrency.");
+    ) -> Result<PerformanceMetrics> {
+        warn!(
+            "Running simulated multi-threaded round-trip test with {} \
+             workers (sequential, not truly concurrent).",
+            self.config.concurrency
+        );
 
         let mut all_worker_metrics = Vec::new();
-        let messages_per_worker = self.get_msg_count() / self.config.concurrency;
 
-        // Run each "worker" sequentially to avoid connection conflicts
         for worker_id in 0..self.config.concurrency {
             debug!(
-                "Running worker {} with {} messages",
-                worker_id, messages_per_worker
+                "Running round-trip worker {}/{}",
+                worker_id + 1,
+                self.config.concurrency
             );
 
             let mut worker_metrics = MetricsCollector::new(
@@ -1429,34 +1389,19 @@ port={}",
                 self.config.percentiles.clone(),
             )?;
 
-            // Run single-threaded test for this worker
-            // Note: Passing None for results_manager to avoid duplicate streaming in simulated multi-threading
             self.run_single_threaded_round_trip(transport_config, &mut worker_metrics, None)
                 .await?;
 
             all_worker_metrics.push(worker_metrics.get_metrics());
         }
 
-        // Aggregate all worker results
-        let aggregated_metrics = MetricsCollector::aggregate_worker_metrics(
+        let aggregated = MetricsCollector::aggregate_worker_metrics(
             all_worker_metrics,
             &self.config.percentiles,
         )?;
 
-        // Update the main metrics collector with aggregated data
-        if let Some(ref latency) = aggregated_metrics.latency {
-            for _ in 0..latency.total_samples {
-                metrics_collector.record_message(self.config.message_size, None)?;
-            }
-        }
-
-        // Record throughput data
-        for _ in 0..aggregated_metrics.throughput.total_messages {
-            metrics_collector.record_message(self.config.message_size, None)?;
-        }
-
-        debug!("Simulated multi-threaded round-trip test completed");
-        Ok(())
+        debug!("Multi-threaded round-trip test completed");
+        Ok(aggregated)
     }
 
     /// Run combined one-way and round-trip test for streaming
