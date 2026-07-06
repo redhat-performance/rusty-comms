@@ -170,7 +170,7 @@ This benchmark suite uses **high-precision monotonic clocks** to measure true IP
 
 #### Clock Source
 
-- **Unix/Linux**: Uses `CLOCK_MONOTONIC` via direct `libc::clock_gettime` call
+- **Unix/Linux**: Uses `CLOCK_MONOTONIC` via direct `libc::clock_gettime` syscall
 - **Windows**: Falls back to system time (less precise)
 - **Characteristics**: Monotonic clocks measure time from system boot and are unaffected by NTP adjustments, daylight saving time, or manual clock changes
 
@@ -938,14 +938,11 @@ cargo test ipc
 cargo test -- --nocapture
 ```
 
-### Benchmarking
+### Profiling
 
 ```bash
-# Run internal benchmarks
-cargo bench
-
 # Profile with perf
-perf record --call-graph dwarf target/release/ipc-benchmark
+perf record --call-graph dwarf target/release/ipc-benchmark -m uds -i 50000
 perf report
 ```
 
@@ -982,14 +979,14 @@ To generate dashboard-compatible output, you **must** include both output parame
 
 ```bash
 # Minimum command for dashboard compatibility
-./ipc-benchmark --mechanism <MECHANISM> --message-size <SIZE> \
-                 -o results/ \
+./ipc-benchmark -m <MECHANISM> --message-size <SIZE> \
+                 -o results.json \
                  --streaming-output-json \
                  --continue-on-error
 
 # Example with specific values
-./ipc-benchmark --mechanism SharedMemory --message-size 1024 \
-                 -o ./benchmark_results/ \
+./ipc-benchmark -m shm --message-size 1024 \
+                 -o ./benchmark_results.json \
                  --streaming-output-json \
                  --duration 30s
 ```
@@ -1008,9 +1005,9 @@ results/
 
 | Parameter | Required | Purpose | Dashboard Impact |
 |-----------|----------|---------|------------------|
-| `-o <dir>` | **Yes** | Output directory | Summary data location |
+| `-o <file>` | **Yes** | Output JSON file path | Summary data |
 | `--streaming-output-json` | **Yes** | Enable streaming data | Time series analysis |
-| `--mechanism <type>` | **Yes** | IPC mechanism | Data categorization |
+| `-m <mechanism>` | **Yes** | IPC mechanism | Data categorization |
 | `--message-size <bytes>` | **Yes** | Message size | Performance comparison |
 | `--duration <time>` | Recommended | Test duration | Data volume |
 | `--continue-on-error` | Recommended | Continue if one test fails | Complete dataset |
@@ -1019,9 +1016,9 @@ results/
 
 #### Single Mechanism Test
 ```bash
-./ipc-benchmark --mechanism SharedMemory \
+./ipc-benchmark -m shm \
                  --message-size 1024 \
-                 -o ./dashboard_data/ \
+                 -o ./shm_results.json \
                  --streaming-output-json \
                  --duration 30s
 ```
@@ -1029,9 +1026,9 @@ results/
 #### Multi-Size Comparison Test
 ```bash
 for size in 64 256 1024 4096; do
-  ./ipc-benchmark --mechanism SharedMemory \
+  ./ipc-benchmark -m shm \
                    --message-size $size \
-                   -o ./dashboard_data/ \
+                   -o ./shm_${size}_results.json \
                    --streaming-output-json \
                    --duration 10s
 done
@@ -1040,9 +1037,9 @@ done
 #### Multi-Mechanism Comparison
 ```bash
 for mechanism in uds shm tcp pmq; do
-  ./ipc-benchmark --mechanism $mechanism \
+  ./ipc-benchmark -m $mechanism \
                    --message-size 1024 \
-                   -o ./dashboard_data/ \
+                   -o ./${mechanism}_results.json \
                    --streaming-output-json \
                    --duration 15s
 done
