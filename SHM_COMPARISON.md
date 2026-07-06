@@ -25,7 +25,7 @@ model. Direct memory is a separate high-performance path using raw
 | **Serialization** | bincode | bincode | None (direct memcpy) |
 | **Message Size** | Variable | Variable | Fixed (MAX_PAYLOAD_SIZE = 8KB) |
 | **Synchronization** | Tokio notify | 3 pthread primitives | 2 pthread primitives |
-| **Platform** | Unix (cfg(unix)) | Unix (cfg(unix)) | Unix only |
+| **Platform** | Unix (shared_memory crate) | Unix (libc pthread) | Unix only |
 | **Round-Trip** | ✅ Yes | ❌ No (one-way only) | ❌ No (one-way only) |
 | **Concurrency** | Supports -c > 1 | Single-threaded only | Single-threaded only |
 | **Use Case** | General async apps | Blocking comparison | Maximum performance |
@@ -311,15 +311,26 @@ receive_blocking() // Direct memcpy from shared memory
 
 ### 7. Platform Support
 
-#### Ring Buffer (Both Async and Blocking)
-⚠️ **Unix-only** (`#[cfg(unix)]`):
+#### Async Ring Buffer
+⚠️ **Unix-only** (practical):
 - Linux (tested)
 - macOS (tested)
 - BSD (should work)
-- ❌ Windows (not supported)
+- ❌ Windows (not tested; module compiles but untested)
 
-Both ring buffer implementations use pthread process-shared
-primitives and are gated behind `#[cfg(unix)]`.
+Uses the cross-platform `shared_memory` crate with `parking_lot`
+for synchronization. Not gated behind `#[cfg(unix)]` but only
+tested on Unix systems.
+
+#### Blocking Ring Buffer
+⚠️ **Unix-only** (hard requirement):
+- Linux (tested)
+- macOS (tested)
+- BSD (should work)
+- ❌ Windows (will not compile)
+
+Uses `libc::pthread_mutex_t` and `libc::pthread_cond_t` directly,
+which are only available on Unix targets.
 
 #### Direct Memory
 ⚠️ **Unix-only:**
