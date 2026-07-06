@@ -122,12 +122,17 @@ Use descriptive branch names:
 
 ### Implementing a New Transport
 
-When adding a new IPC transport mechanism, it must implement the `IpcTransport` trait defined in `src/ipc/mod.rs`. Key requirements include:
+When adding a new IPC transport mechanism, you must provide **both** async and blocking implementations:
 
-- **Asynchronous Operations**: All I/O methods must be `async`.
-- **Bidirectional Support**: The transport should ideally support sending and receiving.
-- **Backpressure Detection**: The `send` method is required to detect when the transport's buffer is full and the operation is blocked. It must return `Ok(true)` when backpressure is detected. See the existing implementations for examples.
-- **Resource Cleanup**: The `close` method and the `Drop` trait must be implemented to ensure all system resources (files, memory segments, etc.) are properly cleaned up.
+- **Async**: Implement `IpcTransport` (in `src/ipc/mod.rs`) — all I/O methods are `async`.
+- **Blocking**: Implement `BlockingIpcTransport` (in `src/ipc/mod.rs`) — pure `std` I/O, no Tokio.
+
+Key requirements for both:
+
+- **Backpressure Detection**: The `send` method must return `Ok(true)` when the transport's buffer is full. Log a warning on first occurrence.
+- **Resource Cleanup**: Implement `close()` for controlled shutdown and the `Drop` trait for automatic cleanup (sockets, shm_unlink, mq_unlink, etc.).
+- **File naming**: `src/ipc/<mechanism>.rs` (async) and `src/ipc/<mechanism>_blocking.rs` (blocking).
+- **Factory registration**: Add the new mechanism to `TransportFactory::create()` and `BlockingTransportFactory::create()`.
 
 ## Code Style
 
@@ -208,12 +213,18 @@ fn process_benchmark_results(file_path: &Path) -> Result<BenchmarkResults> {
 
 ### Test Structure
 
+Unit tests are inline `#[cfg(test)]` modules within each source file.
+Integration tests are flat files under `tests/`:
+
 ```
 tests/
-├── unit/               # Unit tests
-├── integration/        # Integration tests
-├── benchmarks/         # Performance benchmarks
-└── fixtures/           # Test data files
+├── integration_blocking_tcp.rs     # Blocking TCP tests
+├── integration_blocking_uds.rs     # Blocking UDS tests
+├── integration_blocking_shm.rs     # Blocking SHM tests
+├── integration_standalone.rs       # Standalone client/server tests
+├── integration_shm_round_trip.rs   # Async SHM round-trip
+├── integration_pmq_round_trip.rs   # PMQ round-trip
+└── integration_server_handshake.rs # Server readiness handshake
 ```
 
 ### Writing Tests
@@ -283,25 +294,19 @@ async fn test_unix_domain_socket_communication() {
 }
 ```
 
-### Performance Tests
+### Performance Testing
 
-```rust
-// benches/latency_benchmark.rs
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use ipc_benchmark::metrics::*;
+This project does not use `cargo bench` or criterion. Performance is
+measured by running the binary itself with controlled parameters:
 
-fn benchmark_latency_calculation(c: &mut Criterion) {
-    let values: Vec<u64> = (0..10000).collect();
-    
-    c.bench_function("calculate_percentiles", |b| {
-        b.iter(|| {
-            calculate_percentiles(black_box(&values), black_box(&[50.0, 95.0, 99.0]))
-        })
-    });
-}
+```bash
+# Compare async vs blocking latency
+./target/release/ipc-benchmark -m uds -i 50000 -o async.json
+./target/release/ipc-benchmark -m uds -i 50000 --blocking -o blocking.json
 
-criterion_group!(benches, benchmark_latency_calculation);
-criterion_main!(benches);
+# Use CPU affinity for reproducibility
+./target/release/ipc-benchmark -m uds -i 50000 \
+  --server-affinity 0 --client-affinity 1
 ```
 
 ## Documentation
@@ -323,33 +328,26 @@ criterion_main!(benches);
 ### Documentation Style
 
 ```rust
-/// Manages IPC transport connections and message passing
-/// 
-/// The `TransportManager` provides a unified interface for different
-/// IPC mechanisms, handling connection setup, message serialization,
-/// and error recovery.
-/// 
+/// Create a transport for the specified IPC mechanism.
+///
+/// This factory method instantiates the appropriate transport
+/// implementation based on the mechanism enum variant.
+///
 /// # Examples
-/// 
+///
+/// ```rust,no_run
+/// use ipc_benchmark::ipc::{TransportFactory, IpcTransport};
+/// use ipc_benchmark::cli::IpcMechanism;
+///
+/// let transport = TransportFactory::create(&IpcMechanism::TcpSocket)?;
 /// ```
-/// use ipc_benchmark::TransportManager;
-/// 
-/// #[tokio::main]
-/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     let manager = TransportManager::new();
-///     let transport = manager.create_transport(IpcMechanism::UnixDomainSocket)?;
-///     
-///     // Use transport...
-///     Ok(())
-/// }
-/// ```
-/// 
-/// # Performance Considerations
-/// 
-/// The transport manager maintains connection pools for efficiency.
-/// Consider using connection pooling for high-throughput scenarios.
-pub struct TransportManager {
-    // Implementation
+///
+/// # Errors
+///
+/// Returns an error if the mechanism is not supported on the
+/// current platform (e.g., PMQ on non-Linux).
+pub fn create(mechanism: &IpcMechanism) -> Result<Box<dyn IpcTransport>> {
+    // ...
 }
 ```
 
@@ -507,11 +505,12 @@ git push origin feature/add-awesome-feature
 
 ```bash
 # Install development dependencies
-cargo install cargo-watch cargo-tarpaulin cargo-audit
+cargo install cargo-audit
 
-# Set up git hooks
-cp scripts/pre-commit .git/hooks/
-chmod +x .git/hooks/pre-commit
+# Set up git hooks (uses repo-managed .githooks/pre-commit)
+git config core.hooksPath .githooks && chmod +x .githooks/pre-commit
+# Or use the helper script:
+bash scripts/install-git-hooks.sh
 
 # Configure editor (VS Code example)
 # Install rust-analyzer extension
@@ -520,36 +519,20 @@ chmod +x .git/hooks/pre-commit
 
 ### Continuous Integration
 
-The project uses GitHub Actions for CI/CD:
+The project uses GitHub Actions for CI/CD (see
+`.github/workflows/`). The pipeline includes multiple jobs:
 
-```yaml
-# .github/workflows/ci.yml
-name: CI
-
-on: [push, pull_request]
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v3
-    - name: Install Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-    - name: Run tests
-      run: cargo test --all-features
-    - name: Check formatting
-      run: cargo fmt --check
-    - name: Lint with clippy
-      run: cargo clippy -- -D warnings
-```
+- **Lint**: `cargo fmt --check` + `cargo clippy --all-targets -- -D warnings`
+- **Test**: Full test suite on Linux (stable + MSRV 1.70)
+- **Audit**: `cargo audit` for security vulnerabilities
+- **Coverage**: Code coverage via `cargo-tarpaulin`
+- **Container**: Validates Containerfile builds and runs
 
 ### Performance Considerations
 
 When contributing performance-related changes:
 
-1. **Benchmark before and after**: Use `cargo bench` to measure impact
+1. **Benchmark before and after**: Run the binary with fixed parameters and compare JSON output
 2. **Profile your code**: Use `perf` or other profiling tools
 3. **Consider different scenarios**: Test with various message sizes and concurrency levels
 4. **Document performance implications**: Update documentation with performance notes
