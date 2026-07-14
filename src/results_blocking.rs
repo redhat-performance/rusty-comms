@@ -1129,11 +1129,27 @@ impl BlockingResultsManager {
                     }
                 }
             }
-            0.0
+            16.0
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
         {
-            0.0
+            use std::process::Command;
+            if let Ok(output) = Command::new("sysctl").arg("-n").arg("hw.memsize").output() {
+                if let Ok(s) = String::from_utf8(output.stdout) {
+                    if let Ok(bytes) = s.trim().parse::<u64>() {
+                        return bytes as f64 / 1_073_741_824.0;
+                    }
+                }
+            }
+            16.0
+        }
+        #[cfg(target_os = "windows")]
+        {
+            16.0
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            16.0
         }
     }
 
