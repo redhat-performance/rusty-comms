@@ -1297,6 +1297,7 @@ mod tests {
     /// exercise the timed condvar wait path where the writer
     /// must block until the reader drains space.
     #[test]
+    #[cfg(unix)]
     fn test_backpressure_with_small_buffer() {
         let segment_name = "test_shm_blocking_backpressure";
         let msg_count = 20;
@@ -1349,6 +1350,7 @@ mod tests {
     /// Verify that payload contents survive a round of
     /// backpressure-induced blocking writes and reads.
     #[test]
+    #[cfg(unix)]
     fn test_payload_integrity_under_backpressure() {
         let segment_name = "test_shm_blocking_payload_int";
         let msg_count: u64 = 10;
@@ -1403,6 +1405,7 @@ mod tests {
     /// of the buffer by sending many messages whose combined size
     /// exceeds the buffer capacity multiple times.
     #[test]
+    #[cfg(unix)]
     fn test_ring_buffer_wrap_around_under_backpressure() {
         let segment_name = "test_shm_blocking_wraparound";
         let msg_count: u64 = 50;
@@ -1454,6 +1457,7 @@ mod tests {
     /// down while the buffer is full and the writer is blocked
     /// waiting for space.
     #[test]
+    #[cfg(unix)]
     fn test_shutdown_detected_during_blocked_write() {
         let segment_name = "test_shm_blocking_shutdown";
         // Tiny buffer so the first large message fills it.
