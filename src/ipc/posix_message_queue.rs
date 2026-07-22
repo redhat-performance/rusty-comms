@@ -1116,7 +1116,9 @@ mod tests {
                 Ok(bp_detected) => {
                     if bp_detected {
                         // This is expected for the first few full-queue sends.
-                        println!("Regular backpressure detected, continuing to force a timeout.");
+                        tracing::trace!(
+                            "Regular backpressure detected, continuing to force a timeout."
+                        );
                     }
                 }
                 Err(e) => {

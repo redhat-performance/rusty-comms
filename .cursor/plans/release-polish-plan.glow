@@ -1,0 +1,190 @@
+
+  # Release Polish Plan — rusty-comms                                                                                 
+                                                                                                                      
+  **Branch:** chore/release-polish                                                                                    
+  **Base:** main                                                                                                      
+  **Status:** Complete                                                                                                
+  **Date:** 2026-06-30                                                                                                
+                                                                                                                      
+  --------                                                                                                            
+                                                                                                                      
+  ## Objective                                                                                                        
+                                                                                                                      
+  Comprehensive code quality review and polish of the rusty-comms IPC benchmark                                       
+  suite in preparation for initial release. Focus areas: code quality, efficiency,                                    
+  cleanup, minor bug fixes, and issue creation for larger problems.                                                   
+                                                                                                                      
+  --------                                                                                                            
+                                                                                                                      
+  ## Review Groups                                                                                                    
+                                                                                                                      
+  The codebase was reviewed in 7 logical groups, each examined by a dedicated                                         
+  review pass analyzing every file for bugs, performance issues, dead code,                                           
+  style violations, and documentation accuracy.                                                                       
+                                                                                                                      
+   Group                            | Files                                       | Status                            
+  ----------------------------------|---------------------------------------------|---------------------------------  
+   1. Core types                    | ipc/mod.rs, execution_mode.rs, cli.rs       | Done                              
+   2. Transport implementations     | 10 files in src/ipc/ (~8.6K lines)          | Done                              
+   3. Benchmark runners             | benchmark.rs, benchmark_blocking.rs         | Done                              
+   4. Results and metrics           | results.rs, results_blocking.rs, metrics.rs | Done                              
+   5. Standalone client/server      | standalone_server.rs, standalone_client.rs  | Done                              
+   6. Main and utilities            | main.rs, utils.rs, lib.rs, logging.rs       | Done                              
+   7. Tests and examples            | Integration tests, unit test quality        | Done                              
+                                                                                                                      
+  --------                                                                                                            
+                                                                                                                      
+  ## Inline Fixes Applied                                                                                             
+                                                                                                                      
+  ### Bug Fixes                                                                                                       
+                                                                                                                      
+   File                                | Issue                               | Fix                                    
+  -------------------------------------|-------------------------------------|--------------------------------------  
+   src/cli.rs                          | parse_duration_micros silently      | Changed to Duration::from_secs_f64()   
+                                       | truncated fractional values (e.g.   | with appropriate divisors, matching    
+                                       | "1.5ms") due to as u64 cast         | parse_duration()                       
+   src/ipc/unix_domain_socket_blocking | writev partial-write fallback used  | Rewrote to handle partial length-      
+   .rs                                 | incorrect offset calculation        | prefix and partial payload cases       
+                                       | (written.saturating_sub(4)) — could | separately; added writev == 0 error    
+                                       | corrupt frames when written < 4     | handling                               
+   src/ipc/tcp_socket.rs               | panic! in multi-server accept loop  | Replaced with warn! + continue to      
+                                       | when try_clone() fails              | keep server running                    
+   src/ipc/shared_memory_direct.rs     | No validation of payload_len read   | Added bounds check against             
+                                       | from shared memory before           | MAX_PAYLOAD_SIZE with proper mutex     
+                                       | copy_nonoverlapping — potential OOB | cleanup on failure                     
+                                       | read                                |                                        
+   src/ipc/shared_memory_direct.rs     | receive_blocking_timed captured a   | Changed to return the in-message       
+                                       | new timestamp instead of using the  | timestamp for accurate latency         
+                                       | already-captured                    | measurement                            
+                                       | msg.receive_time_ns                 |                                        
+   src/ipc/shared_memory_blocking.rs   | read_data_blocking did not reject   | Added zero-length rejection to match   
+                                       | data_len == 0 (inconsistent with    | protocol validation                    
+                                       | other transports)                   |                                        
+   src/results.rs                      | get_memory_gb() hardcoded 16.0 —    | Replaced with actual /proc/meminfo     
+                                       | incorrect system metadata in JSON   | read on Linux                          
+                                       | output                              |                                        
+   src/results.rs                      | SystemInfo::default() hardcoded     | Changed to use get_memory_gb() and     
+                                       | rust_version: "1.75.0" and          | env!("CARGO_PKG_RUST_VERSION")         
+                                       | memory_gb: 16.0                     |                                        
+   src/results_blocking.rs             | Same hardcoded get_memory_gb()      | Same /proc/meminfo fix                 
+                                       | returning 16.0                      |                                        
+                                                                                                                      
+  ### Performance Fixes                                                                                               
+                                                                                                                      
+   File        | Issue                                           | Fix                                                
+  -------------|-------------------------------------------------|--------------------------------------------------  
+   src/main.rs | .context(format!(...)) eagerly allocates format | Changed to .with_context(|| format!(...)) (lazy    
+               | string on every call                            | evaluation)                                        
+                                                                                                                      
+  ### Code Cleanup                                                                                                    
+                                                                                                                      
+   File                      | Issue                                     | Fix                                        
+  ---------------------------|-------------------------------------------|------------------------------------------  
+   src/ipc/mod.rs            | Message::new() and                        | Made new_for_blocking delegate to new()    
+                             | Message::new_for_blocking() were          | with #[inline] — semantic alias            
+                             | identical implementations                 |                                            
+   src/ipc/mod.rs            | Test                                      | Moved inside the test module               
+                             | test_timestamp_offset_update_in_serialize |                                            
+                             | d_buffer was outside mod tests {} block   |                                            
+   src/ipc/mod.rs            | Test test_message_size_analysis used      | Replaced with proper assertions            
+                             | println!                                  |                                            
+   src/benchmark_blocking.rs | if true { ... } dead scaffolding wrapping | Removed the dead conditional               
+                             | round-trip recording                      |                                            
+   src/utils.rs              | Dead function current_timestamp_ns()      | Removed function and unused imports        
+                             | (unused — callers use                     |                                            
+                             | MessageLatencyRecord::current_timestamp_n |                                            
+                             | s())                                      |                                            
+   src/main.rs               | Stale dev comment // === ALL EXISTING     | Removed                                    
+                             | MAIN() LOGIC STARTS HERE ===              |                                            
+                                                                                                                      
+  ### Style / Documentation Fixes                                                                                     
+                                                                                                                      
+   File                            | Issue                                   | Fix                                    
+  ---------------------------------|-----------------------------------------|--------------------------------------  
+   src/ipc/unix_domain_socket.rs   | println! in backpressure test           | Changed to tracing::trace!             
+   src/ipc/tcp_socket.rs           | println! in backpressure test           | Changed to tracing::trace!             
+   src/ipc/shared_memory.rs        | println! in backpressure test           | Changed to tracing::trace!             
+   src/ipc/posix_message_queue.rs  | println! in backpressure test           | Changed to tracing::trace!             
+   src/ipc/shared_memory_direct.rs | Module doc said #[repr(C, packed)] but  | Fixed to #[repr(C)]                    
+                                   | struct is #[repr(C)]                    |                                        
+   src/ipc/shared_memory_direct.rs | Comment said "Maximum 1MB" but          | Updated to "Maximum 8 KB"              
+                                   | MAX_PAYLOAD_SIZE is 8 KB                |                                        
+   src/main.rs                     | Doc said "No streaming output support   | Updated to reflect current state       
+                                   | (will be added in Stage 5)" — streaming |                                        
+                                   | is implemented                          |                                        
+   src/benchmark_blocking.rs       | Same stale "Stage 5" streaming doc      | Updated                                
+   src/lib.rs                      | "Zero-copy serialization" claim         | Changed to "Compact binary             
+                                   | (bincode allocates; only SHM-direct is  | serialization via bincode"             
+                                   | zero-copy)                              |                                        
+   src/lib.rs                      | "Async I/O throughout using Tokio"      | Updated to mention both modes          
+                                   | ignores blocking mode                   |                                        
+   src/lib.rs                      | Warmup comment cited "JIT compilation"  | Changed to CPU cache/TLB warming       
+                                   | (not applicable to AOT Rust)            |                                        
+   src/logging.rs                  | Module docs described a non-existent    | Rewrote to describe actual exports     
+                                   | init_logging function with usage        | (ColorizedFormatter)                   
+                                   | example                                 |                                        
+   src/results.rs                  | rust_version field doc said "compiler   | Fixed doc and method comment           
+                                   | version" — it's actually MSRV           |                                        
+                                                                                                                      
+  --------                                                                                                            
+                                                                                                                      
+  ## GitHub Issues Filed (Architectural / Beyond Polish Scope)                                                        
+                                                                                                                      
+   #              | Title                                                                           | Type            
+  ----------------|---------------------------------------------------------------------------------|---------------  
+   #120[1]        | Async multi-threaded benchmark aggregation produces incorrect metrics           | bug             
+   #121[2]        | Blocking benchmark runner does not forward duration to spawned server           | bug             
+   #122[3]        | Blocking round-trip ignores include_first_message flag                          | bug             
+   #123[4]        | Incorrect pooled standard deviation in multi-worker metrics aggregation         | bug             
+   #124[5]        | Async server spawn missing CLI flag forwarding (buffer-size, send-delay, etc.)  | bug             
+   #125[6]        | Async SHM multi-server path is non-functional                                   | bug             
+   #126[7]        | Mutex held across await in async multi-client send_to_connection                | enhancement     
+   #127[8]        | Standalone async one-way latency measurement includes executor scheduling delay | bug             
+   #128[9]        | Transport config parity: async vs blocking runners use different defaults       | enhancement     
+   #129[10]       | Server process exit status not checked after wait()                             | bug             
+   #130[11]       | Deduplicate logging setup and implement init_logging                            | enhancement     
+   #131[12]       | pthread_mutex_init/condattr_init return values unchecked in SHM-direct          | bug             
+                                                                                                                      
+   [1]: #120 https://github.com/redhat-performance/rusty-comms/issues/120                                             
+   [2]: #121 https://github.com/redhat-performance/rusty-comms/issues/121                                             
+   [3]: #122 https://github.com/redhat-performance/rusty-comms/issues/122                                             
+   [4]: #123 https://github.com/redhat-performance/rusty-comms/issues/123                                             
+   [5]: #124 https://github.com/redhat-performance/rusty-comms/issues/124                                             
+   [6]: #125 https://github.com/redhat-performance/rusty-comms/issues/125                                             
+   [7]: #126 https://github.com/redhat-performance/rusty-comms/issues/126                                             
+   [8]: #127 https://github.com/redhat-performance/rusty-comms/issues/127                                             
+   [9]: #128 https://github.com/redhat-performance/rusty-comms/issues/128                                             
+  [10]: #129 https://github.com/redhat-performance/rusty-comms/issues/129                                             
+  [11]: #130 https://github.com/redhat-performance/rusty-comms/issues/130                                             
+  [12]: #131 https://github.com/redhat-performance/rusty-comms/issues/131                                             
+                                                                                                                      
+  --------                                                                                                            
+                                                                                                                      
+  ## Validation                                                                                                       
+                                                                                                                      
+    cargo fmt       ✓  (no changes)                                                                                   
+    cargo clippy    ✓  (0 warnings with -D warnings)                                                                  
+    cargo test      ✓  (472 passed, 2 ignored, 0 failed)                                                              
+    cargo build --release  ✓                                                                                          
+                                                                                                                      
+  --------                                                                                                            
+                                                                                                                      
+  ## Files Modified (16 files, net -26 lines)                                                                         
+                                                                                                                      
+    src/benchmark_blocking.rs               | 33 ++++++------                                                         
+    src/cli.rs                              |  7 +--                                                                  
+    src/ipc/mod.rs                          | 96 ++++++++++++--------------------                                     
+    src/ipc/posix_message_queue.rs          |  4 +-                                                                   
+    src/ipc/shared_memory.rs                |  4 +-                                                                   
+    src/ipc/shared_memory_blocking.rs       |  6 +--                                                                  
+    src/ipc/shared_memory_direct.rs         | 43 +++++++++------                                                      
+    src/ipc/tcp_socket.rs                   | 53 ++++++++++++-------                                                  
+    src/ipc/unix_domain_socket.rs           |  4 +-                                                                   
+    src/ipc/unix_domain_socket_blocking.rs  | 33 +++++++++---                                                         
+    src/lib.rs                              |  8 +--                                                                  
+    src/logging.rs                          | 37 +++----------                                                        
+    src/main.rs                             |  6 +--                                                                  
+    src/results.rs                          | 50 ++++++++++--------                                                   
+    src/results_blocking.rs                 | 44 +++++++++-------                                                     
+    src/utils.rs                            | 34 ------------                                                         
+

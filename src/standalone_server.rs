@@ -15,8 +15,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::benchmark::BenchmarkConfig;
 use crate::cli::{Args, IpcMechanism};
 use crate::ipc::{
-    get_monotonic_time_ns, BlockingTransport, BlockingTransportFactory, Message, MessageType,
-    TransportConfig, TransportFactory,
+    BlockingTransport, BlockingTransportFactory, Message, MessageType, TransportConfig,
+    TransportFactory,
 };
 use crate::logging::{try_init_logging, LogConfig};
 use crate::metrics::{LatencyType, MetricsCollector};
@@ -734,15 +734,14 @@ pub async fn run_standalone_server_async_single(
             info!("Shutdown signal received, exiting");
             break;
         }
-        match transport.receive().await {
-            Ok(msg) => {
+        match transport.receive_timed().await {
+            Ok((msg, receive_time_ns)) => {
                 if msg.message_type == MessageType::Shutdown {
                     debug!("Server received shutdown message, exiting");
                     break;
                 }
 
                 if msg.message_type == MessageType::OneWay && msg.id != u64::MAX {
-                    let receive_time_ns = get_monotonic_time_ns();
                     let latency_ns = receive_time_ns.saturating_sub(msg.timestamp);
                     let latency = std::time::Duration::from_nanos(latency_ns);
                     one_way_metrics.record_message(config.message_size, Some(latency))?;

@@ -342,4 +342,30 @@ mod tests {
             assert!(buffer.is_empty());
         });
     }
+
+    #[test]
+    fn test_verbosity_to_level() {
+        assert_eq!(verbosity_to_level(0), LevelFilter::INFO);
+        assert_eq!(verbosity_to_level(1), LevelFilter::DEBUG);
+        assert_eq!(verbosity_to_level(2), LevelFilter::TRACE);
+    }
+
+    #[test]
+    fn test_build_detailed_layer_stderr() {
+        let result = build_detailed_layer(Some("stderr"), LevelFilter::INFO);
+        assert!(result.is_ok());
+        let (_layer, guard) = result.unwrap();
+        assert!(guard.is_none(), "stderr path should not produce a guard");
+    }
+
+    #[test]
+    fn test_try_init_logging_quiet_noop() {
+        let config = LogConfig {
+            quiet: true,
+            verbose: 0,
+            log_file: None,
+            is_server_subprocess: false,
+        };
+        assert!(try_init_logging(&config).is_ok());
+    }
 }

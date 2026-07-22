@@ -1,9 +1,15 @@
 # Implementation Plan: Blocking/Synchronous Mode for IPC Benchmark
 
+> **HISTORICAL DOCUMENT — DO NOT FOLLOW FOR ACTIVE WORK**
+>
+> This plan is fully implemented (all 9 stages complete). It is preserved
+> for reference only. Standalone client/server mode (`--server`/`--client`)
+> was added as follow-on work outside this plan's scope.
+
 **Project Goal:** Add synchronous/blocking execution mode alongside existing async mode  
 **Date:** 2025-10-16  
 **Target Repository:** rusty-comms  
-**Status:** PLANNING  
+**Status:** COMPLETE (archived)  
 
 ---
 

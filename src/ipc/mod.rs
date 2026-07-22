@@ -363,34 +363,15 @@ impl Message {
         }
     }
 
-    /// Create a new message for blocking mode with monotonic timestamp
+    /// Create a new message for blocking mode with monotonic timestamp.
     ///
-    /// This method creates a message and captures the timestamp using a
-    /// monotonic clock (CLOCK_MONOTONIC on Linux). The monotonic clock is
-    /// not affected by NTP adjustments or system time changes.
-    ///
-    /// ## Parameters
-    /// - `id`: Unique identifier for the message
-    /// - `payload`: Message content as byte vector
-    /// - `message_type`: Type classification for the message
-    ///
-    /// ## Returns
-    /// Message with monotonic timestamp captured at creation time
-    ///
-    /// ## Use Case
-    ///
-    /// This method should be used by blocking transport implementations
-    /// to capture timestamps right before serialization, providing accurate
-    /// IPC latency measurements that exclude serialization overhead from
-    /// the measurement.
+    /// Semantic alias for [`Message::new()`]. Both constructors capture
+    /// a monotonic timestamp at creation time. This variant exists to
+    /// make call sites self-documenting when used in blocking transport
+    /// code paths.
+    #[inline]
     pub fn new_for_blocking(id: u64, payload: Vec<u8>, message_type: MessageType) -> Self {
-        Self {
-            id,
-            timestamp: get_monotonic_time_ns(),
-            payload,
-            message_type,
-            receive_time_ns: 0,
-        }
+        Self::new(id, payload, message_type)
     }
 
     /// Update the message timestamp to current monotonic time
@@ -729,6 +710,28 @@ pub trait IpcTransport: Send + Sync {
     /// - Others may timeout after a reasonable period
     /// - Async implementation allows cancellation
     async fn receive(&mut self) -> Result<Message>;
+
+    /// Receive a message and capture a monotonic timestamp immediately
+    /// after the raw bytes are read but before deserialization.
+    ///
+    /// This provides more accurate one-way latency measurement by
+    /// excluding deserialization overhead from the receive timestamp,
+    /// mirroring the blocking transport's `receive_blocking_timed()`.
+    ///
+    /// The default implementation captures the timestamp after
+    /// `receive()` returns (including deserialization). Transport
+    /// implementations should override this to place the timestamp
+    /// between raw I/O and deserialization for better accuracy.
+    ///
+    /// # Returns
+    ///
+    /// A tuple of (Message, timestamp_ns) where timestamp_ns is a
+    /// monotonic clock value captured as close to I/O completion as
+    /// possible.
+    async fn receive_timed(&mut self) -> Result<(Message, u64)> {
+        let msg = self.receive().await?;
+        Ok((msg, get_monotonic_time_ns()))
+    }
 
     /// Close the transport
     ///
@@ -1522,18 +1525,26 @@ mod tests {
 
     // ===== Existing Tests =====
 
-    /// Test message size analysis
+    /// Verify serialized message size is reasonable relative to payload
     #[test]
     fn test_message_size_analysis() {
-        // Test with 100 bytes payload (typical benchmark size)
         let payload = vec![0u8; 100];
         let msg = Message::new(1, payload, MessageType::OneWay);
 
         let serialized = bincode::serialize(&msg).unwrap();
 
-        println!("\n=== Message Size Analysis ===");
-        println!("Payload size: 100 bytes");
-        println!("Bincode serialized size: {} bytes", serialized.len());
+        // Overhead should be modest: id(8) + timestamp(8) + len_prefix(8)
+        // + payload(100) + message_type(4) + receive_time(0, skipped)
+        assert!(
+            serialized.len() < 150,
+            "Serialized size {} is unexpectedly large for 100-byte payload",
+            serialized.len()
+        );
+        assert!(
+            serialized.len() > 100,
+            "Serialized size {} should be larger than payload alone",
+            serialized.len()
+        );
     }
 
     /// Test message creation and basic functionality
@@ -1662,36 +1673,29 @@ mod tests {
             t2 - t1
         );
     }
-}
 
-#[test]
-fn test_timestamp_offset_update_in_serialized_buffer() {
-    use super::*;
+    /// Verify that the timestamp can be updated in-place within a
+    /// serialized buffer at the expected offset (bytes 8..16).
+    #[test]
+    fn test_timestamp_offset_update_in_serialized_buffer() {
+        let mut msg = Message::new(42, vec![1, 2, 3, 4], MessageType::OneWay);
+        msg.timestamp = 0;
 
-    // Create a message with timestamp 0
-    let mut msg = Message::new(42, vec![1, 2, 3, 4], MessageType::OneWay);
-    msg.timestamp = 0;
+        let mut serialized = bincode::serialize(&msg).unwrap();
 
-    // Serialize it
-    let mut serialized = bincode::serialize(&msg).unwrap();
+        let extracted_ts = u64::from_le_bytes(serialized[8..16].try_into().unwrap());
+        assert_eq!(extracted_ts, 0, "Timestamp should be 0 initially");
 
-    // Verify timestamp is 0 in bytes 8-15
-    let extracted_ts = u64::from_le_bytes(serialized[8..16].try_into().unwrap());
-    assert_eq!(extracted_ts, 0, "Timestamp should be 0 initially");
+        let new_ts: u64 = 123_456_789;
+        serialized[8..16].copy_from_slice(&new_ts.to_le_bytes());
 
-    // Now update the timestamp bytes
-    let new_ts: u64 = 123456789;
-    let ts_bytes = new_ts.to_le_bytes();
-    serialized[8..16].copy_from_slice(&ts_bytes);
+        let updated_ts = u64::from_le_bytes(serialized[8..16].try_into().unwrap());
+        assert_eq!(updated_ts, new_ts, "Timestamp should be updated");
 
-    // Verify it was updated
-    let updated_ts = u64::from_le_bytes(serialized[8..16].try_into().unwrap());
-    assert_eq!(updated_ts, new_ts, "Timestamp should be updated");
-
-    // Deserialize and verify
-    let deserialized: Message = bincode::deserialize(&serialized).unwrap();
-    assert_eq!(
-        deserialized.timestamp, new_ts,
-        "Deserialized timestamp should match"
-    );
+        let deserialized: Message = bincode::deserialize(&serialized).unwrap();
+        assert_eq!(
+            deserialized.timestamp, new_ts,
+            "Deserialized timestamp should match"
+        );
+    }
 }

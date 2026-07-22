@@ -53,7 +53,7 @@ const MAX_PAYLOAD_SIZE: usize = 8192; // 8 KB
 
 /// Raw message structure stored directly in shared memory.
 ///
-/// This struct is designed for minimal overhead IPC. It uses `#[repr(C, packed)]`
+/// This struct is designed for minimal overhead IPC. It uses `#[repr(C)]`
 /// to ensure predictable memory layout across process boundaries.
 ///
 /// # Memory Layout
@@ -120,9 +120,9 @@ struct RawSharedMessage {
 
     /// Fixed-size payload buffer.
     ///
-    /// Maximum 1MB. Only the first `payload_len` bytes are valid.
-    /// If the source payload is smaller, only those bytes are copied.
-    /// If larger, it's truncated to MAX_PAYLOAD_SIZE.
+    /// Maximum 8 KB (MAX_PAYLOAD_SIZE). Only the first `payload_len`
+    /// bytes are valid. If the source payload is smaller, only those
+    /// bytes are copied. If larger, it's truncated to MAX_PAYLOAD_SIZE.
     payload: [u8; MAX_PAYLOAD_SIZE],
 
     /// Message type (converted from MessageType enum).
@@ -708,14 +708,22 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
             let message_type = <MessageType as From<u32>>::from(message_type_u32);
             let payload_len = (*ptr).payload_len;
 
-            // PERF: Allocate payload without zero-filling. The original
-            // code used vec![0u8; payload_len] which calls memset to zero
-            // every byte, then immediately overwrites them all with
-            // copy_nonoverlapping. Vec::with_capacity allocates the same
-            // memory but skips the redundant zeroing. set_len() tells Rust
-            // the buffer is valid after the copy. This eliminates one
-            // memset per received message, which is significant for large
-            // payloads and reduces tail-latency spikes from page faults.
+            // Validate payload_len to prevent OOB reads from corrupted or
+            // malicious shared memory data.
+            if payload_len > MAX_PAYLOAD_SIZE {
+                (*ptr).ready = 0;
+                libc::pthread_cond_signal(&mut (*ptr).cond);
+                libc::pthread_mutex_unlock(&mut (*ptr).mutex);
+                return Err(anyhow!(
+                    "Corrupt payload_len {} exceeds MAX_PAYLOAD_SIZE {}",
+                    payload_len,
+                    MAX_PAYLOAD_SIZE
+                ));
+            }
+
+            // PERF: Allocate payload without zero-filling. Vec::with_capacity
+            // skips the redundant zeroing that vec![0u8; N] would do, since
+            // copy_nonoverlapping immediately overwrites the buffer.
             let mut payload = Vec::with_capacity(payload_len);
             std::ptr::copy_nonoverlapping(
                 (*ptr).payload.as_ptr(),
@@ -758,12 +766,13 @@ impl BlockingTransport for BlockingSharedMemoryDirect {
     }
 
     fn receive_blocking_timed(&mut self) -> Result<(Message, u64)> {
-        // SHM-direct has no deserialization (direct memcpy), so the
-        // timestamp is captured immediately after the data read and
-        // before mutex unlock/signal. This uses the default implementation
-        // since there's no meaningful deserialization to exclude.
+        // SHM-direct captures receive_time_ns inside the mutex, immediately
+        // after the condvar wake-up and before unlock. Use that in-message
+        // timestamp for accurate latency measurement rather than capturing
+        // a new one here (which would include unlock + return overhead).
         let msg = self.receive_blocking()?;
-        Ok((msg, crate::ipc::get_monotonic_time_ns()))
+        let ts = msg.receive_time_ns;
+        Ok((msg, ts))
     }
 
     fn close_blocking(&mut self) -> Result<()> {
@@ -1138,6 +1147,53 @@ mod tests {
         );
 
         client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn test_receive_blocking_timed_returns_timestamp() {
+        use std::thread;
+        use std::time::Duration;
+        use uuid::Uuid;
+
+        let shm_name = format!("test_timed_{}", Uuid::new_v4());
+        let shm_name_clone = shm_name.clone();
+
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingSharedMemoryDirect::with_precise_timestamps(true);
+            let config = TransportConfig {
+                shared_memory_name: shm_name_clone,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            let (msg, ts) = server.receive_blocking_timed().unwrap();
+            assert_eq!(msg.id, 42);
+            assert!(ts > 0, "Timed receive timestamp should be non-zero");
+            assert_eq!(
+                ts, msg.receive_time_ns,
+                "Returned timestamp must match message field"
+            );
+
+            server.close_blocking().unwrap();
+        });
+
+        // Allow server time to initialize
+        thread::sleep(Duration::from_millis(100));
+
+        let mut client = BlockingSharedMemoryDirect::with_precise_timestamps(true);
+        let config = TransportConfig {
+            shared_memory_name: shm_name,
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        let mut msg = Message::new(42, vec![0u8; 64], MessageType::OneWay);
+        msg.timestamp = crate::ipc::get_monotonic_time_ns();
+        client.send_blocking(&msg).unwrap();
+        client.close_blocking().unwrap();
+
         server_handle.join().unwrap();
     }
 }

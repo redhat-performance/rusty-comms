@@ -97,7 +97,7 @@ Blocking mode uses only the Rust standard library (`std::net`, `std::thread`, `s
 
 ## Shared Memory Implementations
 
-The benchmark suite provides **two shared memory implementations** for blocking mode, each optimized for different use cases:
+The benchmark suite provides **two shared memory implementations** optimized for different use cases (a third async ring buffer is used in the default async path):
 
 ### Ring Buffer (Default)
 
@@ -112,7 +112,7 @@ ipc-benchmark -m shm -i 10000
 ```
 
 **Characteristics:**
-- Works on all platforms (Linux, macOS, Windows, BSD)
+- Unix-only (Linux, macOS, BSD — uses pthread process-shared primitives)
 - Supports variable message sizes
 - Uses bincode serialization (~15-30 μs overhead)
 - Average latency: ~20 μs
@@ -144,7 +144,7 @@ ipc-benchmark -m shm --shm-direct -i 10000 --server-affinity 0 --client-affinity
 | **Max Latency** | ~10 ms | ~22 μs (450× better) |
 | **Serialization** | bincode | None (memcpy) |
 | **Message Size** | Variable | Fixed (8KB max) |
-| **Platform Support** | All | Unix only |
+| **Platform Support** | Unix (pthread) | Unix only |
 | **Best For** | Flexibility, cross-platform | Maximum performance |
 
 ### When to Use Each Implementation
@@ -155,10 +155,9 @@ ipc-benchmark -m shm --shm-direct -i 10000 --server-affinity 0 --client-affinity
 - Running on Unix/Linux systems
 
 **Use Ring Buffer (default) when:**
-- Cross-platform support is needed
 - Variable message sizes are required
 - Flexibility is more important than raw speed
-- Windows support is required
+- You want the default async mode (`-m shm` without `--blocking`)
 
 For detailed technical comparison, see [SHM_COMPARISON.md](SHM_COMPARISON.md).
 
@@ -170,7 +169,7 @@ This benchmark suite uses **high-precision monotonic clocks** to measure true IP
 
 #### Clock Source
 
-- **Unix/Linux**: Uses `CLOCK_MONOTONIC` via the nix crate
+- **Unix/Linux**: Uses `CLOCK_MONOTONIC` via direct `libc::clock_gettime` syscall
 - **Windows**: Falls back to system time (less precise)
 - **Characteristics**: Monotonic clocks measure time from system boot and are unaffected by NTP adjustments, daylight saving time, or manual clock changes
 
@@ -361,8 +360,8 @@ done
 ### Building from Source
 
 ```bash
-git clone https://github.com/your-org/ipc-benchmark.git
-cd ipc-benchmark
+git clone https://github.com/redhat-performance/rusty-comms.git
+cd rusty-comms
 cargo build --release
 ```
 
@@ -481,7 +480,7 @@ ipc-benchmark -m all --continue-on-error
 
 # Run only round-trip tests (one-way and round-trip run
 # sequentially by default; use these flags to select one)
-ipc-benchmark --round-trip --no-one-way
+ipc-benchmark --round-trip
 
 # Custom percentiles for latency analysis
 ipc-benchmark --percentiles 50 90 95 99 99.9 99.99
@@ -501,7 +500,7 @@ ipc-benchmark -m shm --buffer-size 16384
 This benchmark runs the server as a separate child process for each test to ensure strong isolation and realistic IPC behavior.
 
 - The parent process spawns the same binary in a special "server-only" mode and waits for a readiness byte via a pipe connected to the child's stdout.
-- On Unix, the readiness signal is a single byte `0x01` written to stdout. On Windows, tests use a simple `echo` to emit a single character (e.g., `R`).
+- The readiness signal is a single byte `0x01` written to stdout on all platforms.
 - The child process is terminated at the end of each test; resources are cleaned up by the transport implementation.
 
 Binary resolution strategy used by the spawner:
@@ -548,6 +547,8 @@ If you need to analyze the raw performance data, including the first-message spi
 ```bash
 # Include the first message in the final results
 ipc-benchmark --include-first-message
+```
+
 ### Understanding Test Types: Throughput vs. Latency
 
 This benchmark suite can be used to measure two primary aspects of IPC performance: **throughput** and **latency**. The configuration you choose will determine which of these you are primarily testing.
@@ -936,14 +937,11 @@ cargo test ipc
 cargo test -- --nocapture
 ```
 
-### Benchmarking
+### Profiling
 
 ```bash
-# Run internal benchmarks
-cargo bench
-
 # Profile with perf
-perf record --call-graph dwarf target/release/ipc-benchmark
+perf record --call-graph dwarf target/release/ipc-benchmark -m uds -i 50000
 perf report
 ```
 
@@ -980,35 +978,41 @@ To generate dashboard-compatible output, you **must** include both output parame
 
 ```bash
 # Minimum command for dashboard compatibility
-./ipc-benchmark --mechanism <MECHANISM> --message-size <SIZE> \
-                 -o results/ \
+./ipc-benchmark -m <MECHANISM> --message-size <SIZE> \
+                 -o results.json \
                  --streaming-output-json \
                  --continue-on-error
 
 # Example with specific values
-./ipc-benchmark --mechanism SharedMemory --message-size 1024 \
-                 -o ./benchmark_results/ \
+./ipc-benchmark -m shm --message-size 1024 \
+                 -o ./benchmark_results.json \
                  --streaming-output-json \
                  --duration 30s
 ```
 
 ### File Output Expectations
 
-After running with the required parameters, you should see these files:
+After running with the required parameters, the files you specified
+are created:
 
-```
-results/
-├── sharedmemory_1024_summary.json     # Enables Summary Analysis
-└── sharedmemory_1024_streaming.json   # Enables Time Series Analysis
+```bash
+# Example: produces two files with the names you chose
+./ipc-benchmark -m shm -i 10000 \
+  -o ./shm_results.json \
+  --streaming-output-json ./shm_streaming.json
+
+# Results in:
+# ./shm_results.json          (summary/aggregated metrics)
+# ./shm_streaming.json        (per-message latency data)
 ```
 
 ### Dashboard Parameter Reference
 
 | Parameter | Required | Purpose | Dashboard Impact |
 |-----------|----------|---------|------------------|
-| `-o <dir>` | **Yes** | Output directory | Summary data location |
+| `-o <file>` | **Yes** | Output JSON file path | Summary data |
 | `--streaming-output-json` | **Yes** | Enable streaming data | Time series analysis |
-| `--mechanism <type>` | **Yes** | IPC mechanism | Data categorization |
+| `-m <mechanism>` | **Yes** | IPC mechanism | Data categorization |
 | `--message-size <bytes>` | **Yes** | Message size | Performance comparison |
 | `--duration <time>` | Recommended | Test duration | Data volume |
 | `--continue-on-error` | Recommended | Continue if one test fails | Complete dataset |
@@ -1017,9 +1021,9 @@ results/
 
 #### Single Mechanism Test
 ```bash
-./ipc-benchmark --mechanism SharedMemory \
+./ipc-benchmark -m shm \
                  --message-size 1024 \
-                 -o ./dashboard_data/ \
+                 -o ./shm_results.json \
                  --streaming-output-json \
                  --duration 30s
 ```
@@ -1027,9 +1031,9 @@ results/
 #### Multi-Size Comparison Test
 ```bash
 for size in 64 256 1024 4096; do
-  ./ipc-benchmark --mechanism SharedMemory \
+  ./ipc-benchmark -m shm \
                    --message-size $size \
-                   -o ./dashboard_data/ \
+                   -o ./shm_${size}_results.json \
                    --streaming-output-json \
                    --duration 10s
 done
@@ -1038,9 +1042,9 @@ done
 #### Multi-Mechanism Comparison
 ```bash
 for mechanism in uds shm tcp pmq; do
-  ./ipc-benchmark --mechanism $mechanism \
+  ./ipc-benchmark -m $mechanism \
                    --message-size 1024 \
-                   -o ./dashboard_data/ \
+                   -o ./${mechanism}_results.json \
                    --streaming-output-json \
                    --duration 15s
 done
@@ -1086,7 +1090,7 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for version history and changes.
+Version history is tracked via git tags and GitHub releases.
 
 ---
 
@@ -1100,8 +1104,9 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and changes.
 
 | Transport | Concurrency > 1 | Behavior |
 |-----------|----------------|----------|
-| **TCP** | ✅ Supported | Simulated concurrency (sequential tests) |
-| **Unix Domain Sockets** | ✅ Supported | Simulated concurrency (sequential tests) |
+| **TCP** | ✅ Supported | Multi-threaded workers |
+| **Unix Domain Sockets** | ✅ Supported | Multi-threaded workers |
+| **POSIX Message Queues** | ✅ Supported | Multi-threaded workers |
 | **Shared Memory** | ⚠️ **Forced to single-thread** | Automatically uses `concurrency = 1` |
 
 ### Shared Memory Limitations

@@ -1,4 +1,7 @@
-use super::{ConnectionId, IpcError, IpcTransport, Message, TransportConfig, TransportState};
+use super::{
+    get_monotonic_time_ns, ConnectionId, IpcError, IpcTransport, Message, TransportConfig,
+    TransportState,
+};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -64,6 +67,28 @@ impl UnixDomainSocketTransport {
 
         // Deserialize message
         Message::from_bytes(&message_data)
+    }
+
+    /// Read a message and capture a monotonic timestamp immediately after
+    /// the raw bytes are read but before deserialization. This excludes
+    /// deserialization overhead from one-way latency measurements.
+    async fn read_message_timed(stream: &mut UnixStream) -> Result<(Message, u64)> {
+        let mut len_bytes = [0u8; 4];
+        stream.read_exact(&mut len_bytes).await?;
+        let message_len = u32::from_le_bytes(len_bytes) as usize;
+
+        if message_len > 16 * 1024 * 1024 {
+            return Err(anyhow!("Message too large: {} bytes", message_len));
+        }
+
+        let mut message_data = vec![0u8; message_len];
+        stream.read_exact(&mut message_data).await?;
+
+        // Capture timestamp between raw I/O and deserialization
+        let receive_time_ns = get_monotonic_time_ns();
+
+        let message = Message::from_bytes(&message_data)?;
+        Ok((message, receive_time_ns))
     }
 
     /// Write a message to the Unix stream.
@@ -320,6 +345,27 @@ impl IpcTransport for UnixDomainSocketTransport {
         }
     }
 
+    async fn receive_timed(&mut self) -> Result<(Message, u64)> {
+        if self.state != TransportState::Connected {
+            return Err(anyhow!("Transport not connected"));
+        }
+
+        if self.stream.is_none() {
+            if let Some(listener) = self.listener.as_ref() {
+                let (stream, _) = listener.accept().await?;
+                self.stream = Some(stream);
+            }
+        }
+
+        if let Some(ref mut stream) = self.stream {
+            let (message, ts) = Self::read_message_timed(stream).await?;
+            debug!("Received message {} via Unix Domain Socket", message.id);
+            Ok((message, ts))
+        } else {
+            Err(anyhow!("No active stream available"))
+        }
+    }
+
     async fn close(&mut self) -> Result<()> {
         debug!("Closing Unix Domain Socket transport");
 
@@ -426,27 +472,48 @@ impl IpcTransport for UnixDomainSocketTransport {
         connection_id: ConnectionId,
         message: &Message,
     ) -> Result<()> {
-        let mut conns = self.connections.lock().await;
+        // Remove the stream from the map so we can release the lock
+        // before the async write, avoiding holding the mutex across
+        // an await point.
+        let mut stream = {
+            let mut conns = self.connections.lock().await;
+            conns
+                .remove(&connection_id)
+                .ok_or_else(|| anyhow!("Connection {} not found", connection_id))?
+        };
 
-        if let Some(stream) = conns.get_mut(&connection_id) {
-            Self::write_message(stream, message).await?;
-            debug!(
-                "Sent message {} to Unix Domain Socket connection {}",
-                message.id, connection_id
-            );
-            Ok(())
-        } else {
-            Err(anyhow!("Connection {} not found", connection_id))
+        let result = Self::write_message(&mut stream, message).await;
+
+        // Re-insert the stream regardless of write outcome so the
+        // connection remains available for future operations.
+        {
+            let mut conns = self.connections.lock().await;
+            conns.insert(connection_id, stream);
+        }
+
+        match result {
+            Ok(()) => {
+                debug!(
+                    "Sent message {} to Unix Domain Socket connection {}",
+                    message.id, connection_id
+                );
+                Ok(())
+            }
+            Err(e) => Err(anyhow::Error::from(e)),
         }
     }
 
     fn get_active_connections(&self) -> Vec<ConnectionId> {
-        // Note: This is a blocking operation, should be called from async context with care
-        let conns = match self.connections.try_lock() {
-            Ok(conns) => conns,
-            Err(_) => return vec![], // Return empty if locked
-        };
-        conns.keys().copied().collect()
+        match self.connections.try_lock() {
+            Ok(conns) => conns.keys().copied().collect(),
+            Err(_) => {
+                warn!(
+                    "Could not acquire connections lock in \
+                     get_active_connections; returning empty list"
+                );
+                vec![]
+            }
+        }
     }
 
     async fn close_connection(&mut self, connection_id: ConnectionId) -> Result<()> {
@@ -578,7 +645,9 @@ mod tests {
             match client.send(&message).await {
                 Ok(backpressure_detected) => {
                     if backpressure_detected {
-                        println!("Regular backpressure detected, continuing to force a timeout.");
+                        tracing::trace!(
+                            "Regular backpressure detected, continuing to force a timeout."
+                        );
                     }
                 }
                 Err(e) => {
@@ -663,6 +732,96 @@ mod tests {
         for mut client in clients {
             let _ = client.close().await;
         }
+        let _ = server.close().await;
+    }
+
+    #[tokio::test]
+    async fn test_uds_receive_timed() {
+        let socket_path = get_temp_socket_path("test_uds_timed.sock");
+        let config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+
+        let _ = std::fs::remove_file(&socket_path);
+
+        let mut server = UnixDomainSocketTransport::new();
+        let mut client = UnixDomainSocketTransport::new();
+
+        let (tx, rx) = oneshot::channel();
+
+        let server_config = config.clone();
+        let server_handle = tokio::spawn(async move {
+            server.start_server(&server_config).await.unwrap();
+            tx.send(()).unwrap();
+
+            let (message, timestamp) = server.receive_timed().await.unwrap();
+            assert_eq!(message.id, 1);
+            assert!(timestamp > 0);
+
+            server.close().await.unwrap();
+        });
+
+        rx.await.unwrap();
+
+        client.start_client(&config).await.unwrap();
+
+        let message = Message::new(1, vec![1, 2, 3, 4, 5], MessageType::Request);
+        client.send(&message).await.unwrap();
+
+        client.close().await.unwrap();
+        server_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_uds_send_to_connection() {
+        let socket_path = get_temp_socket_path("test_uds_send_conn.sock");
+        let config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+
+        let _ = std::fs::remove_file(&socket_path);
+
+        let mut server = UnixDomainSocketTransport::new();
+
+        let mut receiver = server.start_multi_server(&config).await.unwrap();
+
+        // Wait for the socket file to be created
+        for _ in 0..10 {
+            if std::path::Path::new(&socket_path).exists() {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+
+        let mut client = UnixDomainSocketTransport::new();
+        client.start_client(&config).await.unwrap();
+
+        let message = Message::new(1, vec![1, 2, 3], MessageType::Request);
+        client.send(&message).await.unwrap();
+
+        // Receive the message from the multi-server channel
+        let (conn_id, received) =
+            tokio::time::timeout(Duration::from_millis(1000), receiver.recv())
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(received.id, 1);
+
+        // Verify connection is active and send a response
+        let connections = server.get_active_connections();
+        assert!(connections.contains(&conn_id));
+
+        let response = Message::new(2, vec![4, 5, 6], MessageType::Response);
+        server.send_to_connection(conn_id, &response).await.unwrap();
+
+        // Client receives the response
+        let client_response = client.receive().await.unwrap();
+        assert_eq!(client_response.id, 2);
+        assert_eq!(client_response.payload, vec![4, 5, 6]);
+
+        let _ = client.close().await;
         let _ = server.close().await;
     }
 }

@@ -1,4 +1,7 @@
-use super::{ConnectionId, IpcError, IpcTransport, Message, TransportConfig, TransportState};
+use super::{
+    get_monotonic_time_ns, ConnectionId, IpcError, IpcTransport, Message, TransportConfig,
+    TransportState,
+};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -67,6 +70,28 @@ impl TcpSocketTransport {
 
         // Deserialize message
         Message::from_bytes(&message_data)
+    }
+
+    /// Read a message and capture a monotonic timestamp immediately after
+    /// the raw bytes are read but before deserialization. This excludes
+    /// deserialization overhead from one-way latency measurements.
+    async fn read_message_timed(stream: &mut TcpStream) -> Result<(Message, u64)> {
+        let mut len_bytes = [0u8; 4];
+        stream.read_exact(&mut len_bytes).await?;
+        let message_len = u32::from_le_bytes(len_bytes) as usize;
+
+        if message_len > 16 * 1024 * 1024 {
+            return Err(anyhow!("Message too large: {} bytes", message_len));
+        }
+
+        let mut message_data = vec![0u8; message_len];
+        stream.read_exact(&mut message_data).await?;
+
+        // Capture timestamp between raw I/O and deserialization
+        let receive_time_ns = get_monotonic_time_ns();
+
+        let message = Message::from_bytes(&message_data)?;
+        Ok((message, receive_time_ns))
     }
 
     /// Write a message to the TCP stream.
@@ -340,6 +365,36 @@ impl IpcTransport for TcpSocketTransport {
         }
     }
 
+    async fn receive_timed(&mut self) -> Result<(Message, u64)> {
+        if self.state != TransportState::Connected {
+            return Err(anyhow!("Transport not connected"));
+        }
+
+        if self.stream.is_none() {
+            if let Some(listener) = self.listener.as_ref() {
+                let (stream, client_addr) = listener.accept().await?;
+                debug!(
+                    "TCP Socket server accepted connection from: {}",
+                    client_addr
+                );
+                let std_stream = stream.into_std()?;
+                let socket = socket2::Socket::from(std_stream.try_clone()?);
+                socket.set_nodelay(true)?;
+                socket.set_recv_buffer_size(self.buffer_size)?;
+                socket.set_send_buffer_size(self.buffer_size)?;
+                self.stream = Some(TcpStream::from_std(std_stream)?);
+            }
+        }
+
+        if let Some(ref mut stream) = self.stream {
+            let (message, ts) = Self::read_message_timed(stream).await?;
+            debug!("Received message {} via TCP Socket", message.id);
+            Ok((message, ts))
+        } else {
+            Err(anyhow!("No active stream available"))
+        }
+    }
+
     async fn close(&mut self) -> Result<()> {
         debug!("Closing TCP Socket transport");
 
@@ -413,25 +468,33 @@ impl IpcTransport for TcpSocketTransport {
                         );
 
                         // Configure socket options for low latency.
-                        // Failure here means the socket would run
-                        // without TCP_NODELAY, which skews benchmark
-                        // results, so we drop the connection instead.
-                        if let Ok(std_stream) = stream.into_std() {
-                            let socket =
-                                socket2::Socket::from(std_stream.try_clone().unwrap_or_else(|e| {
-                                    panic!(
-                                        "Failed to clone TCP stream for \
-                                         socket tuning on connection {}: {}",
-                                        connection_id, e
-                                    );
-                                }));
-                            socket.set_nodelay(true).unwrap_or_else(|e| {
-                                warn!("set_nodelay failed on connection {}: {}", connection_id, e);
-                            });
-                            let _ = socket.set_recv_buffer_size(buffer_size);
-                            let _ = socket.set_send_buffer_size(buffer_size);
+                        // On failure we skip this connection rather than
+                        // panicking, since the server should remain stable.
+                        let std_stream = match stream.into_std() {
+                            Ok(s) => s,
+                            Err(e) => {
+                                warn!("into_std() failed on connection {}: {}", connection_id, e);
+                                continue;
+                            }
+                        };
 
-                            if let Ok(tokio_stream) = TcpStream::from_std(std_stream) {
+                        let cloned = match std_stream.try_clone() {
+                            Ok(c) => c,
+                            Err(e) => {
+                                warn!("try_clone() failed on connection {}: {}", connection_id, e);
+                                continue;
+                            }
+                        };
+
+                        let socket = socket2::Socket::from(cloned);
+                        if let Err(e) = socket.set_nodelay(true) {
+                            warn!("set_nodelay failed on connection {}: {}", connection_id, e);
+                        }
+                        let _ = socket.set_recv_buffer_size(buffer_size);
+                        let _ = socket.set_send_buffer_size(buffer_size);
+
+                        match TcpStream::from_std(std_stream) {
+                            Ok(tokio_stream) => {
                                 let handler_sender = message_sender.clone();
                                 let handler_connections = connections.clone();
 
@@ -441,6 +504,9 @@ impl IpcTransport for TcpSocketTransport {
                                     handler_sender,
                                     handler_connections,
                                 ));
+                            }
+                            Err(e) => {
+                                warn!("from_std() failed on connection {}: {}", connection_id, e);
                             }
                         }
                     }
@@ -461,27 +527,48 @@ impl IpcTransport for TcpSocketTransport {
         connection_id: ConnectionId,
         message: &Message,
     ) -> Result<()> {
-        let mut conns = self.connections.lock().await;
+        // Remove the stream from the map so we can release the lock
+        // before the async write, avoiding holding the mutex across
+        // an await point.
+        let mut stream = {
+            let mut conns = self.connections.lock().await;
+            conns
+                .remove(&connection_id)
+                .ok_or_else(|| anyhow!("Connection {} not found", connection_id))?
+        };
 
-        if let Some(stream) = conns.get_mut(&connection_id) {
-            Self::write_message(stream, message).await?;
-            debug!(
-                "Sent message {} to TCP connection {}",
-                message.id, connection_id
-            );
-            Ok(())
-        } else {
-            Err(anyhow!("Connection {} not found", connection_id))
+        let result = Self::write_message(&mut stream, message).await;
+
+        // Re-insert the stream regardless of write outcome so the
+        // connection remains available for future operations.
+        {
+            let mut conns = self.connections.lock().await;
+            conns.insert(connection_id, stream);
+        }
+
+        match result {
+            Ok(()) => {
+                debug!(
+                    "Sent message {} to TCP connection {}",
+                    message.id, connection_id
+                );
+                Ok(())
+            }
+            Err(e) => Err(anyhow::Error::from(e)),
         }
     }
 
     fn get_active_connections(&self) -> Vec<ConnectionId> {
-        // Note: This is a blocking operation, should be called from async context with care
-        let conns = match self.connections.try_lock() {
-            Ok(conns) => conns,
-            Err(_) => return vec![], // Return empty if locked
-        };
-        conns.keys().copied().collect()
+        match self.connections.try_lock() {
+            Ok(conns) => conns.keys().copied().collect(),
+            Err(_) => {
+                warn!(
+                    "Could not acquire connections lock in \
+                     get_active_connections; returning empty list"
+                );
+                vec![]
+            }
+        }
     }
 
     async fn close_connection(&mut self, connection_id: ConnectionId) -> Result<()> {
@@ -588,7 +675,9 @@ mod tests {
             match client.send(&message).await {
                 Ok(backpressure_detected) => {
                     if backpressure_detected {
-                        println!("Regular backpressure detected, continuing to force a timeout.");
+                        tracing::trace!(
+                            "Regular backpressure detected, continuing to force a timeout."
+                        );
                     }
                 }
                 Err(e) => {
@@ -666,6 +755,87 @@ mod tests {
         for mut client in clients {
             let _ = client.close().await;
         }
+        let _ = server.close().await;
+    }
+
+    #[tokio::test]
+    async fn test_tcp_receive_timed() {
+        let config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port: 9098,
+            ..Default::default()
+        };
+
+        let mut server = TcpSocketTransport::new();
+        let mut client = TcpSocketTransport::new();
+
+        let server_config = config.clone();
+        let server_handle = tokio::spawn(async move {
+            server.start_server(&server_config).await.unwrap();
+
+            let (message, timestamp) = server.receive_timed().await.unwrap();
+            assert_eq!(message.id, 1);
+            assert!(timestamp > 0);
+
+            server.close().await.unwrap();
+        });
+
+        // Justification: Give the server task time to start up and
+        // bind the port before the client connects.
+        sleep(Duration::from_millis(100)).await;
+
+        client.start_client(&config).await.unwrap();
+
+        let message = Message::new(1, vec![1, 2, 3, 4, 5], MessageType::Request);
+        client.send(&message).await.unwrap();
+
+        client.close().await.unwrap();
+        server_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_tcp_send_to_connection() {
+        let config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port: 9099,
+            ..Default::default()
+        };
+
+        let mut server = TcpSocketTransport::new();
+
+        let mut receiver = server.start_multi_server(&config).await.unwrap();
+
+        // Justification: Give the server task time to start up and
+        // bind the port before the client connects.
+        sleep(Duration::from_millis(100)).await;
+
+        let mut client = TcpSocketTransport::new();
+        client.start_client(&config).await.unwrap();
+
+        let message = Message::new(1, vec![1, 2, 3], MessageType::Request);
+        client.send(&message).await.unwrap();
+
+        // Receive the message from the multi-server channel
+        let (conn_id, received) =
+            tokio::time::timeout(Duration::from_millis(1000), receiver.recv())
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(received.id, 1);
+
+        // Verify connection is active and send a response
+        let connections = server.get_active_connections();
+        assert!(connections.contains(&conn_id));
+
+        let response = Message::new(2, vec![4, 5, 6], MessageType::Response);
+        server.send_to_connection(conn_id, &response).await.unwrap();
+
+        // Client receives the response
+        let client_response = client.receive().await.unwrap();
+        assert_eq!(client_response.id, 2);
+        assert_eq!(client_response.payload, vec![4, 5, 6]);
+
+        let _ = client.close().await;
         let _ = server.close().await;
     }
 }

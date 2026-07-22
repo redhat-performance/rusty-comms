@@ -5,7 +5,7 @@ This document provides detailed information about configuring the IPC Benchmark 
 ## Table of Contents
 
 - [Command Line Options](#command-line-options)
-- [Configuration File](#configuration-file)
+- [Shell Aliases for Common Configurations](#shell-aliases-for-common-configurations)
 - [Environment Variables](#environment-variables)
 - [IPC Mechanism Settings](#ipc-mechanism-settings)
 - [Performance Tuning](#performance-tuning)
@@ -23,7 +23,7 @@ This document provides detailed information about configuring the IPC Benchmark 
 | `--msg-count` | `-i` | Number | `10000` | Number of messages to send |
 | `--duration` | `-d` | String | - | Duration to run (e.g., "30s", "5m") |
 | `--concurrency` | `-c` | Number | `1` | Number of concurrent workers |
-| `--output-file` | `-o` | String | `benchmark_results.json` | Output file path |
+| `--output-file` | `-o` | String | *(none; optional flag)* | JSON output file path |
 
 ### Test Configuration
 
@@ -45,13 +45,23 @@ its own full time window.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `--streaming-output` | String | - | File for streaming results during execution |
+| `--streaming-output-json` | String | - | JSON file for streaming per-message results |
+| `--streaming-output-csv` | String | - | CSV file for streaming per-message results |
 | `--continue-on-error` | Boolean | `false` | Continue running if one test fails |
-| `--verbose` | `-v` | Boolean | `false` | Enable verbose output |
+| `--verbose` | `-v` | Flag | *(repeatable)* | Increase log verbosity (-v=DEBUG, -vv=TRACE) |
+| `--quiet` | `-q` | Boolean | `false` | Suppress stdout output |
+| `--log-file` | String | `ipc_benchmark.log` | Log file path (or "stderr") |
 | `--host` | String | `"127.0.0.1"` | Host address for TCP sockets |
 | `--port` | Number | `8080` | Port for TCP sockets |
-| `--server-affinity` | Number | - | Pin the server process (message receiver) to a CPU core (best effort) |
-| `--client-affinity` | Number | - | Pin the client workload (message sender) to a CPU core (best effort) |
+| `--pmq-priority` | Number | `0` | Message priority for PMQ |
+| `--send-delay` | String | - | Delay between messages (e.g., "10ms") |
+| `--include-first-message` | Boolean | `false` | Include first message in results |
+| `--blocking` | Boolean | `false` | Use blocking I/O instead of async |
+| `--shm-direct` | Boolean | `false` | Use direct memory SHM (auto-enables blocking) |
+| `--server-affinity` | Number | - | Pin the server process (message receiver) to a CPU core |
+| `--client-affinity` | Number | - | Pin the client workload (message sender) to a CPU core |
+| `--server` | Boolean | `false` | Run in standalone server mode |
+| `--client` | Boolean | `false` | Run in standalone client mode |
 
 ### Examples
 
@@ -75,86 +85,34 @@ ipc-benchmark --percentiles 50 90 95 99 99.9 99.99 --warmup-iterations 10000
 ipc-benchmark -m shm --message-size 65536 --buffer-size 1048576
 ```
 
-## Configuration File
+## Shell Aliases for Common Configurations
 
-You can create a configuration file to avoid repeating command-line arguments:
-
-### JSON Configuration Format
-
-```json
-{
-  "mechanisms": ["uds", "shm", "tcp", "pmq"],
-  // Alternative: "mechanisms": ["all"] to test all available mechanisms
-  "message_size": 1024,
-  "msg_count": 10000,
-  "concurrency": 4,
-  "one_way": true,
-  "round_trip": true,
-  "warmup_iterations": 1000,
-  "percentiles": [50.0, 95.0, 99.0, 99.9],
-  "buffer_size": 8192,
-  "output_file": "results.json",
-  "streaming_output": "streaming.json",
-  "host": "127.0.0.1",
-  "port": 8080
-}
-```
-
-### TOML Configuration Format
-
-```toml
-mechanisms = ["uds", "shm", "tcp", "pmq"]
-# Alternative: mechanisms = ["all"]  # to test all available mechanisms
-message_size = 1024
-msg_count = 10000
-concurrency = 4
-one_way = true
-round_trip = true
-warmup_iterations = 1000
-percentiles = [50.0, 95.0, 99.0, 99.9]
-buffer_size = 8192
-output_file = "results.json"
-streaming_output = "streaming.json"
-host = "127.0.0.1"
-port = 8080
-```
-
-### Using Configuration Files
+Configuration files are not currently supported. Instead, use shell
+aliases or scripts for frequently used parameter sets:
 
 ```bash
-# JSON configuration
-ipc-benchmark --config config.json
+# Latency-focused alias
+alias ipc-latency='ipc-benchmark -m uds --message-size 64 \
+  --msg-count 100000 --warmup-iterations 10000 --send-delay 10ms'
 
-# TOML configuration
-ipc-benchmark --config config.toml
+# Throughput-focused alias
+alias ipc-throughput='ipc-benchmark -m shm --message-size 65536 \
+  --duration 60s'
 
-# Override specific options
-ipc-benchmark --config config.json --concurrency 8
+# Full comparison alias
+alias ipc-compare='ipc-benchmark -m all --message-size 1024 \
+  --msg-count 50000 --output-file comparison.json'
 ```
 
 ## Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `RUST_LOG` | Logging level (trace, debug, info, warn, error) | `info` |
-| `IPC_BENCHMARK_TEMP_DIR` | Temporary directory for IPC files | `/tmp` |
-| `IPC_BENCHMARK_OUTPUT_DIR` | Default output directory | Current directory |
-| `IPC_BENCHMARK_CONFIG` | Default configuration file path | - |
 | `CARGO_BIN_EXE_ipc-benchmark` | Path hint for the test runner to spawn the server binary | Auto-detected |
 | `CARGO_BIN_EXE_ipc_benchmark` | Alternate env var name used in some setups | Auto-detected |
 
-### Environment Variable Examples
-
-```bash
-# Enable debug logging
-RUST_LOG=debug ipc-benchmark
-
-# Use custom temporary directory
-IPC_BENCHMARK_TEMP_DIR=/var/tmp ipc-benchmark
-
-# Set default configuration
-IPC_BENCHMARK_CONFIG=./default.json ipc-benchmark
-```
+Note: Logging verbosity is controlled via the `-v` CLI flag (not
+`RUST_LOG`). Use `-v` for DEBUG, `-vv` for TRACE level output.
 
 ## IPC Mechanism Settings
 
@@ -213,30 +171,30 @@ For full dashboard compatibility, you **must** use both output parameters:
 
 | Parameter | Purpose | Dashboard Impact |
 |-----------|---------|------------------|
-| `-o <directory>` | Generate summary JSON files | Enables Summary Analysis tab |
-| `--streaming-output-json` | Generate streaming data files | Enables Time Series Analysis tab |
+| `-o <file>` | Generate summary JSON file | Enables Summary Analysis tab |
+| `--streaming-output-json` | Generate streaming data file | Enables Time Series Analysis tab |
 
 ### Example Dashboard-Ready Commands
 
 ```bash
 # Basic dashboard-compatible benchmark
-ipc-benchmark --mechanism SharedMemory --message-size 1024 \
-               -o ./dashboard_data/ \
+ipc-benchmark -m shm --message-size 1024 \
+               -o ./shm_results.json \
                --streaming-output-json
 
 # Comprehensive comparison for dashboard
 ipc-benchmark -m uds shm tcp pmq \
                --message-size 1024 \
                --msg-count 50000 \
-               -o ./results/ \
+               -o ./results.json \
                --streaming-output-json \
                --continue-on-error
 
 # Multi-size analysis
 for size in 64 256 1024 4096; do
-  ipc-benchmark --mechanism SharedMemory \
+  ipc-benchmark -m shm \
                  --message-size $size \
-                 -o ./dashboard_data/ \
+                 -o ./shm_${size}.json \
                  --streaming-output-json \
                  --duration 10s
 done
@@ -266,10 +224,10 @@ results/
 #### Missing Time Series Data
 ```bash
 # Problem: Only used -o parameter
-ipc-benchmark -m shm -o results/
+ipc-benchmark -m shm -o results.json
 
 # Solution: Add streaming output
-ipc-benchmark -m shm -o results/ --streaming-output-json
+ipc-benchmark -m shm -o results.json --streaming-output-json
 ```
 
 #### Missing Summary Data
@@ -278,7 +236,7 @@ ipc-benchmark -m shm -o results/ --streaming-output-json
 ipc-benchmark -m shm --streaming-output-json
 
 # Solution: Add summary output
-ipc-benchmark -m shm -o results/ --streaming-output-json
+ipc-benchmark -m shm -o results.json --streaming-output-json
 ```
 
 #### No Dashboard Data
@@ -287,7 +245,7 @@ ipc-benchmark -m shm -o results/ --streaming-output-json
 ipc-benchmark -m shm
 
 # Solution: Use both required parameters
-ipc-benchmark -m shm -o results/ --streaming-output-json
+ipc-benchmark -m shm -o results.json --streaming-output-json
 ```
 
 For dashboard setup and usage instructions, see [`utils/dashboard/README.md`](utils/dashboard/README.md).
@@ -389,8 +347,7 @@ ipc-benchmark \
   --concurrency 1 \
   --warmup-iterations 10000 \
   --percentiles 50 90 95 99 99.9 99.99 \
-  --round-trip \
-  --no-one-way
+  --round-trip
 ```
 
 **Configuration:**
@@ -410,8 +367,7 @@ ipc-benchmark \
   --duration 60s \
   --concurrency 8 \
   --buffer-size 1048576 \
-  --one-way \
-  --no-round-trip
+  --one-way
 ```
 
 **Configuration:**
@@ -619,27 +575,30 @@ sudo sysctl -p
 ipcs -lm
 
 # Check available ports
-netstat -tuln | grep :8080
+ss -tuln | grep :8080
 
 # Check file permissions
 ls -la /tmp/ipc_benchmark_*
 
-# Validate configuration
-ipc-benchmark --config config.json --dry-run
+# Verify CLI options
+ipc-benchmark --help
 ```
 
 ### Performance Debugging
 
 ```bash
-# Enable detailed logging
-RUST_LOG=debug ipc-benchmark --verbose
+# Enable detailed logging (DEBUG level)
+ipc-benchmark -v -m uds -i 1000
+
+# Enable TRACE level logging
+ipc-benchmark -vv -m uds -i 100
 
 # Profile with perf
-perf record -g ipc-benchmark
+perf record -g ./target/release/ipc-benchmark -m uds -i 50000
 perf report
 
 # Memory usage analysis
-valgrind --tool=massif ipc-benchmark
+valgrind --tool=massif ./target/release/ipc-benchmark -m uds -i 1000
 ```
 
 ---

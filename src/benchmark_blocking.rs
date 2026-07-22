@@ -439,10 +439,16 @@ impl BlockingBenchmarkRunner {
         cmd.arg("-m")
             .arg(self.mechanism.to_possible_value().unwrap().get_name());
 
-        // Add message size and count
+        // Add message size
         cmd.arg("--message-size")
             .arg(self.config.message_size.to_string());
-        cmd.arg("--msg-count").arg(self.get_msg_count().to_string());
+
+        // Forward duration or msg-count (duration takes precedence)
+        if let Some(duration) = self.config.duration {
+            cmd.arg("-d").arg(format!("{}s", duration.as_secs_f64()));
+        } else if let Some(count) = self.config.msg_count {
+            cmd.arg("--msg-count").arg(count.to_string());
+        }
 
         // Add transport-specific identifiers
         if !transport_config.socket_path.is_empty() {
@@ -633,12 +639,12 @@ impl BlockingBenchmarkRunner {
 
                     queue_depth
                 } else {
-                    100
+                    10
                 }
             }
             #[cfg(not(target_os = "linux"))]
             {
-                100
+                10
             }
         };
 
@@ -677,7 +683,7 @@ impl BlockingBenchmarkRunner {
                     if self.mechanism == IpcMechanism::PosixMessageQueue {
                         args.message_queue_name
                             .clone()
-                            .unwrap_or_else(|| format!("/ipc_benchmark_{}", unique_id))
+                            .unwrap_or_else(|| format!("/ipc_benchmark_pmq_{}", unique_id))
                     } else {
                         String::new()
                     }
@@ -688,6 +694,8 @@ impl BlockingBenchmarkRunner {
                 }
             },
             buffer_size,
+            // Blocking mode is single-threaded — only one connection is
+            // ever active (unlike async which uses concurrency.max(16)).
             max_connections: 1,
             message_queue_depth: adaptive_queue_depth,
             pmq_priority: self.config.pmq_priority,
@@ -716,7 +724,7 @@ impl BlockingBenchmarkRunner {
     /// - No async/await - all operations block
     /// - No Tokio runtime
     /// - Uses BlockingTransport instead of Transport
-    /// - Streaming output not yet implemented (Stage 5)
+    /// - Streaming output supported via `ResultsManagerBlocking`
     ///
     /// ## Returns
     /// - `Ok(BenchmarkResults)`: Complete test results with metrics
@@ -773,8 +781,11 @@ impl BlockingBenchmarkRunner {
             results.add_one_way_results(one_way_results);
         }
 
-        // Run round-trip latency test if enabled
-        // Note: Shared memory in blocking mode doesn't support bidirectional communication
+        // Run round-trip latency test if enabled.
+        // The blocking SHM ring buffer is physically unidirectional (one
+        // writer, one reader) so round-trip requires two separate segments.
+        // This is an intentional design difference vs async SHM which uses
+        // a bidirectional channel approach.
         if self.config.round_trip {
             if self.mechanism == IpcMechanism::SharedMemory {
                 warn!(
@@ -851,8 +862,12 @@ impl BlockingBenchmarkRunner {
         }
 
         // --- Cleanup ---
-        // For PMQ and SHM, send a shutdown message to signal the server to exit
-        // (These mechanisms don't have a connection to close like sockets)
+        // PMQ and SHM are message-oriented, not stream-oriented — the server
+        // cannot detect client disconnect via EOF the way TCP/UDS can. An
+        // explicit Shutdown message is required so the server exits cleanly.
+        // The 50 ms sleep gives the server time to process the message before
+        // the transport is torn down. (Async mode doesn't need this because
+        // its stream-based transports signal EOF on close.)
         #[cfg(target_os = "linux")]
         if self.mechanism == IpcMechanism::PosixMessageQueue {
             debug!("Sending shutdown message to PMQ server (warmup)");
@@ -1291,19 +1306,17 @@ impl BlockingBenchmarkRunner {
                 }
             }
         } else {
-            // Message-count based test
+            // Message-count based test — match the async runner's
+            // skip-first-message logic: send one extra iteration and
+            // discard its latency rather than using a canary message.
             let msg_count = self.config.msg_count.unwrap_or_default();
+            let iterations = if self.config.include_first_message {
+                msg_count
+            } else {
+                msg_count + 1
+            };
 
-            // Send canary message if first message should not be included
-            if !self.config.include_first_message {
-                let canary = Message::new(u64::MAX, payload.clone(), MessageType::Request);
-                if client_transport.send_blocking(&canary).is_ok() {
-                    let _ = client_transport.receive_blocking();
-                }
-            }
-
-            for i in 0..msg_count {
-                // Capture send timestamp for streaming record (wall clock)
+            for i in 0..iterations {
                 let send_timestamp_ns =
                     crate::results::MessageLatencyRecord::current_timestamp_ns();
                 let send_time = Instant::now();
@@ -1318,9 +1331,7 @@ impl BlockingBenchmarkRunner {
 
                 let latency = send_time.elapsed();
 
-                // Record latency for all measured messages
-                if true {
-                    // Stream latency if enabled
+                if i > 0 || self.config.include_first_message {
                     if let Some(ref mut manager) = results_manager {
                         let record = crate::results::MessageLatencyRecord::new(
                             i as u64,
@@ -1333,7 +1344,6 @@ impl BlockingBenchmarkRunner {
                         let _ = manager.stream_latency_record(&record);
                     }
 
-                    // Record in metrics collector
                     metrics_collector.record_message(self.config.message_size, Some(latency))?;
                 }
             }

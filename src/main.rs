@@ -273,7 +273,7 @@ async fn run_async_mode(args: Args) -> Result<()> {
 /// ## Key Differences from Async Mode
 ///
 /// - Uses `BlockingBenchmarkRunner` instead of `BenchmarkRunner`
-/// - No streaming output support (will be added in Stage 5)
+/// - Streaming output supported via `ResultsManagerBlocking`
 /// - All operations block the calling thread
 /// - Uses standard library I/O instead of Tokio
 ///
@@ -471,7 +471,7 @@ fn run_blocking_benchmark_for_mechanism(
     // Pass results_manager for streaming latency records
     let results = runner
         .run(Some(results_manager))
-        .context(format!("Benchmark failed for {}", mechanism))?;
+        .with_context(|| format!("Benchmark failed for {}", mechanism))?;
 
     Ok(results)
 }
