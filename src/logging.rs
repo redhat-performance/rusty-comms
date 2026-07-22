@@ -1,46 +1,190 @@
 //! # Logging Configuration Module
 //!
-//! This module provides centralized logging setup and management for the
-//! benchmark suite. It configures the `tracing` framework to provide
-//! flexible, structured, and performant logging to both the console and
-//! optional log files.
+//! Centralised logging setup for the IPC benchmark suite.  All
+//! subscriber initialization flows through [`init_logging`] (or
+//! [`try_init_logging`] when a subscriber may already be set).
 //!
-//! ## Key Features
+//! ## Features
 //!
-//! - **Dual Output**: Supports simultaneous logging to both the console
-//!   (stdout) and a dedicated log file.
-//! - **Level Control**: Allows independent configuration of log levels for
-//!   console and file outputs.
-//! - **Dynamic Filtering**: Uses `tracing_subscriber` to allow log levels
-//!   to be set via environment variables (e.g., `RUST_LOG`).
-//! - **Human-Readable Format**: Configures a clean, readable format for
-//!   console output to improve developer experience.
+//! - **Dual output**: simultaneous logging to a rolling daily file
+//!   (or stderr) *and* colorised stdout for user-facing output.
+//! - **Verbosity control**: maps `-v` / `-vv` flags to INFO / DEBUG /
+//!   TRACE via [`LogConfig::verbose`].
+//! - **Quiet mode**: suppresses the stdout layer entirely.
+//! - **Server subprocess mode**: minimal stderr-only logging at DEBUG
+//!   level to avoid interfering with stdout pipe signalling.
 //!
 //! ## Usage
 //!
-//! The primary function, `init_logging`, should be called once at the
-//! beginning of the application's `main` function to set up the global
-//! logger.
-//!
 //! ```rust,ignore
-//! // In main.rs
-//! use ipc_benchmark::logging;
+//! use ipc_benchmark::logging::{init_logging, LogConfig};
 //!
 //! fn main() -> anyhow::Result<()> {
-//!     let log_file = Some("benchmark.log".to_string());
-//!     logging::init_logging(log_level, &log_file)?;
+//!     let config = LogConfig {
+//!         verbose: 1,
+//!         quiet: false,
+//!         log_file: None,
+//!         is_server_subprocess: false,
+//!     };
+//!     let _guard = init_logging(&config)?;
 //!     // ... rest of the application
 //!     Ok(())
 //! }
 //! ```
 
+use anyhow::Result;
 use colored::*;
 use std::cell::RefCell;
 use std::fmt;
 use tracing::{Event, Level, Subscriber};
+use tracing_appender::non_blocking::WorkerGuard;
+use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::fmt::format::{FormatEvent, FormatFields, Writer};
 use tracing_subscriber::fmt::FmtContext;
+use tracing_subscriber::prelude::*;
 use tracing_subscriber::registry::LookupSpan;
+use tracing_subscriber::Layer;
+
+/// Configuration for the logging subsystem.
+///
+/// Construct this from CLI arguments and pass to [`init_logging`] or
+/// [`try_init_logging`].
+///
+/// ## Fields
+///
+/// * `verbose` — verbosity level: 0 = INFO, 1 = DEBUG, 2+ = TRACE
+/// * `quiet` — if true, suppress the colorised stdout layer
+/// * `log_file` — destination for the detailed log layer:
+///   - `None` — daily-rotating file in current directory
+///   - `Some("stderr")` — write to stderr
+///   - `Some(path)` — daily-rotating file at the given path
+/// * `is_server_subprocess` — if true, use a minimal stderr-only
+///   subscriber at DEBUG level (ignores other fields)
+pub struct LogConfig {
+    pub verbose: u8,
+    pub quiet: bool,
+    pub log_file: Option<String>,
+    pub is_server_subprocess: bool,
+}
+
+/// Initialize the global tracing subscriber.
+///
+/// This must be called exactly once per process.  Returns an optional
+/// [`WorkerGuard`] that the caller must keep alive for the duration
+/// of the program when file logging is active (dropping it flushes
+/// and closes the log file).
+///
+/// # Errors
+///
+/// Returns an error if the subscriber cannot be initialised (e.g.
+/// one is already set).
+pub fn init_logging(config: &LogConfig) -> Result<Option<WorkerGuard>> {
+    // Server subprocess: minimal stderr, no file, no stdout layer.
+    if config.is_server_subprocess {
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .with_max_level(tracing::Level::DEBUG)
+            .init();
+        return Ok(None);
+    }
+
+    let log_level = verbosity_to_level(config.verbose);
+
+    let (detailed_log_layer, guard) = build_detailed_layer(config.log_file.as_deref(), log_level)?;
+
+    let stdout_log = if !config.quiet {
+        Some(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stdout)
+                .event_format(ColorizedFormatter)
+                .with_filter(log_level),
+        )
+    } else {
+        None
+    };
+
+    tracing_subscriber::registry()
+        .with(detailed_log_layer)
+        .with(stdout_log)
+        .init();
+
+    Ok(guard)
+}
+
+/// Attempt to initialize logging, silently succeeding if a
+/// subscriber is already registered.
+///
+/// Used by standalone server/client paths which may be invoked
+/// after the parent process has already set up logging.
+///
+/// # Returns
+///
+/// `Ok(())` regardless of whether a new subscriber was installed.
+pub fn try_init_logging(config: &LogConfig) -> Result<()> {
+    if config.quiet {
+        return Ok(());
+    }
+
+    let log_level = verbosity_to_level(config.verbose);
+
+    // Standalone paths use stderr + colorised output only.
+    let _ = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_max_level(log_level)
+        .event_format(ColorizedFormatter)
+        .try_init();
+
+    Ok(())
+}
+
+/// Map the `-v` count to a [`LevelFilter`].
+fn verbosity_to_level(verbose: u8) -> LevelFilter {
+    match verbose {
+        0 => LevelFilter::INFO,
+        1 => LevelFilter::DEBUG,
+        _ => LevelFilter::TRACE,
+    }
+}
+
+/// Build the detailed (file or stderr) log layer and optional guard.
+fn build_detailed_layer(
+    log_file: Option<&str>,
+    level: LevelFilter,
+) -> Result<(
+    Box<dyn Layer<tracing_subscriber::Registry> + Send + Sync>,
+    Option<WorkerGuard>,
+)> {
+    if let Some("stderr") = log_file {
+        let layer = tracing_subscriber::fmt::layer()
+            .with_writer(std::io::stderr)
+            .with_filter(level)
+            .boxed();
+        return Ok((layer, None));
+    }
+
+    let file_appender = match log_file {
+        Some(path_str) => {
+            let log_path = std::path::Path::new(path_str);
+            let log_dir = log_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."));
+            let log_filename = log_path
+                .file_name()
+                .unwrap_or_else(|| std::ffi::OsStr::new("ipc_benchmark.log"));
+            tracing_appender::rolling::daily(log_dir, log_filename)
+        }
+        None => tracing_appender::rolling::daily(".", "ipc_benchmark.log"),
+    };
+
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+    let layer = tracing_subscriber::fmt::layer()
+        .with_writer(non_blocking)
+        .with_ansi(false)
+        .with_filter(level)
+        .boxed();
+
+    Ok((layer, Some(guard)))
+}
 
 // A thread-local buffer for formatting log messages to avoid allocations on every event.
 // A generous capacity is chosen to prevent reallocations for most log messages.
