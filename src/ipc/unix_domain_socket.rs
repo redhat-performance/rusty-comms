@@ -734,4 +734,94 @@ mod tests {
         }
         let _ = server.close().await;
     }
+
+    #[tokio::test]
+    async fn test_uds_receive_timed() {
+        let socket_path = get_temp_socket_path("test_uds_timed.sock");
+        let config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+
+        let _ = std::fs::remove_file(&socket_path);
+
+        let mut server = UnixDomainSocketTransport::new();
+        let mut client = UnixDomainSocketTransport::new();
+
+        let (tx, rx) = oneshot::channel();
+
+        let server_config = config.clone();
+        let server_handle = tokio::spawn(async move {
+            server.start_server(&server_config).await.unwrap();
+            tx.send(()).unwrap();
+
+            let (message, timestamp) = server.receive_timed().await.unwrap();
+            assert_eq!(message.id, 1);
+            assert!(timestamp > 0);
+
+            server.close().await.unwrap();
+        });
+
+        rx.await.unwrap();
+
+        client.start_client(&config).await.unwrap();
+
+        let message = Message::new(1, vec![1, 2, 3, 4, 5], MessageType::Request);
+        client.send(&message).await.unwrap();
+
+        client.close().await.unwrap();
+        server_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_uds_send_to_connection() {
+        let socket_path = get_temp_socket_path("test_uds_send_conn.sock");
+        let config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+
+        let _ = std::fs::remove_file(&socket_path);
+
+        let mut server = UnixDomainSocketTransport::new();
+
+        let mut receiver = server.start_multi_server(&config).await.unwrap();
+
+        // Wait for the socket file to be created
+        for _ in 0..10 {
+            if std::path::Path::new(&socket_path).exists() {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+
+        let mut client = UnixDomainSocketTransport::new();
+        client.start_client(&config).await.unwrap();
+
+        let message = Message::new(1, vec![1, 2, 3], MessageType::Request);
+        client.send(&message).await.unwrap();
+
+        // Receive the message from the multi-server channel
+        let (conn_id, received) =
+            tokio::time::timeout(Duration::from_millis(1000), receiver.recv())
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(received.id, 1);
+
+        // Verify connection is active and send a response
+        let connections = server.get_active_connections();
+        assert!(connections.contains(&conn_id));
+
+        let response = Message::new(2, vec![4, 5, 6], MessageType::Response);
+        server.send_to_connection(conn_id, &response).await.unwrap();
+
+        // Client receives the response
+        let client_response = client.receive().await.unwrap();
+        assert_eq!(client_response.id, 2);
+        assert_eq!(client_response.payload, vec![4, 5, 6]);
+
+        let _ = client.close().await;
+        let _ = server.close().await;
+    }
 }

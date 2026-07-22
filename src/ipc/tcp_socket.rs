@@ -757,4 +757,85 @@ mod tests {
         }
         let _ = server.close().await;
     }
+
+    #[tokio::test]
+    async fn test_tcp_receive_timed() {
+        let config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port: 9098,
+            ..Default::default()
+        };
+
+        let mut server = TcpSocketTransport::new();
+        let mut client = TcpSocketTransport::new();
+
+        let server_config = config.clone();
+        let server_handle = tokio::spawn(async move {
+            server.start_server(&server_config).await.unwrap();
+
+            let (message, timestamp) = server.receive_timed().await.unwrap();
+            assert_eq!(message.id, 1);
+            assert!(timestamp > 0);
+
+            server.close().await.unwrap();
+        });
+
+        // Justification: Give the server task time to start up and
+        // bind the port before the client connects.
+        sleep(Duration::from_millis(100)).await;
+
+        client.start_client(&config).await.unwrap();
+
+        let message = Message::new(1, vec![1, 2, 3, 4, 5], MessageType::Request);
+        client.send(&message).await.unwrap();
+
+        client.close().await.unwrap();
+        server_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_tcp_send_to_connection() {
+        let config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port: 9099,
+            ..Default::default()
+        };
+
+        let mut server = TcpSocketTransport::new();
+
+        let mut receiver = server.start_multi_server(&config).await.unwrap();
+
+        // Justification: Give the server task time to start up and
+        // bind the port before the client connects.
+        sleep(Duration::from_millis(100)).await;
+
+        let mut client = TcpSocketTransport::new();
+        client.start_client(&config).await.unwrap();
+
+        let message = Message::new(1, vec![1, 2, 3], MessageType::Request);
+        client.send(&message).await.unwrap();
+
+        // Receive the message from the multi-server channel
+        let (conn_id, received) =
+            tokio::time::timeout(Duration::from_millis(1000), receiver.recv())
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(received.id, 1);
+
+        // Verify connection is active and send a response
+        let connections = server.get_active_connections();
+        assert!(connections.contains(&conn_id));
+
+        let response = Message::new(2, vec![4, 5, 6], MessageType::Response);
+        server.send_to_connection(conn_id, &response).await.unwrap();
+
+        // Client receives the response
+        let client_response = client.receive().await.unwrap();
+        assert_eq!(client_response.id, 2);
+        assert_eq!(client_response.payload, vec![4, 5, 6]);
+
+        let _ = client.close().await;
+        let _ = server.close().await;
+    }
 }

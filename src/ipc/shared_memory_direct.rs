@@ -1149,4 +1149,51 @@ mod tests {
         client.close_blocking().unwrap();
         server_handle.join().unwrap();
     }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn test_receive_blocking_timed_returns_timestamp() {
+        use std::thread;
+        use std::time::Duration;
+        use uuid::Uuid;
+
+        let shm_name = format!("test_timed_{}", Uuid::new_v4());
+        let shm_name_clone = shm_name.clone();
+
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingSharedMemoryDirect::with_precise_timestamps(true);
+            let config = TransportConfig {
+                shared_memory_name: shm_name_clone,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            let (msg, ts) = server.receive_blocking_timed().unwrap();
+            assert_eq!(msg.id, 42);
+            assert!(ts > 0, "Timed receive timestamp should be non-zero");
+            assert_eq!(
+                ts, msg.receive_time_ns,
+                "Returned timestamp must match message field"
+            );
+
+            server.close_blocking().unwrap();
+        });
+
+        // Allow server time to initialize
+        thread::sleep(Duration::from_millis(100));
+
+        let mut client = BlockingSharedMemoryDirect::with_precise_timestamps(true);
+        let config = TransportConfig {
+            shared_memory_name: shm_name,
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        let mut msg = Message::new(42, vec![0u8; 64], MessageType::OneWay);
+        msg.timestamp = crate::ipc::get_monotonic_time_ns();
+        client.send_blocking(&msg).unwrap();
+        client.close_blocking().unwrap();
+
+        server_handle.join().unwrap();
+    }
 }
