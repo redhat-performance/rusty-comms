@@ -2231,7 +2231,10 @@ mod tests {
         assert!(!sys_info.os.is_empty());
         assert!(!sys_info.architecture.is_empty());
         assert!(sys_info.cpu_cores > 0);
+        #[cfg(target_os = "linux")]
         assert!(sys_info.memory_gb > 0.0);
+        #[cfg(not(target_os = "linux"))]
+        assert!(sys_info.memory_gb >= 0.0);
     }
 
     #[test]

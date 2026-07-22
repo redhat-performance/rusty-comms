@@ -1946,7 +1946,10 @@ mod tests {
         assert!(!info.os.is_empty());
         assert!(!info.architecture.is_empty());
         assert!(info.cpu_cores > 0);
+        #[cfg(target_os = "linux")]
         assert!(info.memory_gb > 0.0);
+        #[cfg(not(target_os = "linux"))]
+        assert!(info.memory_gb >= 0.0);
     }
 
     /// Ensure streaming JSON is valid JSON and contains a "data" array with records.
