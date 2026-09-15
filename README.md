@@ -2,6 +2,17 @@
 
 A comprehensive interprocess communication (IPC) benchmark suite implemented in Rust, designed to measure performance characteristics of different IPC mechanisms with a focus on latency and throughput.
 
+## Quick Start
+
+```bash
+git clone https://github.com/redhat-performance/rusty-comms.git
+cd rusty-comms
+cargo build --release
+
+# Compare all four IPC protocols in one run
+./target/release/ipc-benchmark -m all
+```
+
 ## Overview
 
 This benchmark suite provides a systematic way to evaluate the performance of various IPC mechanisms commonly used in systems programming. It's designed to be:
@@ -397,20 +408,6 @@ RUSTFLAGS="-C target-cpu=cortex-a76" cargo build --release \
 ```
 
 The performance-critical code paths in this project (timestamp placement, bulk copies, zero-fill elimination, direct `libc::clock_gettime`) are pure code optimizations that do not depend on `target-cpu`. They provide the bulk of the latency improvement regardless of CPU target. The `target-cpu` flag adds a smaller, incremental gain from SIMD auto-vectorization and instruction scheduling tuned for the specific microarchitecture.
-
-### Quick Start
-
-```bash
-# Run all IPC mechanisms with default settings
-./target/release/ipc-benchmark -m all
-
-# Run specific mechanisms with custom configuration
-./target/release/ipc-benchmark \
-  -m uds shm tcp \
-  --message-size 4096 \
-  --msg-count 50000 \
-  --concurrency 4
-```
 
 ## Usage
 
