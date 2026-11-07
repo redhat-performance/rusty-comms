@@ -68,6 +68,8 @@ use tracing::{debug, trace};
 /// - `listener`: The server socket listener (only used in server mode)
 /// - `stream`: The connected socket stream (used in both client and server
 ///   mode)
+/// - `receive_buffer`: Pre-allocated buffer reused across messages to avoid
+///   per-message heap allocation in the receive hot path.
 ///
 /// # Lifecycle
 ///
@@ -84,6 +86,9 @@ pub struct BlockingUnixDomainSocket {
     /// Connected socket stream for sending/receiving data.
     /// Populated after accept() in server mode or connect() in client mode.
     stream: Option<UnixStream>,
+
+    /// Pre-allocated receive buffer reused across messages.
+    receive_buffer: Vec<u8>,
 }
 
 impl BlockingUnixDomainSocket {
@@ -107,6 +112,7 @@ impl BlockingUnixDomainSocket {
         Self {
             listener: None,
             stream: None,
+            receive_buffer: Vec::with_capacity(8192),
         }
     }
 
@@ -118,6 +124,7 @@ impl BlockingUnixDomainSocket {
         Self {
             listener: None,
             stream: Some(stream),
+            receive_buffer: Vec::with_capacity(8192),
         }
     }
 
@@ -350,15 +357,16 @@ impl BlockingTransport for BlockingUnixDomainSocket {
 
         trace!("Receiving message of {} bytes", len);
 
-        // Read message data
-        let mut buffer = vec![0u8; len];
+        // Reuse pre-allocated buffer instead of allocating a new Vec per message.
+        // This avoids allocator jitter in the receive hot path.
+        self.receive_buffer.resize(len, 0);
         stream
-            .read_exact(&mut buffer)
+            .read_exact(&mut self.receive_buffer[..len])
             .context("Failed to read message data")?;
 
         // Deserialize message
-        let message: Message =
-            bincode::deserialize(&buffer).context("Failed to deserialize message")?;
+        let message: Message = bincode::deserialize(&self.receive_buffer[..len])
+            .context("Failed to deserialize message")?;
 
         trace!("Received message ID {}", message.id);
         Ok(message)
@@ -386,16 +394,17 @@ impl BlockingTransport for BlockingUnixDomainSocket {
             ));
         }
 
-        let mut buffer = vec![0u8; len];
+        // Reuse pre-allocated buffer instead of allocating a new Vec per message.
+        self.receive_buffer.resize(len, 0);
         stream
-            .read_exact(&mut buffer)
+            .read_exact(&mut self.receive_buffer[..len])
             .context("Failed to read message data")?;
 
         // Capture timestamp after raw read, before deserialization
         let receive_time_ns = crate::ipc::get_monotonic_time_ns();
 
-        let message: Message =
-            bincode::deserialize(&buffer).context("Failed to deserialize message")?;
+        let message: Message = bincode::deserialize(&self.receive_buffer[..len])
+            .context("Failed to deserialize message")?;
 
         Ok((message, receive_time_ns))
     }
@@ -1602,6 +1611,193 @@ mod tests {
         let mut stream = std::os::unix::net::UnixStream::connect(&socket_path).unwrap();
         let zero_len: u32 = 0;
         stream.write_all(&zero_len.to_le_bytes()).unwrap();
+        drop(stream);
+
+        server_handle.join().unwrap();
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    const REUSE_TEST_SIZES: &[usize] = &[100, 5000, 10000, 1000, 200];
+
+    /// Verifies that `receive_blocking()` reuses a pre-allocated buffer
+    /// instead of allocating a new `Vec<u8>` per message (issue #155).
+    ///
+    /// The buffer capacity must stabilize after the first receive rather than
+    /// growing per message, which would indicate per-message heap allocation.
+    /// Receiving messages of varying sizes must not cause unbounded growth:
+    /// capacity should settle at the largest size seen, not grow per message.
+    #[test]
+    fn test_receive_reuses_preallocated_buffer() {
+        use std::thread;
+        use std::time::Duration;
+
+        let socket_path = get_temp_socket_path("test_uds_reuse_buffer.sock");
+        let _ = std::fs::remove_file(&socket_path);
+
+        let server_path = socket_path.clone();
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingUnixDomainSocket::new();
+            let config = TransportConfig {
+                socket_path: server_path,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            // Receive messages of varying sizes, including one (10000) larger
+            // than the initial 8192 capacity, so the buffer must grow.
+            // Capacity must stabilize at the largest size instead of growing
+            // per message.
+            for (i, &expected_len) in REUSE_TEST_SIZES.iter().enumerate() {
+                let msg = server.receive_blocking().unwrap();
+                assert_eq!(msg.id, i as u64);
+                assert_eq!(msg.payload.len(), expected_len);
+                assert_eq!(
+                    msg.payload,
+                    vec![i as u8; expected_len],
+                    "payload content mismatch for message {}",
+                    i
+                );
+            }
+
+            let cap = server.receive_buffer.capacity();
+            // Buffer must have grown to fit the 10000-byte message.
+            assert!(
+                cap >= 10000,
+                "receive buffer should have grown to fit 10000-byte message, got {}",
+                cap
+            );
+            // Additional check: must have grown to fit at least 5000.
+            assert!(cap >= 5000);
+
+            // Receive one more small message: capacity must NOT grow again,
+            // proving the buffer is reused rather than re-allocated per message.
+            let small_msg = server.receive_blocking().unwrap();
+            assert_eq!(small_msg.id, REUSE_TEST_SIZES.len() as u64);
+            assert_eq!(small_msg.payload.len(), 100);
+            assert_eq!(
+                server.receive_buffer.capacity(),
+                cap,
+                "receive buffer capacity must not grow for smaller messages"
+            );
+
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        let mut client = BlockingUnixDomainSocket::new();
+        let config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        for (i, &len) in REUSE_TEST_SIZES.iter().enumerate() {
+            let msg = Message::new(i as u64, vec![i as u8; len], MessageType::OneWay);
+            client.send_blocking(&msg).unwrap();
+        }
+
+        // Extra small message to verify capacity stabilization.
+        let extra_id = REUSE_TEST_SIZES.len() as u64;
+        let extra_msg = Message::new(extra_id, vec![extra_id as u8; 100], MessageType::OneWay);
+        client.send_blocking(&extra_msg).unwrap();
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    /// Verifies that `receive_blocking_timed()` reuses the pre-allocated
+    /// receive buffer and returns a valid receive timestamp (issue #155).
+    #[test]
+    fn test_receive_blocking_timed_reuses_buffer() {
+        use std::thread;
+        use std::time::Duration;
+
+        let socket_path = get_temp_socket_path("test_uds_timed_reuse_buffer.sock");
+        let _ = std::fs::remove_file(&socket_path);
+
+        let server_path = socket_path.clone();
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingUnixDomainSocket::new();
+            let config = TransportConfig {
+                socket_path: server_path,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            let (msg, receive_time_ns) = server.receive_blocking_timed().unwrap();
+            assert_eq!(msg.id, 7);
+            assert_eq!(msg.payload.len(), 10000);
+            assert!(
+                receive_time_ns > 0,
+                "receive timestamp must be non-zero, got {}",
+                receive_time_ns
+            );
+
+            // The pre-allocated buffer must be large enough for the message.
+            assert!(
+                server.receive_buffer.capacity() >= 10000,
+                "receive buffer capacity {} must fit message of 10000 bytes",
+                server.receive_buffer.capacity()
+            );
+
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        let mut client = BlockingUnixDomainSocket::new();
+        let config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        let msg = Message::new(7, vec![0x42; 10000], MessageType::OneWay);
+        client.send_blocking(&msg).unwrap();
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    /// Verifies that `receive_blocking()` rejects frames larger than
+    /// `MAX_MESSAGE_SIZE` without allocating or panicking (issue #155).
+    #[test]
+    fn test_receive_rejects_oversized_frame() {
+        use std::thread;
+        use std::time::Duration;
+
+        let socket_path = get_temp_socket_path("test_uds_oversized_frame.sock");
+        let _ = std::fs::remove_file(&socket_path);
+
+        let server_path = socket_path.clone();
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingUnixDomainSocket::new();
+            let config = TransportConfig {
+                socket_path: server_path,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            let result = server.receive_blocking();
+            assert!(result.is_err());
+            let err_msg = result.unwrap_err().to_string();
+            assert!(
+                err_msg.contains("Invalid message length"),
+                "Error should mention invalid length, got: {}",
+                err_msg
+            );
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        // Connect as raw Unix client and send an oversized length prefix
+        let mut stream = std::os::unix::net::UnixStream::connect(&socket_path).unwrap();
+        let oversized_len: u32 = (BlockingUnixDomainSocket::MAX_MESSAGE_SIZE + 1) as u32;
+        stream.write_all(&oversized_len.to_le_bytes()).unwrap();
         drop(stream);
 
         server_handle.join().unwrap();
