@@ -866,45 +866,99 @@ mod tests {
     }
 
     /// Message sizes used to exercise buffer reuse (issue #155).
-    const REUSE_TEST_SIZES: &[usize] = &[100, 5000, 1000, 5000, 200];
+    /// The largest size is chosen at runtime to be <= the system's
+    /// `msgsize_max` (POSIX queue limit), so the test does not fail on
+    /// systems where `mq_msgsize` is capped at 8192 B. On such systems the
+    /// test is vacuous (largest size <= initial 8192 B buffer capacity) but
+    /// still verifies the buffer does not grow per message.
+    fn reuse_test_sizes() -> Vec<usize> {
+        let msgsize_max = std::fs::read_to_string("/proc/sys/fs/mqueue/msgsize_max")
+            .ok()
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .unwrap_or(8192);
+        let large = if msgsize_max >= 16384 { 10000 } else { 5000 };
+        vec![100, large, 1000, 200, large]
+    }
+
+    /// Buffer size for the reuse test, derived from the system's `msgsize_max`.
+    fn reuse_test_buffer_size() -> usize {
+        let msgsize_max = std::fs::read_to_string("/proc/sys/fs/mqueue/msgsize_max")
+            .ok()
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .unwrap_or(8192);
+        if msgsize_max >= 16384 {
+            16384
+        } else {
+            8192
+        }
+    }
 
     /// Verifies that `receive_blocking()` reuses the pre-allocated
     /// `receive_buffer` instead of allocating a new `Vec<u8>` per message
     /// (issue #155).
     ///
-    /// The buffer capacity must stabilize (it is resized to `max_msg_size`
-    /// on every receive) rather than growing per message, which would
-    /// indicate per-message heap allocation.
+    /// The buffer capacity must grow to fit the largest message (> initial
+    /// 8192 B capacity when the system allows `mq_msgsize >= 16384`) and then
+    /// stabilize (it is resized to `max_msg_size` on every receive) rather
+    /// than growing per message, which would indicate per-message heap
+    /// allocation.
     #[test]
     fn test_receive_reuses_preallocated_buffer() {
         cleanup_leftover_test_queues("reuse_buffer");
         let queue_name = make_unique_queue_name("reuse_buffer");
 
+        let sizes = reuse_test_sizes();
+        let buffer_size = reuse_test_buffer_size();
+        let large_size = sizes[1]; // the > 8192 B message when the system allows it
+
         let server_queue = queue_name.clone();
+        let sizes_for_server = sizes.clone();
         let server_handle = thread::spawn(move || {
             let mut server = BlockingPosixMessageQueue::new();
             let config = TransportConfig {
                 message_queue_name: server_queue,
-                buffer_size: 8192,
+                buffer_size,
                 ..Default::default()
             };
             server.start_server_blocking(&config).unwrap();
 
-            // Receive messages of varying sizes. Capacity must not grow
-            // per message; it stays bounded by max_msg_size.
-            for (i, &expected_len) in REUSE_TEST_SIZES.iter().enumerate() {
+            // Receive messages of varying sizes, including one larger than the
+            // initial 8192 B buffer capacity (when the system allows it).
+            for (i, &expected_len) in sizes_for_server.iter().enumerate() {
                 let msg = server.receive_blocking().unwrap();
                 assert_eq!(msg.id, i as u64);
                 assert_eq!(msg.payload.len(), expected_len);
             }
 
             let cap = server.receive_buffer.capacity();
-            // Capacity must have grown to fit the largest message (5000),
-            // but must NOT keep growing per message (no per-message alloc).
-            assert!(
-                cap >= 5000,
-                "receive buffer should have grown to fit largest message, got {}",
-                cap
+            if large_size > 8192 {
+                // Buffer grew to hold the largest message (> initial 8192).
+                assert!(
+                    cap >= large_size,
+                    "receive buffer should have grown to at least {}, got {}",
+                    large_size,
+                    cap
+                );
+            } else {
+                // System capped mq_msgsize at 8192; test is vacuous but still
+                // verifies no per-message growth.
+                assert!(
+                    cap >= 8192,
+                    "receive buffer should have initial capacity 8192, got {}",
+                    cap
+                );
+            }
+
+            // Capacity must stabilize: receiving another small message must NOT
+            // grow the buffer further (no per-message heap allocation).
+            let extra_id = sizes_for_server.len() as u64;
+            let msg = server.receive_blocking().unwrap();
+            assert_eq!(msg.id, extra_id);
+            assert_eq!(msg.payload.len(), 200);
+            let cap_after = server.receive_buffer.capacity();
+            assert_eq!(
+                cap_after, cap,
+                "receive buffer capacity must not grow after reaching max_msg_size"
             );
 
             server.close_blocking().unwrap();
@@ -915,28 +969,94 @@ mod tests {
         let mut client = BlockingPosixMessageQueue::new();
         let config = TransportConfig {
             message_queue_name: queue_name,
-            buffer_size: 8192,
+            buffer_size,
             ..Default::default()
         };
         client.start_client_blocking(&config).unwrap();
 
-        for (i, &len) in REUSE_TEST_SIZES.iter().enumerate() {
+        for (i, &len) in sizes.iter().enumerate() {
             let msg = Message::new(i as u64, vec![i as u8; len], MessageType::OneWay);
             client.send_blocking(&msg).unwrap();
         }
+        // Extra small message to verify buffer capacity stabilizes on the server.
+        let msg = Message::new(sizes.len() as u64, vec![0u8; 200], MessageType::OneWay);
+        client.send_blocking(&msg).unwrap();
 
         client.close_blocking().unwrap();
         server_handle.join().unwrap();
     }
 
-    /// Verifies that `receive_blocking()` rejects oversized frames without
-    /// allocating or panicking (issue #155).
+    /// Verifies that `receive_blocking_timed()` reuses the pre-allocated
+    /// `receive_buffer` and returns a monotonic receive timestamp (issue #155).
     ///
-    /// For POSIX message queues, a message larger than `max_msg_size` is
-    /// rejected at send time (size guard in `send_blocking`, and `mq_send`
-    /// would fail with EMSGSIZE), which is what protects the receive path.
-    /// This test confirms an oversized message is rejected and the server's
-    /// receive path stays healthy afterward.
+    /// Uses `make_unique_queue_name` / `cleanup_leftover_test_queues` like the
+    /// other PMQ tests.
+    #[test]
+    fn test_receive_blocking_timed_reuses_buffer() {
+        cleanup_leftover_test_queues("timed_reuse_buffer");
+        let queue_name = make_unique_queue_name("timed_reuse_buffer");
+
+        let server_queue = queue_name.clone();
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingPosixMessageQueue::new();
+            let config = TransportConfig {
+                message_queue_name: server_queue,
+                buffer_size: 1024,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            let (msg, receive_time_ns) = server.receive_blocking_timed().unwrap();
+            assert_eq!(msg.id, 1);
+            assert_eq!(msg.payload.len(), 64);
+            // Timestamp captured after the raw mq_receive, before deserialization.
+            assert!(
+                receive_time_ns > 0,
+                "receive timestamp should be non-zero, got {}",
+                receive_time_ns
+            );
+            // Buffer capacity must be at least the message size.
+            assert!(
+                server.receive_buffer.capacity() >= msg.payload.len(),
+                "receive buffer capacity should be >= message size, got {}",
+                server.receive_buffer.capacity()
+            );
+
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(200));
+
+        let mut client = BlockingPosixMessageQueue::new();
+        let config = TransportConfig {
+            message_queue_name: queue_name,
+            buffer_size: 1024,
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        let msg = Message::new(1, vec![0u8; 64], MessageType::OneWay);
+        client.send_blocking(&msg).unwrap();
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
+
+    /// Verifies that oversized frames are rejected and that the receive path
+    /// stays healthy afterward (issue #155).
+    ///
+    /// For POSIX message queues, a frame larger than `max_msg_size` can never
+    /// reach `receive_blocking()`: `send_blocking()` rejects it with its size
+    /// guard (`serialized.len() > max_msg_size`), and the kernel enforces the
+    /// queue's `mq_msgsize` (`EMSGSIZE` on `mq_send`). `receive_blocking()`
+    /// resizes `receive_buffer` to exactly `max_msg_size` on every call, so it
+    /// never over-allocates and cannot be fed an oversized frame.
+    ///
+    /// This test therefore:
+    /// 1. Exercises `receive_blocking()` with a normal message (receive path works).
+    /// 2. Confirms an oversized send is rejected ("exceeds maximum").
+    /// 3. Confirms `receive_blocking()` still works after the rejected oversized
+    ///    send (receive path stays healthy).
     #[test]
     fn test_receive_rejects_oversized_frame() {
         cleanup_leftover_test_queues("oversized_frame");
@@ -952,9 +1072,14 @@ mod tests {
             };
             server.start_server_blocking(&config).unwrap();
 
-            // A normal-sized message is received fine.
+            // 1. A normal-sized message is received fine.
             let msg = server.receive_blocking().unwrap();
             assert_eq!(msg.id, 1);
+
+            // 3. After the oversized send is rejected, the receive path must
+            //    still accept normal messages.
+            let msg = server.receive_blocking().unwrap();
+            assert_eq!(msg.id, 3);
 
             server.close_blocking().unwrap();
         });
@@ -973,7 +1098,8 @@ mod tests {
         let small = Message::new(1, vec![0u8; 32], MessageType::OneWay);
         client.send_blocking(&small).unwrap();
 
-        // Oversized message: serialized size exceeds max_msg_size (256).
+        // Oversized message: serialized size exceeds max_msg_size (256). Rejected
+        // by the send size guard before it can reach the queue / receive path.
         let oversized = Message::new(2, vec![0u8; 5000], MessageType::OneWay);
         let result = client.send_blocking(&oversized);
         assert!(
@@ -987,6 +1113,10 @@ mod tests {
             "Error should mention exceeded maximum, got: {}",
             err_msg
         );
+
+        // Another normal message: still accepted (receive path stays healthy).
+        let small = Message::new(3, vec![0u8; 32], MessageType::OneWay);
+        client.send_blocking(&small).unwrap();
 
         client.close_blocking().unwrap();
         server_handle.join().unwrap();

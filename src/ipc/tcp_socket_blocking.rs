@@ -674,16 +674,16 @@ mod tests {
         server_handle.join().unwrap();
     }
 
-    const REUSE_TEST_SIZES: &[usize] = &[100, 5000, 1000, 5000, 200];
+    const REUSE_TEST_SIZES: &[usize] = &[100, 5000, 10000, 1000, 200];
 
     /// Verifies that `receive_blocking()` reuses a pre-allocated buffer
     /// instead of allocating a new `Vec<u8>` per message (issue #155).
     ///
-    /// The buffer capacity must stabilize after the first receive rather than
-    /// growing per message, which would indicate per-message heap allocation.
-    /// Receiving messages of varying sizes must not cause unbounded growth:
-    /// capacity stays at the pre-allocated 8192 bytes instead of growing per
-    /// receive (issue #155).
+    /// Includes a 10000-byte message, larger than the initial 8192-byte
+    /// capacity, so the buffer must grow at least once. After that, capacity
+    /// must stabilize: receiving another small message must not grow it
+    /// further, proving the buffer is reused rather than reallocated per
+    /// message.
     #[test]
     fn test_receive_reuses_preallocated_buffer() {
         use std::thread;
@@ -700,8 +700,8 @@ mod tests {
             };
             server.start_server_blocking(&config).unwrap();
 
-            // Receive messages of varying sizes. Capacity must stabilize at
-            // the largest size seen instead of growing per message.
+            // Receive messages of varying sizes, including one (10000 bytes)
+            // larger than the initial 8192-byte capacity.
             for (i, &expected_len) in REUSE_TEST_SIZES.iter().enumerate() {
                 let msg = server.receive_blocking().unwrap();
                 assert_eq!(msg.id, i as u64);
@@ -709,20 +709,31 @@ mod tests {
             }
 
             let cap = server.receive_buffer.capacity();
-            // The buffer must be large enough for the largest message (5000 bytes).
+            // The buffer grew to fit the 10000-byte message, beyond the
+            // initial 8192-byte capacity.
             assert!(
-                cap >= 5000,
-                "receive buffer should fit the largest message (5000), got {}",
+                cap >= 10000,
+                "receive buffer should fit the largest message (10000), got {}",
                 cap
             );
-            // Capacity must have stabilized: it must NOT keep growing per message.
-            // Every message fits in the pre-allocated 8192-byte buffer, so
-            // capacity stays at 8192 instead of growing per receive (issue #155).
-            assert_eq!(
-                cap, 8192,
-                "receive buffer capacity should stay at the pre-allocated 8192 bytes \
-                 (no per-message allocation), got {}",
+            // Comprobación adicional: debe caber al menos el mensaje de 5000 bytes.
+            assert!(
+                cap >= 5000,
+                "receive buffer should fit the 5000-byte message, got {}",
                 cap
+            );
+            // Capacity must have stabilized: it must NOT keep growing per
+            // message. Receiving another small message must not change capacity.
+            let extra_id = REUSE_TEST_SIZES.len() as u64;
+            let extra = server.receive_blocking().unwrap();
+            assert_eq!(extra.id, extra_id);
+            assert_eq!(extra.payload.len(), 200);
+            let cap_after = server.receive_buffer.capacity();
+            assert_eq!(
+                cap_after, cap,
+                "receive buffer capacity must not grow per message (reused buffer), \
+                 was {}, got {}",
+                cap, cap_after
             );
 
             server.close_blocking().unwrap();
@@ -742,6 +753,68 @@ mod tests {
             let msg = Message::new(i as u64, vec![i as u8; len], MessageType::OneWay);
             client.send_blocking(&msg).unwrap();
         }
+        // Extra small message to verify capacity does not grow per message.
+        let extra_msg = Message::new(
+            REUSE_TEST_SIZES.len() as u64,
+            vec![REUSE_TEST_SIZES.len() as u8; 200],
+            MessageType::OneWay,
+        );
+        client.send_blocking(&extra_msg).unwrap();
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+    }
+
+    /// Verifies that `receive_blocking_timed()` reuses the pre-allocated
+    /// receive buffer and captures a monotonic timestamp (issue #155).
+    #[test]
+    fn test_receive_blocking_timed_reuses_buffer() {
+        use std::thread;
+        use std::time::Duration;
+
+        let port = 18093;
+
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingTcpSocket::new();
+            let config = TransportConfig {
+                host: "127.0.0.1".to_string(),
+                port,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            let (msg, timestamp) = server.receive_blocking_timed().unwrap();
+            assert_eq!(msg.id, 1);
+            assert_eq!(msg.payload.len(), 10000);
+            assert!(
+                timestamp > 0,
+                "receive timestamp must be greater than 0, got {}",
+                timestamp
+            );
+
+            let cap = server.receive_buffer.capacity();
+            // The pre-allocated buffer was used to receive the message.
+            assert!(
+                cap >= 10000,
+                "receive buffer should fit the message (10000 bytes), got {}",
+                cap
+            );
+
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        let mut client = BlockingTcpSocket::new();
+        let config = TransportConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        let msg = Message::new(1, vec![1u8; 10000], MessageType::OneWay);
+        client.send_blocking(&msg).unwrap();
 
         client.close_blocking().unwrap();
         server_handle.join().unwrap();

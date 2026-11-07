@@ -1617,7 +1617,7 @@ mod tests {
         let _ = std::fs::remove_file(&socket_path);
     }
 
-    const REUSE_TEST_SIZES: &[usize] = &[100, 5000, 1000, 5000, 200];
+    const REUSE_TEST_SIZES: &[usize] = &[100, 5000, 10000, 1000, 200];
 
     /// Verifies that `receive_blocking()` reuses a pre-allocated buffer
     /// instead of allocating a new `Vec<u8>` per message (issue #155).
@@ -1643,21 +1643,41 @@ mod tests {
             };
             server.start_server_blocking(&config).unwrap();
 
-            // Receive messages of varying sizes. Capacity must stabilize at
-            // the largest size seen instead of growing per message.
+            // Receive messages of varying sizes, including one (10000) larger
+            // than the initial 8192 capacity, so the buffer must grow.
+            // Capacity must stabilize at the largest size instead of growing
+            // per message.
             for (i, &expected_len) in REUSE_TEST_SIZES.iter().enumerate() {
                 let msg = server.receive_blocking().unwrap();
                 assert_eq!(msg.id, i as u64);
                 assert_eq!(msg.payload.len(), expected_len);
+                assert_eq!(
+                    msg.payload,
+                    vec![i as u8; expected_len],
+                    "payload content mismatch for message {}",
+                    i
+                );
             }
 
             let cap = server.receive_buffer.capacity();
-            // Capacity must have grown to fit the largest message (5000),
-            // but must NOT keep growing per message (no per-message alloc).
+            // Buffer must have grown to fit the 10000-byte message.
             assert!(
-                cap >= 5000,
-                "receive buffer should have grown to fit largest message, got {}",
+                cap >= 10000,
+                "receive buffer should have grown to fit 10000-byte message, got {}",
                 cap
+            );
+            // Additional check: must have grown to fit at least 5000.
+            assert!(cap >= 5000);
+
+            // Receive one more small message: capacity must NOT grow again,
+            // proving the buffer is reused rather than re-allocated per message.
+            let small_msg = server.receive_blocking().unwrap();
+            assert_eq!(small_msg.id, REUSE_TEST_SIZES.len() as u64);
+            assert_eq!(small_msg.payload.len(), 100);
+            assert_eq!(
+                server.receive_buffer.capacity(),
+                cap,
+                "receive buffer capacity must not grow for smaller messages"
             );
 
             server.close_blocking().unwrap();
@@ -1676,6 +1696,66 @@ mod tests {
             let msg = Message::new(i as u64, vec![i as u8; len], MessageType::OneWay);
             client.send_blocking(&msg).unwrap();
         }
+
+        // Extra small message to verify capacity stabilization.
+        let extra_id = REUSE_TEST_SIZES.len() as u64;
+        let extra_msg = Message::new(extra_id, vec![extra_id as u8; 100], MessageType::OneWay);
+        client.send_blocking(&extra_msg).unwrap();
+
+        client.close_blocking().unwrap();
+        server_handle.join().unwrap();
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    /// Verifies that `receive_blocking_timed()` reuses the pre-allocated
+    /// receive buffer and returns a valid receive timestamp (issue #155).
+    #[test]
+    fn test_receive_blocking_timed_reuses_buffer() {
+        use std::thread;
+        use std::time::Duration;
+
+        let socket_path = get_temp_socket_path("test_uds_timed_reuse_buffer.sock");
+        let _ = std::fs::remove_file(&socket_path);
+
+        let server_path = socket_path.clone();
+        let server_handle = thread::spawn(move || {
+            let mut server = BlockingUnixDomainSocket::new();
+            let config = TransportConfig {
+                socket_path: server_path,
+                ..Default::default()
+            };
+            server.start_server_blocking(&config).unwrap();
+
+            let (msg, receive_time_ns) = server.receive_blocking_timed().unwrap();
+            assert_eq!(msg.id, 7);
+            assert_eq!(msg.payload.len(), 10000);
+            assert!(
+                receive_time_ns > 0,
+                "receive timestamp must be non-zero, got {}",
+                receive_time_ns
+            );
+
+            // The pre-allocated buffer must be large enough for the message.
+            assert!(
+                server.receive_buffer.capacity() >= 10000,
+                "receive buffer capacity {} must fit message of 10000 bytes",
+                server.receive_buffer.capacity()
+            );
+
+            server.close_blocking().unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        let mut client = BlockingUnixDomainSocket::new();
+        let config = TransportConfig {
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+        client.start_client_blocking(&config).unwrap();
+
+        let msg = Message::new(7, vec![0x42; 10000], MessageType::OneWay);
+        client.send_blocking(&msg).unwrap();
 
         client.close_blocking().unwrap();
         server_handle.join().unwrap();
