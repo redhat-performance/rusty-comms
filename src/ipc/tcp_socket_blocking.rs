@@ -682,7 +682,8 @@ mod tests {
     /// The buffer capacity must stabilize after the first receive rather than
     /// growing per message, which would indicate per-message heap allocation.
     /// Receiving messages of varying sizes must not cause unbounded growth:
-    /// capacity should settle at the largest size seen, not grow per message.
+    /// capacity stays at the pre-allocated 8192 bytes instead of growing per
+    /// receive (issue #155).
     #[test]
     fn test_receive_reuses_preallocated_buffer() {
         use std::thread;
@@ -708,11 +709,19 @@ mod tests {
             }
 
             let cap = server.receive_buffer.capacity();
-            // Capacity must have grown to fit the largest message (5000),
-            // but must NOT keep growing per message (no per-message alloc).
+            // The buffer must be large enough for the largest message (5000 bytes).
             assert!(
                 cap >= 5000,
-                "receive buffer should have grown to fit largest message, got {}",
+                "receive buffer should fit the largest message (5000), got {}",
+                cap
+            );
+            // Capacity must have stabilized: it must NOT keep growing per message.
+            // Every message fits in the pre-allocated 8192-byte buffer, so
+            // capacity stays at 8192 instead of growing per receive (issue #155).
+            assert_eq!(
+                cap, 8192,
+                "receive buffer capacity should stay at the pre-allocated 8192 bytes \
+                 (no per-message allocation), got {}",
                 cap
             );
 
